@@ -2681,14 +2681,24 @@ void BlockchainLMDB::remove_output(const uint64_t amount, const uint64_t& out_in
   const uint64_t output_id = ok->output_id;
 
   MDB_val_set(k_amount_ref, amount);
-  MDB_val_set(v_amount_ref, out_index);
-  result = mdb_cursor_get(m_cur_output_amount_refs, &k_amount_ref, &v_amount_ref, MDB_GET_BOTH);
+  // output_amount_refs stores 16-byte output_amount_ref records under a
+  // dupsort that orders only by the first 8 bytes (amount_index). Searching
+  // with a bare 8-byte out_index is unreliable against MDB_DUPFIXED, so seek
+  // with a full-size record (amount_index in the sort prefix, output_id=0) via
+  // MDB_GET_BOTH_RANGE and verify the index on the returned record.
+  output_amount_ref lookup_amount_ref;
+  lookup_amount_ref.amount_index = out_index;
+  lookup_amount_ref.output_id = 0;
+  MDB_val_set(v_amount_ref, lookup_amount_ref);
+  result = mdb_cursor_get(m_cur_output_amount_refs, &k_amount_ref, &v_amount_ref, MDB_GET_BOTH_RANGE);
   if (result == MDB_NOTFOUND)
     throw0(DB_ERROR("Unexpected: amount output ref not found"));
   else if (result)
     throw1(DB_ERROR(lmdb_error("Error finding amount output ref for removal", result).c_str()));
 
   const output_amount_ref *amount_ref = (const output_amount_ref *)v_amount_ref.mv_data;
+  if (amount_ref->amount_index != out_index)
+    throw0(DB_ERROR("Unexpected: amount output ref index mismatch"));
   if (amount_ref->output_id != output_id)
     throw0(DB_ERROR(std::string("Unexpected: output_id ")
                     .append(boost::lexical_cast<std::string>(amount_ref->output_id))
@@ -5734,9 +5744,15 @@ void BlockchainLMDB::get_output_ids_by_amount_index(const uint64_t amount, const
   for (const uint64_t amount_index: amount_indices)
   {
     MDB_val_set(k_amount, amount);
-    MDB_val_set(v_amount_ref, amount_index);
+    // output_amount_refs stores 16-byte records under a dupsort keyed only on
+    // the first 8 bytes (amount_index). Seek with a full-size record so the
+    // search value size matches the stored MDB_DUPFIXED size, then verify.
+    output_amount_ref lookup_amount_ref;
+    lookup_amount_ref.amount_index = amount_index;
+    lookup_amount_ref.output_id = 0;
+    MDB_val_set(v_amount_ref, lookup_amount_ref);
 
-    auto get_result = mdb_cursor_get(m_cur_output_amount_refs, &k_amount, &v_amount_ref, MDB_GET_BOTH);
+    auto get_result = mdb_cursor_get(m_cur_output_amount_refs, &k_amount, &v_amount_ref, MDB_GET_BOTH_RANGE);
     if (get_result == MDB_NOTFOUND)
       throw1(OUTPUT_DNE((std::string("Attempting to get output id by amount index (amount ") + boost::lexical_cast<std::string>(amount) + ", index " + boost::lexical_cast<std::string>(amount_index) + "), but ref does not exist").c_str()));
     else if (get_result)
@@ -5746,9 +5762,11 @@ void BlockchainLMDB::get_output_ids_by_amount_index(const uint64_t amount, const
       throw0(DB_ERROR("Invalid output_amount_ref size"));
 
     const output_amount_ref *ref = (const output_amount_ref *)v_amount_ref.mv_data;
+    // GET_BOTH_RANGE lands on the first record whose amount_index >= requested;
+    // a strict-greater result means the requested index does not exist.
     if (ref->amount_index != amount_index)
     {
-      throw0(DB_ERROR(
+      throw1(OUTPUT_DNE(
                       (std::string("output_amount_ref index mismatch: requested amount_index ") +
                        std::to_string(amount_index) +
                        ", got " +
@@ -5787,9 +5805,15 @@ void BlockchainLMDB::get_output_ids_by_asset_index(const std::string &asset_type
 
   for (const uint64_t asset_type_output_index: asset_type_output_indices)
   {
-    MDB_val_set(v_type_ref, asset_type_output_index);
+    // output_type_refs stores 16-byte records under a dupsort keyed only on
+    // the first 8 bytes (asset_type_output_index). Seek with a full-size
+    // record so the search value size matches the stored MDB_DUPFIXED size.
+    output_type_ref lookup_type_ref;
+    lookup_type_ref.asset_type_output_index = asset_type_output_index;
+    lookup_type_ref.output_id = 0;
+    MDB_val_set(v_type_ref, lookup_type_ref);
 
-    auto get_result = mdb_cursor_get(m_cur_output_type_refs, &k_type, &v_type_ref, MDB_GET_BOTH);
+    auto get_result = mdb_cursor_get(m_cur_output_type_refs, &k_type, &v_type_ref, MDB_GET_BOTH_RANGE);
     if (get_result == MDB_NOTFOUND)
       throw1(OUTPUT_DNE((std::string("Attempting to get output id by asset index (asset type " + asset_type_str + " asset index " + boost::lexical_cast<std::string>(asset_type_output_index) + "), but ref does not exist").c_str())));
     else if (get_result)
@@ -5799,9 +5823,11 @@ void BlockchainLMDB::get_output_ids_by_asset_index(const std::string &asset_type
       throw0(DB_ERROR("Invalid output_type_ref size"));
 
     const output_type_ref *ref = (const output_type_ref *)v_type_ref.mv_data;
+    // GET_BOTH_RANGE lands on the first record whose index >= requested;
+    // a strict-greater result means the requested index does not exist.
     if (ref->asset_type_output_index != asset_type_output_index)
     {
-      throw0(DB_ERROR(
+      throw1(OUTPUT_DNE(
                       (std::string("output_type_ref index mismatch: requested asset_type_output_index ") +
                        std::to_string(asset_type_output_index) +
                        ", got " +
@@ -5841,9 +5867,16 @@ void BlockchainLMDB::get_output_id_from_asset_type_output_index(const std::strin
 
   for (size_t i = 0; i < asset_type_output_indices.size(); ++i)
   {
-    MDB_val_set(v, asset_type_output_indices[i]);
+    // output_types stores 16-byte outassettype records under a dupsort keyed
+    // only on the first 8 bytes (asset_type_output_index). Seek with a
+    // full-size record so the search value size matches MDB_DUPFIXED, then
+    // verify the index on the returned record.
+    outassettype lookup_oat;
+    lookup_oat.asset_type_output_index = asset_type_output_indices[i];
+    lookup_oat.output_id = 0;
+    MDB_val_set(v, lookup_oat);
 
-    auto get_result = mdb_cursor_get(m_cur_output_types, &k_type, &v, MDB_GET_BOTH);
+    auto get_result = mdb_cursor_get(m_cur_output_types, &k_type, &v, MDB_GET_BOTH_RANGE);
     if (get_result == MDB_NOTFOUND)
     {
       throw1(OUTPUT_DNE((std::string("Attempting to get output id by asset type output id (asset type " + asset_type_str + " asset type ouput id " + boost::lexical_cast<std::string>(asset_type_output_indices[i]) + "), but key does not exist (current height " + boost::lexical_cast<std::string>(height()) + ")").c_str())));
@@ -5852,6 +5885,8 @@ void BlockchainLMDB::get_output_id_from_asset_type_output_index(const std::strin
       throw0(DB_ERROR(lmdb_error("Error attempting to retrieve an output id by asset type output id from the db", get_result).c_str()));
 
     const outassettype *oat = (const outassettype *)v.mv_data;
+    if (oat->asset_type_output_index != asset_type_output_indices[i])
+      throw1(OUTPUT_DNE((std::string("Attempting to get output id by asset type output id (asset type " + asset_type_str + " asset type ouput id " + boost::lexical_cast<std::string>(asset_type_output_indices[i]) + "), but key does not exist (current height " + boost::lexical_cast<std::string>(height()) + ")").c_str())));
     output_indices.push_back(oat->output_id);
   }
 
@@ -5868,9 +5903,15 @@ uint64_t BlockchainLMDB::get_output_id_from_asset_type_output_index(const std::s
 
   uint32_t asset_type = cryptonote::asset_id_from_type(asset_type_str);
   MDB_val_copy<uint32_t> k_type(asset_type);
-  MDB_val_set(v, asset_type_output_index);
+  // output_types stores 16-byte outassettype records under a dupsort keyed
+  // only on the first 8 bytes (asset_type_output_index). Seek with a full-size
+  // record so the search value size matches MDB_DUPFIXED, then verify.
+  outassettype lookup_oat;
+  lookup_oat.asset_type_output_index = asset_type_output_index;
+  lookup_oat.output_id = 0;
+  MDB_val_set(v, lookup_oat);
 
-  auto get_result = mdb_cursor_get(m_cur_output_types, &k_type, &v, MDB_GET_BOTH);
+  auto get_result = mdb_cursor_get(m_cur_output_types, &k_type, &v, MDB_GET_BOTH_RANGE);
   if (get_result == MDB_NOTFOUND)
   {
     throw1(OUTPUT_DNE((std::string("Attempting to get output id by asset type output id (asset type " + asset_type_str + " asset type output id " + boost::lexical_cast<std::string>(asset_type_output_index) + "), but key does not exist (current height " + boost::lexical_cast<std::string>(height()) + ")").c_str())));
@@ -5879,9 +5920,13 @@ uint64_t BlockchainLMDB::get_output_id_from_asset_type_output_index(const std::s
     throw0(DB_ERROR(lmdb_error("Error attempting to retrieve an output id by asset type output id from the db", get_result).c_str()));
 
   const outassettype *oat = (const outassettype *)v.mv_data;
+  if (oat->asset_type_output_index != asset_type_output_index)
+    throw1(OUTPUT_DNE((std::string("Attempting to get output id by asset type output id (asset type " + asset_type_str + " asset type output id " + boost::lexical_cast<std::string>(asset_type_output_index) + "), but key does not exist (current height " + boost::lexical_cast<std::string>(height()) + ")").c_str())));
+
+  const uint64_t found_output_id = oat->output_id;
 
   TXN_POSTFIX_RDONLY();
-  return oat->output_id;
+  return found_output_id;
 }
 
 tx_out_index BlockchainLMDB::get_output_tx_and_index_from_global(const uint64_t& output_id) const
