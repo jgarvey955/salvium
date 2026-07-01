@@ -3115,7 +3115,20 @@ bool Blockchain::get_outs(const COMMAND_RPC_GET_OUTPUTS_BIN::request& req, COMMA
   {
     for (const auto &i: req.outputs)
     {
-      if (i.is_global_out)
+      if (i.tx_output_set())
+      {
+        uint64_t tx_id = 0;
+        if (!m_db->tx_exists(i.txid, tx_id))
+          throw DB_ERROR("Failed to find transaction for requested output");
+        const auto tx_output_indices = m_db->get_tx_amount_output_indices(tx_id);
+        if (tx_output_indices.empty() || i.tx_output_index >= tx_output_indices.front().size())
+          throw DB_ERROR("Failed to find requested transaction output index");
+        if (req.asset_type.empty())
+          resolved_output_ids.push_back(m_db->get_output_id_by_amount_index(i.amount, tx_output_indices.front()[i.tx_output_index].first));
+        else
+          resolved_output_ids.push_back(m_db->get_output_id_by_asset_index(req.asset_type, tx_output_indices.front()[i.tx_output_index].second));
+      }
+      else if (i.is_global_out)
         resolved_output_ids.push_back(i.index);
       else if (req.asset_type.empty())
         resolved_output_ids.push_back(m_db->get_output_id_by_amount_index(i.amount, i.index));
@@ -3186,6 +3199,8 @@ bool Blockchain::get_outs(const COMMAND_RPC_GET_OUTPUTS_BIN::request& req, COMMA
         }
       }
       crypto::public_key out_key = provided_keys[i] ? provided_keys[i].get() : t.pubkey;
+      if (provided_keys[i] && provided_keys[i].get() != t.pubkey)
+        throw DB_ERROR("Requested output locator does not match the provided public key");
       COMMAND_RPC_GET_OUTPUTS_BIN::outkey out;
       out.key = out_key;
       out.mask = t.commitment;

@@ -9927,6 +9927,8 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
           real_out.index = td.m_global_output_index;
           real_out.is_global_out = true;
           real_out.key = td.get_public_key(); // provide key to avoid stale index lookup
+          real_out.txid = td.m_txid;
+          real_out.tx_output_index = td.m_internal_output_index;
           add_output_to_lists(real_out);
           LOG_PRINT_L1("Selecting real output: " << td.m_global_output_index << "/" << td.m_asset_type_output_index << " for " << print_money(amount));
         }
@@ -10175,8 +10177,8 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
       {
         const size_t i = base + n;
         if (req.outputs[i].is_global_out &&
-            req.outputs[i].index == td.m_global_output_index &&
-            daemon_resp.outs[i].output_id == td.m_global_output_index &&
+            req.outputs[i].txid == td.m_txid &&
+            req.outputs[i].tx_output_index == td.m_internal_output_index &&
             daemon_resp.outs[i].key == td.get_public_key() &&
             daemon_resp.outs[i].key_provided &&
             daemon_resp.outs[i].asset_type_output_index_known)

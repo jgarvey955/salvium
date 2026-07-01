@@ -542,14 +542,19 @@ namespace cryptonote
     uint64_t index = 0;
     bool is_global_out = false;
     crypto::public_key key = crypto::null_pkey;
+    crypto::hash txid = crypto::null_hash;
+    uint64_t tx_output_index = 0;
 
     bool key_set() const { return key != crypto::null_pkey; }
+    bool tx_output_set() const { return txid != crypto::null_hash; }
 
     BEGIN_KV_SERIALIZE_MAP()
       KV_SERIALIZE(amount)
       KV_SERIALIZE(index)
       KV_SERIALIZE_OPT(is_global_out, false)
       KV_SERIALIZE_VAL_POD_AS_BLOB_OPT(key, crypto::null_pkey)
+      KV_SERIALIZE_VAL_POD_AS_BLOB_OPT(txid, crypto::null_hash)
+      KV_SERIALIZE_OPT(tx_output_index, uint64_t{0})
     END_KV_SERIALIZE_MAP()
   };
 
