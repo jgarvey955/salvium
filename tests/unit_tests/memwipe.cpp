@@ -32,6 +32,8 @@
 #include "misc_log_ex.h"
 #include "memwipe.h"
 
+#include <iomanip>
+
 // Probably won't catch the optimized out case, but at least we test
 // it works in the normal case
 static void test(bool wipe)

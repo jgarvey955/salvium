@@ -36,7 +36,7 @@
 #include "carrot_core/exceptions.h"
 #include "carrot_core/output_set_finalization.h"
 #include "carrot_core/scan.h"
-#include "carrot_core/scan_unsafe.cpp"
+#include "carrot_core/scan_unsafe.h"
 #include "carrot_core/address_utils.h"
 #include "carrot_core/core_types.h"
 #include "carrot_impl/address_device_ram_borrowed.h"
@@ -45,9 +45,10 @@
 #include "carrot_impl/input_selection.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "ringct/bulletproofs_plus.h"
-#include "wallet/scanning_tools.cpp"
+#include "ringct/rctSigs.h"
+#include "wallet/scanning_tools.h"
 #include "common/container_helpers.h"
-#include "carrot_core/payment_proposal.cpp"
+#include "carrot_core/payment_proposal.h"
 
 //third party headers
 

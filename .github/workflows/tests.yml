@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: ~/.ccache
+          path: ~/.cache/ccache
           key: unit-ccache-${{ runner.os }}-${{ github.sha }}
           restore-keys: unit-ccache-${{ runner.os }}-
 

@@ -36,6 +36,7 @@
 #include <cassert>
 #include <iostream>
 #include <iterator>
+#include <type_traits>
 #include <boost/endian/conversion.hpp>
 #include <boost/type_traits/make_unsigned.hpp>
 
@@ -137,7 +138,20 @@ struct binary_archive<false> : public binary_archive_base<false>
   template <class T>
   void serialize_varint(T &v)
   {
-    serialize_uvarint(*(typename boost::make_unsigned<T>::type *)(&v));
+    if constexpr (std::is_enum_v<T>)
+    {
+      using U = std::make_unsigned_t<std::underlying_type_t<T>>;
+      U value = static_cast<U>(v);
+      serialize_uvarint(value);
+      v = static_cast<T>(value);
+    }
+    else
+    {
+      using U = std::make_unsigned_t<T>;
+      U value = static_cast<U>(v);
+      serialize_uvarint(value);
+      v = static_cast<T>(value);
+    }
   }
 
   template <class T>
@@ -213,7 +227,18 @@ struct binary_archive<true> : public binary_archive_base<true>
   template <class T>
   void serialize_varint(T &v)
   {
-    serialize_uvarint(*(typename boost::make_unsigned<T>::type *)(&v));
+    if constexpr (std::is_enum_v<T>)
+    {
+      using U = std::make_unsigned_t<std::underlying_type_t<T>>;
+      U value = static_cast<U>(v);
+      serialize_uvarint(value);
+    }
+    else
+    {
+      using U = std::make_unsigned_t<T>;
+      U value = static_cast<U>(v);
+      serialize_uvarint(value);
+    }
   }
 
   template <class T>

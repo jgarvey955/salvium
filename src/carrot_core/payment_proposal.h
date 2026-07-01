@@ -116,6 +116,11 @@ crypto::secret_key get_enote_ephemeral_privkey(const CarrotPaymentProposalV1 &pr
 */
 mx25519_pubkey get_enote_ephemeral_pubkey(const CarrotPaymentProposalV1 &proposal,
     const input_context_t &input_context);
+
+void get_normal_proposal_ecdh_parts(const CarrotPaymentProposalV1 &proposal,
+    const input_context_t &input_context,
+    mx25519_pubkey &enote_ephemeral_pubkey_out,
+    mx25519_pubkey &s_sender_receiver_unctx_out);
 /**
 * brief: get_coinbase_output_proposal_v1 - convert the carrot proposal to a coinbase output proposal
 * param: proposal -

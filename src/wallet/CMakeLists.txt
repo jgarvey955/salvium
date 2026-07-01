@@ -38,6 +38,7 @@ set(wallet_sources
   message_store.cpp
   message_transporter.cpp
   wallet_rpc_payments.cpp
+  scanning_tools.cpp
   tx_builder.cpp
 )
 

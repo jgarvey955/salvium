@@ -579,6 +579,8 @@ namespace cryptonote
       crypto::hash txid;
       uint64_t output_id;
       bool key_provided; // true if the key was provided by the wallet (not index-resolved)
+      uint64_t asset_type_output_index; // canonical per-asset ring index
+      bool asset_type_output_index_known;
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_VAL_POD_AS_BLOB(key)
@@ -588,6 +590,8 @@ namespace cryptonote
         KV_SERIALIZE_VAL_POD_AS_BLOB(txid)
         KV_SERIALIZE(output_id)
         KV_SERIALIZE_OPT(key_provided, false)
+        KV_SERIALIZE_OPT(asset_type_output_index, uint64_t{0})
+        KV_SERIALIZE_OPT(asset_type_output_index_known, false)
       END_KV_SERIALIZE_MAP()
     };
 

@@ -3194,6 +3194,25 @@ bool Blockchain::get_outs(const COMMAND_RPC_GET_OUTPUTS_BIN::request& req, COMMA
       out.txid = crypto::null_hash;
       out.output_id = resolved_output_ids[i];
       out.key_provided = !!provided_keys[i];
+      if (!req.asset_type.empty())
+      {
+        if (req.outputs[i].is_global_out)
+        {
+          const tx_out_index toi = m_db->get_output_tx_and_index_from_global(resolved_output_ids[i]);
+          uint64_t tx_id = 0;
+          if (!m_db->tx_exists(toi.first, tx_id))
+            throw DB_ERROR("Failed to find transaction for global output");
+          const auto tx_output_indices = m_db->get_tx_amount_output_indices(tx_id);
+          if (tx_output_indices.empty() || toi.second >= tx_output_indices.front().size())
+            throw DB_ERROR("Failed to find canonical asset index for global output");
+          out.asset_type_output_index = tx_output_indices.front()[toi.second].second;
+        }
+        else
+        {
+          out.asset_type_output_index = req.outputs[i].index;
+        }
+        out.asset_type_output_index_known = true;
+      }
       res.outs.push_back(out);
     }
 

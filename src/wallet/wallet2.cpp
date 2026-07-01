@@ -9919,12 +9919,13 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
         if (num_found == 0)
         {
           num_found = 1;
-          uint64_t o_index = use_global_outs ? td.m_global_output_index : td.m_asset_type_output_index;
-          seen_indices.emplace(o_index);
           get_outputs_out real_out;
           real_out.amount = amount;
-          real_out.index = o_index;
-          real_out.is_global_out = use_global_outs;
+          // The HF13 realignment changed per-asset ranks but not global output
+          // IDs. Resolve our own output by its stable global ID so an existing
+          // wallet cache cannot sign a ring with a stale pre-HF13 rank.
+          real_out.index = td.m_global_output_index;
+          real_out.is_global_out = true;
           real_out.key = td.get_public_key(); // provide key to avoid stale index lookup
           add_output_to_lists(real_out);
           LOG_PRINT_L1("Selecting real output: " << td.m_global_output_index << "/" << td.m_asset_type_output_index << " for " << print_money(amount));
@@ -10145,16 +10146,22 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
         // was provided by the wallet and used directly by the daemon.
         if (daemon_resp.outs[i].key_provided ||
             (use_global_outs ? req.outputs[i].index : daemon_resp.outs[i].output_id) == td.m_global_output_index)
+        {
           if (daemon_resp.outs[i].key == td.get_public_key())
+          {
             if (daemon_resp.outs[i].mask == mask)
+            {
               if (daemon_resp.outs[i].unlocked)
                 real_out_found = true;
               else
                 LOG_ERROR("output id " << td.m_global_output_index << " (" << rct_asset_type << ") is still locked");
+            }
             else
               LOG_ERROR("output id " << td.m_global_output_index << " (" << rct_asset_type << ") has incorrect mask : expected " << mask << " but found " << daemon_resp.outs[i].mask);
+          }
           else
             LOG_ERROR("output id " << td.m_global_output_index << " (" << rct_asset_type << ") has incorrect key : expected " << td.get_public_key() << " but found " << daemon_resp.outs[i].key);
+        }
       }
       THROW_WALLET_EXCEPTION_IF(!real_out_found, error::wallet_internal_error,
           "Daemon response did not include the requested real output");
@@ -10163,7 +10170,24 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
       // HERE BE DRAGONS!!!
       // SRCG: DO NOT COMMIT THIS CHANGE UNTIL VERIFIED AS WORKING
       //outs.back().push_back(std::make_tuple(td.m_global_output_index, td.get_public_key(), mask));
-      outs.back().push_back(std::make_tuple(td.m_asset_type_output_index, td.get_public_key(), mask));
+      boost::optional<uint64_t> real_asset_type_output_index;
+      for (size_t n = 0; n < requested_outputs_count; ++n)
+      {
+        const size_t i = base + n;
+        if (req.outputs[i].is_global_out &&
+            req.outputs[i].index == td.m_global_output_index &&
+            daemon_resp.outs[i].output_id == td.m_global_output_index &&
+            daemon_resp.outs[i].key == td.get_public_key() &&
+            daemon_resp.outs[i].key_provided &&
+            daemon_resp.outs[i].asset_type_output_index_known)
+        {
+          real_asset_type_output_index = daemon_resp.outs[i].asset_type_output_index;
+          break;
+        }
+      }
+      THROW_WALLET_EXCEPTION_IF(!real_asset_type_output_index, error::wallet_internal_error,
+          "Daemon did not return the canonical asset index for the real output");
+      outs.back().push_back(std::make_tuple(*real_asset_type_output_index, td.get_public_key(), mask));
       // LAND AHOY!!!
 
       // then pick outs from an existing ring, if any
@@ -10177,7 +10201,7 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
           {
             if (out < num_spendable_global_outs)
             {
-              if (out != td.m_global_output_index)
+              if (out != *real_asset_type_output_index)
               {
                 bool found = false;
                 for (size_t o = 0; o < requested_outputs_count; ++o)
@@ -10188,7 +10212,7 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
                   if (req.outputs[i].index == out /*&& req.outputs[i].is_global_out*/)
                   {
                     LOG_PRINT_L2("Index " << i << "/" << requested_outputs_count << ": idx " << req.outputs[i].index << " (real " << td.m_global_output_index << "), unlocked " << daemon_resp.outs[i].unlocked << ", key " << daemon_resp.outs[i].key << " (from existing ring)");
-                    tx_add_fake_output(outs, req.outputs[i].index, daemon_resp.outs[i].key, daemon_resp.outs[i].mask, use_global_outs ? td.m_global_output_index : td.m_asset_type_output_index, daemon_resp.outs[i].unlocked, valid_public_keys_cache);
+                    tx_add_fake_output(outs, req.outputs[i].index, daemon_resp.outs[i].key, daemon_resp.outs[i].mask, *real_asset_type_output_index, daemon_resp.outs[i].unlocked, valid_public_keys_cache);
                     found = true;
                     break;
                   }
@@ -10217,7 +10241,7 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
 
         // Try adding this output's information to result ring if output isn't invalid
         LOG_PRINT_L2("Index " << i << "/" << requested_outputs_count << ": idx " << req.outputs[i].index << " (real " << td.m_global_output_index << "), unlocked " << daemon_resp.outs[i].unlocked << ", key " << daemon_resp.outs[i].key);
-        tx_add_fake_output(outs, req.outputs[i].index, daemon_resp.outs[i].key, daemon_resp.outs[i].mask, td.m_global_output_index, daemon_resp.outs[i].unlocked, valid_public_keys_cache);
+        tx_add_fake_output(outs, req.outputs[i].index, daemon_resp.outs[i].key, daemon_resp.outs[i].mask, *real_asset_type_output_index, daemon_resp.outs[i].unlocked, valid_public_keys_cache);
       }
       if (outs.back().size() < fake_outputs_count + 1)
       {
