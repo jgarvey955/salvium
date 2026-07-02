@@ -87,12 +87,18 @@ static bool is_transfer_usable_for_input_selection(const wallet2::transfer_detai
     */
     // Reject locked outputs
     size_t blocks_locked_for = CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE;
-    if (td.m_tx.type == cryptonote::transaction_type::MINER || td.m_tx.type == cryptonote::transaction_type::PROTOCOL)
+    const bool is_miner_or_protocol =
+        td.m_tx.type == cryptonote::transaction_type::MINER ||
+        td.m_tx.type == cryptonote::transaction_type::PROTOCOL;
+    if (is_miner_or_protocol)
       blocks_locked_for = CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW;
 
+    // Miner/protocol outputs can arrive with partial key image state during scan transitions.
+    // Keep standard strictness for normal transfers, but allow miner/protocol outputs through.
+    const bool key_image_usable = td.m_key_image_known && (!td.m_key_image_partial || is_miner_or_protocol);
+
     return !td.m_spent
-        && td.m_key_image_known
-        && !td.m_key_image_partial
+        && key_image_usable
         && !td.m_frozen
         && (top_block_index +1 >= td.m_block_height + blocks_locked_for)
         // && last_locked_block_index <= top_block_index
@@ -248,6 +254,20 @@ carrot::select_inputs_func_t make_wallet2_single_transfer_input_selector(
     const std::string &asset_type,
     std::set<size_t> &selected_transfer_indices_out)
 {
+    struct input_filter_stats_t
+    {
+        size_t total = 0;
+        size_t spent = 0;
+        size_t key_image = 0;
+        size_t frozen = 0;
+        size_t locked = 0;
+        size_t account = 0;
+        size_t subaddress = 0;
+        size_t amount = 0;
+        size_t asset = 0;
+        size_t accepted = 0;
+    } stats;
+
     // Collect transfer_container into a `std::vector<carrot::InputCandidate>` for usable inputs
     std::vector<carrot::InputCandidate> input_candidates;
     std::vector<size_t> input_candidates_transfer_indices;
@@ -256,6 +276,56 @@ carrot::select_inputs_func_t make_wallet2_single_transfer_input_selector(
     for (size_t i = 0; i < transfers.size(); ++i)
     {
         const wallet2::transfer_details &td = transfers.at(i);
+        ++stats.total;
+
+        size_t blocks_locked_for = CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE;
+        const bool is_miner_or_protocol =
+            td.m_tx.type == cryptonote::transaction_type::MINER ||
+            td.m_tx.type == cryptonote::transaction_type::PROTOCOL;
+        if (is_miner_or_protocol)
+            blocks_locked_for = CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW;
+
+        if (td.m_spent)
+        {
+            ++stats.spent;
+            continue;
+        }
+        if (!(td.m_key_image_known && (!td.m_key_image_partial || is_miner_or_protocol)))
+        {
+            ++stats.key_image;
+            continue;
+        }
+        if (td.m_frozen)
+        {
+            ++stats.frozen;
+            continue;
+        }
+        if (!(top_block_index + 1 >= td.m_block_height + blocks_locked_for))
+        {
+            ++stats.locked;
+            continue;
+        }
+        if (td.m_subaddr_index.major != from_account)
+        {
+            ++stats.account;
+            continue;
+        }
+        if (!(from_subaddresses.empty() || from_subaddresses.count(td.m_subaddr_index.minor) == 1))
+        {
+            ++stats.subaddress;
+            continue;
+        }
+        if (!(td.amount() >= ignore_below && td.amount() <= ignore_above))
+        {
+            ++stats.amount;
+            continue;
+        }
+        if (td.asset_type != asset_type)
+        {
+            ++stats.asset;
+            continue;
+        }
+
         if (is_transfer_usable_for_input_selection(td,
                                                    from_account,
                                                    from_subaddresses,
@@ -264,6 +334,7 @@ carrot::select_inputs_func_t make_wallet2_single_transfer_input_selector(
                                                    top_block_index,
                                                    asset_type))
         {
+            ++stats.accepted;
             input_candidates.push_back(carrot::InputCandidate{
                 .core = carrot::CarrotSelectedInput{
                     .amount = td.amount(),
@@ -275,6 +346,25 @@ carrot::select_inputs_func_t make_wallet2_single_transfer_input_selector(
             });
             input_candidates_transfer_indices.push_back(i);
         }
+    }
+
+    if (input_candidates.empty())
+    {
+        MERROR("No usable input candidates. total=" << stats.total
+            << ", spent=" << stats.spent
+            << ", key_image=" << stats.key_image
+            << ", frozen=" << stats.frozen
+            << ", locked=" << stats.locked
+            << ", account=" << stats.account
+            << ", subaddress=" << stats.subaddress
+            << ", amount=" << stats.amount
+            << ", asset=" << stats.asset
+            << ", accepted=" << stats.accepted
+            << ", from_account=" << from_account
+            << ", top_block_index=" << top_block_index
+            << ", ignore_range=[" << cryptonote::print_money(ignore_below)
+            << "," << cryptonote::print_money(ignore_above) << "]"
+            << ", requested_asset='" << asset_type << "'");
     }
 
     // Create wrapper around `make_single_transfer_input_selector`

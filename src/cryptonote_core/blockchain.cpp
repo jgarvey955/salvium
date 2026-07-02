@@ -1755,50 +1755,51 @@ bool Blockchain::validate_protocol_transaction(const block& b, uint64_t height, 
 
   // Can we have matured STAKE transactions yet?
   uint64_t stake_lock_period = get_config(m_nettype).STAKE_LOCK_PERIOD;
-  if (height <= stake_lock_period) {
-    if (b.protocol_tx.vout.size() != 0) { MERROR("protocol transaction in the block has outputs"); return false; }
-    return true;
-  }
 
-  // Get the staking data for the block that matured this time
-  cryptonote::yield_block_info ybi_matured;
+  // Collect matured yield payouts only once the stake lock period has elapsed.
+  // Prior to that, protocol outputs may still be present for other protocol events (e.g. CREATE_TOKEN).
   std::vector<std::pair<yield_tx_info, uint64_t>> yield_payouts;
   std::vector<std::pair<yield_tx_info_carrot, uint64_t>> carrot_yield_payouts;
-  uint64_t matured_height = height - stake_lock_period - 1;
-  bool ok = get_ybi_entry(matured_height, ybi_matured);
-  if (!ok) {
-    LOG_ERROR("Block at height: " << height << " - Failed to obtain yield block information - aborting");
-    return false;
-  } else if (ybi_matured.locked_coins_this_block == 0) {
-    LOG_PRINT_L1("Block at height: " << height << " - no yield payouts due - skipping");
-  } else {
-    // Iterate over the cached data for block yield, calculating the yield payouts due
-    if (get_ideal_hard_fork_version(matured_height) >= HF_VERSION_CARROT) {
-      if (!calculate_yield_payouts(matured_height, carrot_yield_payouts)) {
-        LOG_ERROR("Block at height: " << height << " - Failed to obtain carrot yield payout information - aborting");
-        return false;
-      }
-
-      // Get the YIELD TX information for matured pre-carrot staked coins - should not be any
-      std::vector<cryptonote::yield_tx_info> yield_entries;
-      m_db->get_yield_tx_info(matured_height, yield_entries);
-      if (yield_entries.size() != 0) {
-        LOG_ERROR("Block at height: " << height << " - Both carrot and pre-carrot yield payout information found - aborting");
-        return false;
-      }
-
+  if (height > stake_lock_period)
+  {
+    // Get the staking data for the block that matured this time
+    cryptonote::yield_block_info ybi_matured;
+    uint64_t matured_height = height - stake_lock_period - 1;
+    bool ok = get_ybi_entry(matured_height, ybi_matured);
+    if (!ok) {
+      LOG_ERROR("Block at height: " << height << " - Failed to obtain yield block information - aborting");
+      return false;
+    } else if (ybi_matured.locked_coins_this_block == 0) {
+      LOG_PRINT_L1("Block at height: " << height << " - no yield payouts due - skipping");
     } else {
-      if (!calculate_yield_payouts(matured_height, yield_payouts)) {
-        LOG_ERROR("Block at height: " << height << " - Failed to obtain yield payout information - aborting");
-        return false;
-      }
+      // Iterate over the cached data for block yield, calculating the yield payouts due
+      if (get_ideal_hard_fork_version(matured_height) >= HF_VERSION_CARROT) {
+        if (!calculate_yield_payouts(matured_height, carrot_yield_payouts)) {
+          LOG_ERROR("Block at height: " << height << " - Failed to obtain carrot yield payout information - aborting");
+          return false;
+        }
 
-      // Get the YIELD TX information for matured carrot staked coins - should not be any
-      std::vector<cryptonote::yield_tx_info_carrot> yield_entries;
-      m_db->get_carrot_yield_tx_info(matured_height, yield_entries);
-      if (yield_entries.size() != 0) {
-        LOG_ERROR("Block at height: " << height << " - Both carrot and pre-carrot yield payout information found - aborting");
-        return false;
+        // Get the YIELD TX information for matured pre-carrot staked coins - should not be any
+        std::vector<cryptonote::yield_tx_info> yield_entries;
+        m_db->get_yield_tx_info(matured_height, yield_entries);
+        if (yield_entries.size() != 0) {
+          LOG_ERROR("Block at height: " << height << " - Both carrot and pre-carrot yield payout information found - aborting");
+          return false;
+        }
+
+      } else {
+        if (!calculate_yield_payouts(matured_height, yield_payouts)) {
+          LOG_ERROR("Block at height: " << height << " - Failed to obtain yield payout information - aborting");
+          return false;
+        }
+
+        // Get the YIELD TX information for matured carrot staked coins - should not be any
+        std::vector<cryptonote::yield_tx_info_carrot> yield_entries;
+        m_db->get_carrot_yield_tx_info(matured_height, yield_entries);
+        if (yield_entries.size() != 0) {
+          LOG_ERROR("Block at height: " << height << " - Both carrot and pre-carrot yield payout information found - aborting");
+          return false;
+        }
       }
     }
   }
@@ -1817,7 +1818,7 @@ bool Blockchain::validate_protocol_transaction(const block& b, uint64_t height, 
       // Found a matching audit
       // Maturing height was during an audit - process accordingly
       cryptonote::audit_block_info abi_matured;
-      ok = get_abi_entry(matured_audit_height, abi_matured);
+      bool ok = get_abi_entry(matured_audit_height, abi_matured);
       if (!ok) {
         LOG_PRINT_L1("Block at height: " << height << " - failed to obtain audit block information - aborting");
         return false;

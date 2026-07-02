@@ -194,6 +194,97 @@ namespace
         entry.suggested_confirmations_threshold = std::max(entry.suggested_confirmations_threshold, (unlock_time - now + DIFFICULTY_TARGET_V2 - 1) / DIFFICULTY_TARGET_V2);
     }
   }
+
+  std::string normalize_asset_type(std::string asset_type)
+  {
+    boost::algorithm::trim(asset_type);
+    if (asset_type.empty())
+      return asset_type;
+
+    if (asset_type.size() <= 4)
+    {
+      boost::algorithm::to_upper(asset_type);
+      return asset_type;
+    }
+
+    const std::string prefix = boost::algorithm::to_lower_copy(asset_type.substr(0, 3));
+    const std::string suffix = boost::algorithm::to_upper_copy(asset_type.substr(3));
+    if (prefix == "sal" || prefix == "erc")
+      return prefix + suffix;
+
+    boost::algorithm::to_upper(asset_type);
+    return asset_type;
+  }
+
+  std::string canonicalize_transfer_asset_type(const std::string &asset_type)
+  {
+    std::string normalized = normalize_asset_type(asset_type);
+    if (normalized.size() != 4)
+      return normalized;
+
+    // Keep native base assets unchanged.
+    if (normalized == "SAL1" || normalized == "SAL2" || normalized == "BURN" || normalized.substr(0, 3) == "SAL")
+      return normalized;
+
+    // Custom 4-char tickers are represented on-chain as salXXXX.
+    return std::string("sal") + normalized;
+  }
+
+  bool wallet_has_asset_index_for_spend(const tools::wallet2 *wallet, const std::string &asset_type)
+  {
+    const std::vector<std::string> assets_in_wallet = wallet->list_asset_types();
+    if (std::find(assets_in_wallet.begin(), assets_in_wallet.end(), asset_type) != assets_in_wallet.end())
+      return true;
+
+    // Legacy compatibility for historical SAL indexing.
+    if (asset_type == "SAL1" && std::find(assets_in_wallet.begin(), assets_in_wallet.end(), "SAL") != assets_in_wallet.end())
+      return true;
+
+    return false;
+  }
+
+  bool resolve_transfer_assets(const std::list<tools::wallet_rpc::transfer_destination> &destinations,
+                               const std::string &requested_source_asset,
+                               const std::string &requested_dest_asset,
+                               std::string &source_asset,
+                               std::string &dest_asset)
+  {
+    source_asset = canonicalize_transfer_asset_type(requested_source_asset);
+    dest_asset = canonicalize_transfer_asset_type(requested_dest_asset);
+
+    if (source_asset.empty() || dest_asset.empty())
+    {
+      for (const auto &destination : destinations)
+      {
+        const std::string destination_asset = canonicalize_transfer_asset_type(destination.asset_type);
+        if (destination_asset.empty())
+          continue;
+
+        if (dest_asset.empty())
+          dest_asset = destination_asset;
+        if (source_asset.empty())
+          source_asset = destination_asset;
+        if (!source_asset.empty() && !dest_asset.empty())
+          break;
+      }
+    }
+
+    if (source_asset.empty() && dest_asset.empty())
+    {
+      source_asset = "SAL1";
+      dest_asset = "SAL1";
+    }
+    else if (source_asset.empty())
+    {
+      source_asset = dest_asset;
+    }
+    else if (dest_asset.empty())
+    {
+      dest_asset = source_asset;
+    }
+
+    return !source_asset.empty() && !dest_asset.empty();
+  }
 }
 
 namespace tools
@@ -569,21 +660,9 @@ namespace tools
     bool is_carrot = m_wallet->estimate_current_hard_fork() >= HF_VERSION_CARROT;
     
     std::vector<std::string> assets_in_wallet = m_wallet->list_asset_types();
-    std::string asset_type = req.asset_type.empty() ? "SAL1" : req.asset_type;
-    if (asset_type.length() > 4) {
-      // Assume it is a token and format accordingly
-      if (boost::algorithm::to_lower_copy(asset_type.substr(0, 3)) == "sal") {
-        asset_type = "sal" + boost::algorithm::to_upper_copy(asset_type.substr(3));
-      } else if (boost::algorithm::to_lower_copy(asset_type.substr(0, 3)) == "erc") {
-        asset_type = "erc" + boost::algorithm::to_upper_copy(asset_type.substr(3));
-      } else {
-        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
-        er.message = std::string("Invalid token asset_type '") + asset_type + "' specified"; 
-        return false;
-      }
-    }
+    std::string asset_type = canonicalize_transfer_asset_type(req.asset_type.empty() ? "SAL1" : req.asset_type);
     // verify that the asset is in the list of in-wallet assets
-    if (std::find(assets_in_wallet.begin(), assets_in_wallet.end(), asset_type) == assets_in_wallet.end()) {
+    if (!wallet_has_asset_index_for_spend(m_wallet, asset_type)) {
       er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
       er.message = std::string("Source asset '") + asset_type + "' not found in wallet"; 
       return false;
@@ -614,8 +693,8 @@ namespace tools
           balance_per_subaddress_per_account[req.account_index] = m_wallet->balance_per_subaddress(req.account_index, asset, req.strict);
           unlocked_balance_per_subaddress_per_account[req.account_index] = m_wallet->unlocked_balance_per_subaddress(req.account_index, asset, req.strict);
         }
-        //SRCG: need to work this out
-        //tools::wallet2::transfers_iterator_container transfers = m_wallet->get_specific_transfers(asset);
+        tools::wallet2::transfer_container transfers;
+        m_wallet->get_transfers(transfers, asset);
         for (const auto& p : balance_per_subaddress_per_account)
         {
           uint32_t account_index = p.first;
@@ -643,8 +722,9 @@ namespace tools
             info.blocks_to_unlock = unlocked_balance_per_subaddress[i].second.first;
             info.time_to_unlock = unlocked_balance_per_subaddress[i].second.second;
             info.label = m_wallet->get_subaddress_label(index);
-            // SRCG: need to work this out
-            //info.num_unspent_outputs = std::count_if(transfers.begin(), transfers.end(), [&](const auto& td) { return !td->m_spent && td->m_subaddr_index == index; });
+            info.num_unspent_outputs = std::count_if(transfers.begin(), transfers.end(), [&](const auto& td) {
+              return !td.m_spent && !td.m_frozen && td.m_subaddr_index == index;
+            });
             balance_info.per_subaddress.emplace_back(std::move(info));
           }
         }
@@ -1061,7 +1141,20 @@ namespace tools
       de.is_subaddress = info.is_subaddress;
       de.amount = it->amount;
       de.is_integrated = info.has_payment_id;
-      de.asset_type = it->asset_type;
+      const std::string canonical_destination_asset = canonicalize_transfer_asset_type(it->asset_type);
+      if (!canonical_destination_asset.empty() && !dest_asset.empty() && canonical_destination_asset != dest_asset)
+      {
+        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+        er.message = "destination asset_type conflicts with requested dest_asset";
+        return false;
+      }
+      de.asset_type = canonical_destination_asset.empty() ? dest_asset : canonical_destination_asset;
+      if (de.asset_type.empty())
+      {
+        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+        er.message = "destination asset_type is empty";
+        return false;
+      }
       dsts.push_back(de);
 
       if (info.has_payment_id)
@@ -1235,7 +1328,7 @@ namespace tools
 
     CHECK_MULTISIG_ENABLED();
 
-    std::string asset_type = req.asset_type.empty() ? "SAL" : req.asset_type;
+    std::string asset_type = canonicalize_transfer_asset_type(req.asset_type.empty() ? "SAL1" : req.asset_type);
     
     // validate the transfer requested and populate dsts & extra
     std::list<wallet_rpc::transfer_destination> destinations;
@@ -1588,9 +1681,18 @@ namespace tools
 
     // Cast the TX type into the correct var
     const cryptonote::transaction_type type = static_cast<cryptonote::transaction_type>(req.tx_type);
+
+    std::string source_asset;
+    std::string dest_asset;
+    if (!resolve_transfer_assets(req.destinations, req.source_asset, req.dest_asset, source_asset, dest_asset))
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Failed to resolve source/destination asset types";
+      return false;
+    }
     
     // validate the transfer requested and populate dsts & extra
-    if (!validate_transfer(req.destinations, req.source_asset, req.dest_asset, type, req.payment_id, dsts, extra, true, er))
+    if (!validate_transfer(req.destinations, source_asset, dest_asset, type, req.payment_id, dsts, extra, true, er))
     {
       return false;
     }
@@ -1599,7 +1701,7 @@ namespace tools
     {
       uint64_t mixin = m_wallet->adjust_mixin(req.ring_size ? req.ring_size - 1 : 0);
       uint32_t priority = m_wallet->adjust_priority(req.priority);
-      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_2(dsts, req.source_asset, req.dest_asset, type, mixin, req.unlock_time, priority, extra, req.account_index, req.subaddr_indices, req.subtract_fee_from_outputs);
+      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_2(dsts, source_asset, dest_asset, type, mixin, req.unlock_time, priority, extra, req.account_index, req.subaddr_indices, req.subtract_fee_from_outputs);
 
       if (ptx_vector.empty())
       {
@@ -1645,9 +1747,18 @@ namespace tools
 
     // Cast the TX type into the correct var
     const cryptonote::transaction_type type = static_cast<cryptonote::transaction_type>(req.tx_type);
+
+    std::string source_asset;
+    std::string dest_asset;
+    if (!resolve_transfer_assets(req.destinations, req.source_asset, req.dest_asset, source_asset, dest_asset))
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Failed to resolve source/destination asset types";
+      return false;
+    }
     
     // validate the transfer requested and populate dsts & extra
-    if (!validate_transfer(req.destinations, req.source_asset, req.dest_asset, type, req.payment_id, dsts, extra, true, er))
+    if (!validate_transfer(req.destinations, source_asset, dest_asset, type, req.payment_id, dsts, extra, true, er))
     {
       return false;
     }
@@ -1657,7 +1768,7 @@ namespace tools
       uint64_t mixin = m_wallet->adjust_mixin(req.ring_size ? req.ring_size - 1 : 0);
       uint32_t priority = m_wallet->adjust_priority(req.priority);
       LOG_PRINT_L2("on_transfer_split calling create_transactions_2");
-      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_2(dsts, req.source_asset, req.dest_asset, type, mixin, req.unlock_time, priority, extra, req.account_index, req.subaddr_indices);
+      std::vector<wallet2::pending_tx> ptx_vector = m_wallet->create_transactions_2(dsts, source_asset, dest_asset, type, mixin, req.unlock_time, priority, extra, req.account_index, req.subaddr_indices);
       LOG_PRINT_L2("on_transfer_split called create_transactions_2");
 
       if (ptx_vector.empty())
@@ -2093,7 +2204,13 @@ namespace tools
 
     CHECK_MULTISIG_ENABLED();
 
-    std::string asset_type = req.asset_type.empty() ? "SAL1" : req.asset_type;
+    std::string asset_type = canonicalize_transfer_asset_type(req.asset_type.empty() ? "SAL1" : req.asset_type);
+    if (!wallet_has_asset_index_for_spend(m_wallet, asset_type))
+    {
+      er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE;
+      er.message = std::string("No unspent outputs available for asset '") + asset_type + "'";
+      return false;
+    }
     
     // validate the transfer requested and populate dsts & extra
     std::list<wallet_rpc::transfer_destination> destinations;
@@ -2165,7 +2282,13 @@ namespace tools
 
     CHECK_MULTISIG_ENABLED();
 
-    std::string asset_type = req.asset_type.empty() ? "SAL1" : req.asset_type;
+    std::string asset_type = canonicalize_transfer_asset_type(req.asset_type.empty() ? "SAL1" : req.asset_type);
+    if (!wallet_has_asset_index_for_spend(m_wallet, asset_type))
+    {
+      er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE;
+      er.message = std::string("No unspent outputs available for asset '") + asset_type + "'";
+      return false;
+    }
     
     // validate the transfer requested and populate dsts & extra
     std::list<wallet_rpc::transfer_destination> destinations;
@@ -5268,8 +5391,17 @@ namespace tools
     // check
     if (!m_wallet) return not_open(er);
 
+    const std::string asset_type = canonicalize_transfer_asset_type(req.asset_type);
+    if (asset_type.empty())
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "asset_type is empty";
+      return false;
+    }
+
     try {
-      cryptonote::token_metadata_t token = m_wallet->get_token_info(req.asset_type);
+      cryptonote::token_metadata_t token = m_wallet->get_token_info(asset_type);
+
       res.status = CORE_RPC_STATUS_OK;
       res.version = token.version;
       res.asset_type = token.asset_type;
@@ -5281,6 +5413,13 @@ namespace tools
         res.erc_token = boost::get<cryptonote::erc_token_t>(token.token);
       }
     } catch (const std::exception& e) {
+      std::vector<std::string> tokens;
+      if (m_wallet->get_tokens(asset_type, tokens) && tokens.empty())
+      {
+        res.status = "Token not found";
+        res.asset_type = asset_type;
+        return true;
+      }
       er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
       er.message = "Failed to query daemon for token info";
       return false;

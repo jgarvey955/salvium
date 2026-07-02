@@ -2273,11 +2273,26 @@ cryptonote::token_metadata_t wallet2::get_token_info(const std::string& asset_ty
   cryptonote::COMMAND_RPC_GET_TOKEN_INFO::request req = AUTO_VAL_INIT(req);
   cryptonote::COMMAND_RPC_GET_TOKEN_INFO::response res = AUTO_VAL_INIT(res);
   req.asset_type = asset_type;
-  m_daemon_rpc_mutex.lock();
-  bool r = invoke_http_json_rpc("/json_rpc", "get_token_info", req, res, rpc_timeout);
-  m_daemon_rpc_mutex.unlock();
+
+  static constexpr size_t max_attempts = 3;
+  bool r = false;
+  for (size_t attempt = 0; attempt < max_attempts; ++attempt)
+  {
+    m_daemon_rpc_mutex.lock();
+    r = invoke_http_json_rpc("/json_rpc", "get_token_info", req, res, rpc_timeout);
+    m_daemon_rpc_mutex.unlock();
+
+    if (!r)
+      continue;
+    if (res.status == CORE_RPC_STATUS_OK)
+      return res.token;
+    if (res.status != CORE_RPC_STATUS_BUSY)
+      break;
+  }
+
   THROW_WALLET_EXCEPTION_IF(!r, error::wallet_internal_error, "Failed to connect to daemon");
-  THROW_WALLET_EXCEPTION_IF(res.status != CORE_RPC_STATUS_OK, error::wallet_internal_error, res.status);
+  THROW_WALLET_EXCEPTION_IF(res.status == CORE_RPC_STATUS_BUSY, error::daemon_busy, "get_token_info");
+  THROW_WALLET_EXCEPTION_IF(res.status != CORE_RPC_STATUS_OK, error::wallet_generic_rpc_error, "get_token_info", m_trusted_daemon ? res.status : "daemon error");
   return res.token;
 }
 //----------------------------------------------------------------------------------------------------
@@ -7576,18 +7591,110 @@ void wallet2::get_transfers(wallet2::transfer_container& incoming_transfers, con
   if (asset_type == "") {
     incoming_transfers = m_transfers;
   } else {
-    CHECK_AND_ASSERT_THROW_MES(m_transfers_indices.count(asset_type) == 1, "invalid asset_type specified to get_transfers");
     incoming_transfers.clear();
-    incoming_transfers.reserve(m_transfers_indices.at(asset_type).size());
-    for (size_t i: m_transfers_indices.at(asset_type))
-      incoming_transfers.push_back(m_transfers[i]);
+
+    auto canonical_lookup_key = [](const std::string &input)
+    {
+      std::string key = input;
+      boost::algorithm::trim(key);
+      if (key.empty())
+        return key;
+
+      if (key.size() <= 4)
+      {
+        boost::algorithm::to_upper(key);
+        return key;
+      }
+
+      const std::string prefix = boost::algorithm::to_lower_copy(key.substr(0, 3));
+      const std::string suffix = boost::algorithm::to_upper_copy(key.substr(3));
+      if (prefix == "sal" || prefix == "erc")
+        return prefix + suffix;
+
+      boost::algorithm::to_upper(key);
+      return key;
+    };
+
+    const std::string normalized_asset = canonical_lookup_key(asset_type);
+
+    auto append_asset = [this, &incoming_transfers](const std::string &key)
+    {
+      if (m_transfers_indices.count(key) == 0)
+        return false;
+      incoming_transfers.reserve(incoming_transfers.size() + m_transfers_indices.at(key).size());
+      for (size_t i: m_transfers_indices.at(key))
+        incoming_transfers.push_back(m_transfers[i]);
+      return true;
+    };
+
+    if (append_asset(normalized_asset))
+      return;
+
+    // Custom 4-char tickers are indexed as salXXXX in wallet transfer maps.
+    if (normalized_asset.size() == 4 && normalized_asset != "SAL1" && normalized_asset != "SAL2" && normalized_asset != "BURN")
+    {
+      if (append_asset(std::string("sal") + normalized_asset))
+        return;
+    }
+
+    // Legacy compatibility: some historical base outputs may still be indexed under SAL.
+    // Only fall back when SAL1 has no index, so SAL1 and SAL are not silently mixed.
+    if (normalized_asset == "SAL1" && m_transfers_indices.count("SAL1") == 0 && append_asset("SAL"))
+      return;
+
+    CHECK_AND_ASSERT_THROW_MES(false, "invalid asset_type specified to get_transfers");
   }
 }
 //----------------------------------------------------------------------------------------------------
 void wallet2::get_transfers_indices(std::set<size_t>& indices, const std::string& asset_type) const
 {
-  CHECK_AND_ASSERT_THROW_MES(m_transfers_indices.count(asset_type) == 1, "invalid asset_type specified to get_transfers_indices");
-  indices = m_transfers_indices.at(asset_type);
+  auto canonical_lookup_key = [](const std::string &input)
+  {
+    std::string key = input;
+    boost::algorithm::trim(key);
+    if (key.empty())
+      return key;
+
+    if (key.size() <= 4)
+    {
+      boost::algorithm::to_upper(key);
+      return key;
+    }
+
+    const std::string prefix = boost::algorithm::to_lower_copy(key.substr(0, 3));
+    const std::string suffix = boost::algorithm::to_upper_copy(key.substr(3));
+    if (prefix == "sal" || prefix == "erc")
+      return prefix + suffix;
+
+    boost::algorithm::to_upper(key);
+    return key;
+  };
+
+  const std::string normalized_asset = canonical_lookup_key(asset_type);
+
+  if (m_transfers_indices.count(normalized_asset) == 1)
+  {
+    indices = m_transfers_indices.at(normalized_asset);
+    return;
+  }
+
+  if (normalized_asset.size() == 4 && normalized_asset != "SAL1" && normalized_asset != "SAL2" && normalized_asset != "BURN")
+  {
+    const std::string canonical_token_asset = std::string("sal") + normalized_asset;
+    if (m_transfers_indices.count(canonical_token_asset) == 1)
+    {
+      indices = m_transfers_indices.at(canonical_token_asset);
+      return;
+    }
+  }
+
+  if (normalized_asset == "SAL1" && m_transfers_indices.count("SAL1") == 0 && m_transfers_indices.count("SAL") == 1)
+  {
+    indices = m_transfers_indices.at("SAL");
+    return;
+  }
+
+  CHECK_AND_ASSERT_THROW_MES(false, "invalid asset_type specified to get_transfers_indices");
 }
 //----------------------------------------------------------------------------------------------------
 void wallet2::get_payments(const crypto::hash& payment_id, std::list<wallet2::payment_details>& payments, uint64_t min_height, const boost::optional<uint32_t>& subaddr_account, const std::set<uint32_t>& subaddr_indices) const
