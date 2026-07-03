@@ -80,8 +80,8 @@ if(ARCH_ID STREQUAL "riscv64")
     check_cxx_source_compiles("
       #include <riscv_vector.h>
       int main() {
-        vuint32m1_t a;
-        vuint32m1_t b;
+        vuint32m1_t a = __riscv_vmv_v_x_u32m1(0, 8);
+        vuint32m1_t b = __riscv_vmv_v_x_u32m1(0, 8);
         (void)__riscv_vaesem_vv_u32m1(a, b, 8);
         return 0;
       }
