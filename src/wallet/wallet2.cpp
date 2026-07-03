@@ -2218,9 +2218,6 @@ bool wallet2::get_pricing_record(oracle::pricing_record& pr, const uint64_t heig
     MERROR("Failed to request block header from daemon");
     return false;
   }
-
-  assert(false);
-  return true;
 }
 //----------------------------------------------------------------------------------------------------
 bool wallet2::get_circulating_supply(std::vector<std::pair<std::string, std::string>> &amounts)
@@ -3878,6 +3875,22 @@ void wallet2::remove_obsolete_pool_txs(const std::vector<crypto::hash> &tx_hashe
 // yet or because it is "interesting" out of special circumstances
 bool wallet2::accept_pool_tx_for_processing(const crypto::hash &txid)
 {
+  static constexpr size_t SCANNED_POOL_TXS_LIMIT = 10000;
+  if (!m_scanned_pool_txs[1].empty())
+  {
+    m_scanned_pool_txs[0].insert(m_scanned_pool_txs[1].begin(), m_scanned_pool_txs[1].end());
+    m_scanned_pool_txs[1].clear();
+  }
+  if (m_scanned_pool_txs_order.empty() && !m_scanned_pool_txs[0].empty())
+  {
+    m_scanned_pool_txs_order.insert(m_scanned_pool_txs_order.end(), m_scanned_pool_txs[0].begin(), m_scanned_pool_txs[0].end());
+    while (m_scanned_pool_txs_order.size() > SCANNED_POOL_TXS_LIMIT)
+    {
+      m_scanned_pool_txs[0].erase(m_scanned_pool_txs_order.front());
+      m_scanned_pool_txs_order.pop_front();
+    }
+  }
+
   bool txid_found_in_up = false;
   for (const auto &up: m_unconfirmed_payments)
   {
@@ -3887,7 +3900,7 @@ bool wallet2::accept_pool_tx_for_processing(const crypto::hash &txid)
       break;
     }
   }
-  if (m_scanned_pool_txs[0].find(txid) != m_scanned_pool_txs[0].end() || m_scanned_pool_txs[1].find(txid) != m_scanned_pool_txs[1].end())
+  if (m_scanned_pool_txs[0].find(txid) != m_scanned_pool_txs[0].end())
   {
     // if it's for us, we want to keep track of whether we saw a double spend, so don't bail out
     if (!txid_found_in_up)
@@ -4201,6 +4214,17 @@ void wallet2::update_pool_state_from_pool_data(bool incremental, const std::vect
 void wallet2::process_pool_state(const std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &txs)
 {
   MTRACE("process_pool_state start");
+  static constexpr size_t SCANNED_POOL_TXS_LIMIT = 10000;
+  if (!m_scanned_pool_txs[1].empty())
+  {
+    m_scanned_pool_txs[0].insert(m_scanned_pool_txs[1].begin(), m_scanned_pool_txs[1].end());
+    m_scanned_pool_txs[1].clear();
+  }
+  if (m_scanned_pool_txs_order.empty() && !m_scanned_pool_txs[0].empty())
+  {
+    m_scanned_pool_txs_order.insert(m_scanned_pool_txs_order.end(), m_scanned_pool_txs[0].begin(), m_scanned_pool_txs[0].end());
+  }
+
   const time_t now = time(NULL);
   for (const auto &e: txs)
   {
@@ -4208,11 +4232,14 @@ void wallet2::process_pool_state(const std::vector<std::tuple<cryptonote::transa
     const crypto::hash &tx_hash = std::get<1>(e);
     const bool double_spend_seen = std::get<2>(e);
     process_new_transaction(tx_hash, tx, std::vector<uint64_t>(), std::vector<uint64_t>(), 0, 0, now, false, true, double_spend_seen);
-    m_scanned_pool_txs[0].insert(tx_hash);
-    if (m_scanned_pool_txs[0].size() > 5000)
+    if (m_scanned_pool_txs[0].insert(tx_hash).second)
     {
-      std::swap(m_scanned_pool_txs[0], m_scanned_pool_txs[1]);
-      m_scanned_pool_txs[0].clear();
+      m_scanned_pool_txs_order.push_back(tx_hash);
+    }
+    while (m_scanned_pool_txs_order.size() > SCANNED_POOL_TXS_LIMIT)
+    {
+      m_scanned_pool_txs[0].erase(m_scanned_pool_txs_order.front());
+      m_scanned_pool_txs_order.pop_front();
     }
   }
   MTRACE("process_pool_state end");
@@ -4760,6 +4787,7 @@ bool wallet2::clear()
   m_unconfirmed_payments.clear();
   m_scanned_pool_txs[0].clear();
   m_scanned_pool_txs[1].clear();
+  m_scanned_pool_txs_order.clear();
   m_address_book.clear();
   m_subaddresses.clear();
   m_subaddress_labels.clear();
@@ -4789,6 +4817,7 @@ void wallet2::clear_soft(bool keep_key_images)
   m_unconfirmed_payments.clear();
   m_scanned_pool_txs[0].clear();
   m_scanned_pool_txs[1].clear();
+  m_scanned_pool_txs_order.clear();
   m_pool_info_query_time = 0;
   m_skip_to_height = 0;
   m_background_sync_data = background_sync_data_t{};
@@ -8118,6 +8147,14 @@ void wallet2::commit_tx(pending_tx& ptx)
       uint64_t pre_call_credits = m_rpc_payment_state.credits;
       req.client = get_client_signature();
       bool r = epee::net_utils::invoke_http_json("/sendrawtransaction", req, daemon_send_resp, *m_http_client, rpc_timeout);
+      if (!r || daemon_send_resp.status != CORE_RPC_STATUS_OK)
+      {
+        MERROR("sendrawtransaction rejected: status='" << daemon_send_resp.status
+          << "' reason='" << daemon_send_resp.reason
+          << "' invalid_input=" << daemon_send_resp.invalid_input
+          << " double_spend=" << daemon_send_resp.double_spend
+          << " fee_too_low=" << daemon_send_resp.fee_too_low);
+      }
       THROW_ON_RPC_RESPONSE_ERROR(r, {}, daemon_send_resp, "sendrawtransaction", error::tx_rejected, ptx.tx, get_rpc_status(daemon_send_resp.status), get_text_reason(daemon_send_resp));
       check_rpc_cost("/sendrawtransaction", daemon_send_resp.credits, pre_call_credits, COST_PER_TX_RELAY);
     }
@@ -8496,9 +8533,8 @@ bool wallet2::sign_tx(unsigned_tx_set &exported_txs, std::vector<wallet2::pendin
       if (!get_output_public_key(tx.vout[i], output_public_key))
         continue;
 
-      // SRCG: Calculate the correct uniqueness value here
-      assert(false);
-      cryptonote::origin_data origin_tx_data;
+      // Keep use_origin_data=false until uniqueness/origin data is implemented for this path.
+      cryptonote::origin_data origin_tx_data{};
       rct::salvium_input_data_t sid;
 
       // if this output is back to this wallet, we can calculate its key image already
@@ -9699,14 +9735,14 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
       THROW_WALLET_EXCEPTION_IF(transfers[idx].asset_type != rct_asset_type, error::wallet_internal_error, "selected_transfer entry has wrong asset_type");
       if (transfers[idx].is_rct())
       {
-        // use_global_outs should either always be true or false, because the single rct distribution requested in get_rct_distribution below 
-        // will either be the distribution of all global outputs, or the distribution of outputs by asset type. This check makes
-        // sure the use_global_outs boolean will not be flipped when set in the next line.
-        //THROW_WALLET_EXCEPTION_IF(has_rct && ((use_global_outs && transfers[idx].m_asset_type_output_index_known) || (!use_global_outs && !transfers[idx].m_asset_type_output_index_known)),
-        //  error::wallet_internal_error, "Mismatch of global outputs and asset type outputs");
+        // Prefer asset-type output indices when they are known.
+        // Older wallet entries may not have asset-type indices persisted; those must use global indices.
+        const bool td_use_global_outs = transfers[idx].m_asset_type_output_index == std::numeric_limits<uint64_t>::max();
+        THROW_WALLET_EXCEPTION_IF(has_rct && use_global_outs != td_use_global_outs,
+          error::wallet_internal_error, "Mismatch of global outputs and asset type outputs");
 
         has_rct = true;
-        //use_global_outs = !transfers[idx].m_asset_type_output_index_known;
+        use_global_outs = td_use_global_outs;
         max_rct_index = std::max(max_rct_index, use_global_outs ? transfers[idx].m_global_output_index : transfers[idx].m_asset_type_output_index);
       }
     }
@@ -10004,7 +10040,7 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
               add_output_to_lists({amount, out, false});
               ++num_found;
               seen_indices.emplace(out);
-              if (out == td.m_asset_type_output_index)
+              if (out == (use_global_outs ? td.m_global_output_index : td.m_asset_type_output_index))
               {
                 MINFO("This is the real output");
                 own_found = true;
@@ -10291,11 +10327,8 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
           "Daemon response did not include the requested real output");
 
       // pick real out first (it will be sorted when done)
-      // HERE BE DRAGONS!!!
-      // SRCG: DO NOT COMMIT THIS CHANGE UNTIL VERIFIED AS WORKING
-      //outs.back().push_back(std::make_tuple(td.m_global_output_index, td.get_public_key(), mask));
-      outs.back().push_back(std::make_tuple(td.m_asset_type_output_index, td.get_public_key(), mask));
-      // LAND AHOY!!!
+      const uint64_t td_real_index = use_global_outs ? td.m_global_output_index : td.m_asset_type_output_index;
+      outs.back().push_back(std::make_tuple(td_real_index, td.get_public_key(), mask));
 
       // then pick outs from an existing ring, if any
       if (use_global_outs && td.m_key_image_known && !td.m_key_image_partial)
@@ -10462,17 +10495,13 @@ void wallet2::transfer_selected(const std::vector<cryptonote::tx_destination_ent
     //paste real transaction to the random index
     auto it_to_replace = std::find_if(src.outputs.begin(), src.outputs.end(), [&](const tx_output_entry& a)
     {
-      return a.first == td.m_global_output_index;
+      return a.second.dest == rct::pk2rct(td.get_public_key());
     });
     THROW_WALLET_EXCEPTION_IF(it_to_replace == src.outputs.end(), error::wallet_internal_error,
         "real output not found");
 
     tx_output_entry real_oe;
-    // HERE BE DRAGONS!!!
-    // SRCG: ring tweak to indexed per asset_type - DO NOT COMMIT UNTIL IT IS ALL WORKING
-    //real_oe.first = td.m_global_output_index;
-    real_oe.first = td.m_asset_type_output_index;
-    // LAND AHOY!!!
+    real_oe.first = it_to_replace->first;
     real_oe.second.dest = rct::pk2rct(td.get_public_key());
     real_oe.second.mask = rct::commit(td.amount(), td.m_mask);
     *it_to_replace = real_oe;
@@ -10733,21 +10762,13 @@ void wallet2::transfer_selected_rct(std::vector<cryptonote::tx_destination_entry
     //paste real transaction to the random index
     auto it_to_replace = std::find_if(src.outputs.begin(), src.outputs.end(), [&](const tx_output_entry& a)
     {
-      // HERE BE DRAGONS!!!
-      // SRCG: ring tweak to indexed per asset_type - DO NOT COMMIT UNTIL IT IS ALL WORKING
-      //return a.first == td.m_global_output_index;
-      return a.first == td.m_asset_type_output_index;
-      // LAND AHOY!!!
+      return a.second.dest == rct::pk2rct(td.get_public_key());
     });
     THROW_WALLET_EXCEPTION_IF(it_to_replace == src.outputs.end(), error::wallet_internal_error,
         "real output not found");
 
     tx_output_entry real_oe;
-    // HERE BE DRAGONS!!!
-    // SRCG: ring tweak to indexed per asset_type - DO NOT COMMIT UNTIL IT IS ALL WORKING
-    //real_oe.first = td.m_global_output_index;
-    real_oe.first = td.m_asset_type_output_index;
-    // LAND AHOY!!!
+    real_oe.first = it_to_replace->first;
     real_oe.second.dest = rct::pk2rct(td.get_public_key());
     real_oe.second.mask = rct::commit(td.amount(), td.m_mask);
     *it_to_replace = real_oe;
@@ -11285,6 +11306,8 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
       for (auto &tx_proposal : tx_proposals)
       {
         // Add the fee for this proposal to the total
+        THROW_WALLET_EXCEPTION_IF(tx_proposal.fee > std::numeric_limits<uint64_t>::max() - total_fee,
+          error::wallet_internal_error, "Token transfer fee total overflow");
         total_fee += tx_proposal.fee;
         //tx_proposal.fee = 0; // This is not needed - we need to keep the original fee to verify the amounts, right?
 
@@ -11327,7 +11350,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
         layer2_rollup_tx_t tx_rollup;
         tx_rollup.tx_prefix_hash = get_transaction_hash(ptx.tx);
         tx_rollup.tx_fee = ptx.tx.rct_signatures.txnFee;
-        // THROW_WALLET_EXCEPTION_IF(ptx.tx.vin.empty(), error::wallet_internal_error, "TX has no inputs");
+        THROW_WALLET_EXCEPTION_IF(ptx.tx.vin.empty(), error::wallet_internal_error, "TX has no inputs");
         THROW_WALLET_EXCEPTION_IF(ptx.tx.vin[0].type() != typeid(cryptonote::txin_to_key), error::wallet_internal_error, "TX input is not txin_to_key");
         tx_rollup.first_key_image = boost::get<cryptonote::txin_to_key>(ptx.tx.vin[0]).k_image;
         rollup_data.txs.push_back(std::move(tx_rollup));
@@ -11337,7 +11360,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
       tx_proposals_rollup[0].layer2_rollup_data = rollup_data;
       
       for (const auto &tx_proposal_rollup : tx_proposals_rollup)
-        ptx_vector.insert(ptx_vector.begin(), tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
+        ptx_vector.push_back(tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
     }
 
     return ptx_vector;
@@ -12191,6 +12214,8 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_all(uint64_t below
       for (auto &tx_proposal : tx_proposals)
       {
         // Add the fee for this proposal to the total
+        THROW_WALLET_EXCEPTION_IF(tx_proposal.fee > std::numeric_limits<uint64_t>::max() - total_fee,
+          error::wallet_internal_error, "Token sweep fee total overflow");
         total_fee += tx_proposal.fee;
         //tx_proposal.fee = 0; // This is not needed - we need to keep the original fee to verify the amounts, right?
 
@@ -12233,6 +12258,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_all(uint64_t below
         layer2_rollup_tx_t tx_rollup;
         tx_rollup.tx_prefix_hash = get_transaction_hash(ptx.tx);
         tx_rollup.tx_fee = ptx.tx.rct_signatures.txnFee;
+        THROW_WALLET_EXCEPTION_IF(ptx.tx.vin.empty(), error::wallet_internal_error, "TX has no inputs");
         THROW_WALLET_EXCEPTION_IF(ptx.tx.vin[0].type() != typeid(cryptonote::txin_to_key), error::wallet_internal_error, "TX input is not txin_to_key");
         tx_rollup.first_key_image = boost::get<cryptonote::txin_to_key>(ptx.tx.vin[0]).k_image;
         rollup_data.txs.push_back(std::move(tx_rollup));
@@ -12242,7 +12268,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_all(uint64_t below
       tx_proposals_rollup[0].layer2_rollup_data = rollup_data;
       
       for (const auto &tx_proposal_rollup : tx_proposals_rollup)
-        ptx_vector.insert(ptx_vector.begin(), tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
+        ptx_vector.push_back(tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
     }
 
     return ptx_vector;
@@ -12433,6 +12459,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_return(std::vector
 
     // 3. input context
     carrot::input_context_t input_context = carrot::gen_input_context();
+    THROW_WALLET_EXCEPTION_IF(td_origin.m_tx.vin.empty(), error::wallet_internal_error, "Origin TX has no inputs");
     if (td_origin.m_tx.vin[0].type() == typeid(cryptonote::txin_to_key)) {
       input_context = carrot::make_carrot_input_context(boost::get<cryptonote::txin_to_key>(td_origin.m_tx.vin[0]).k_image);
     } else if (td_origin.m_tx.vin[0].type() == typeid(cryptonote::txin_gen)) {
@@ -12523,6 +12550,8 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_return(std::vector
       for (auto &tx_proposal : tx_proposals)
       {
         // Add the fee for this proposal to the total
+        THROW_WALLET_EXCEPTION_IF(tx_proposal.fee > std::numeric_limits<uint64_t>::max() - total_fee,
+          error::wallet_internal_error, "Token return fee total overflow");
         total_fee += tx_proposal.fee;
 
         // Store the binding tag
@@ -12565,6 +12594,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_return(std::vector
         layer2_rollup_tx_t tx_rollup;
         tx_rollup.tx_prefix_hash = get_transaction_hash(ptx.tx);
         tx_rollup.tx_fee = ptx.tx.rct_signatures.txnFee;
+        THROW_WALLET_EXCEPTION_IF(ptx.tx.vin.empty(), error::wallet_internal_error, "TX has no inputs");
         THROW_WALLET_EXCEPTION_IF(ptx.tx.vin[0].type() != typeid(cryptonote::txin_to_key), error::wallet_internal_error, "TX input is not txin_to_key");
         tx_rollup.first_key_image = boost::get<cryptonote::txin_to_key>(ptx.tx.vin[0]).k_image;
         rollup_data.txs.push_back(std::move(tx_rollup));
@@ -12574,7 +12604,7 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_return(std::vector
       tx_proposals_rollup[0].layer2_rollup_data = rollup_data;
       
       for (const auto &tx_proposal_rollup : tx_proposals_rollup)
-        ptx_vector.insert(ptx_vector.begin(), tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
+        ptx_vector.push_back(tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
     }
 
     return ptx_vector;
@@ -13460,9 +13490,8 @@ std::string wallet2::get_spend_proof(const crypto::hash &txid, const std::string
       THROW_WALLET_EXCEPTION_IF(true, error::wallet_internal_error, "This tx wasn't generated by this wallet!");
     }
 
-    // SRCG: Calculate the correct uniqueness value here
-    assert(false);
-    cryptonote::origin_data origin_tx_data;
+    // Keep use_origin_data=false until uniqueness/origin data is implemented for this path.
+    cryptonote::origin_data origin_tx_data{};
     rct::salvium_input_data_t sid;
 
     // derive the real output keypair
@@ -13710,7 +13739,11 @@ void wallet2::check_tx_key_helper(const cryptonote::transaction &tx, const crypt
 
   for (const auto &enote_scan_info : enote_scan_infos)
     if (enote_scan_info && enote_scan_info->address_spend_pubkey == address.m_spend_public_key)
-      received += enote_scan_info->amount; //! @TODO: check overflow
+    {
+      THROW_WALLET_EXCEPTION_IF(enote_scan_info->amount > std::numeric_limits<uint64_t>::max() - received,
+        error::wallet_internal_error, "Overflow while summing received amount");
+      received += enote_scan_info->amount;
+    }
 }
 
 void wallet2::check_tx_key_helper(const crypto::hash &txid, const crypto::key_derivation &derivation, const std::vector<crypto::key_derivation> &additional_derivations, const cryptonote::account_public_address &address, uint64_t &received, bool &in_pool, uint64_t &confirmations)
@@ -14389,9 +14422,8 @@ std::string wallet2::get_reserve_proof(const boost::optional<std::pair<uint32_t,
     // generate signature for shared secret
     crypto::generate_tx_proof(prefix_hash, m_account.get_keys().m_account_address.m_view_public_key, *tx_pub_key_used, boost::none, proof.shared_secret, m_account.get_keys().m_view_secret_key, proof.shared_secret_sig);
 
-    // Populate this struct if you want to make use of "get_reserve_proof()" for Salvium!!!
-    assert(false);
-    origin_data od;
+    // Keep use_origin_data=false until origin_data plumbing is implemented for this path.
+    origin_data od{};
     rct::salvium_input_data_t sid;
     
     // derive ephemeral secret key
@@ -15021,9 +15053,8 @@ std::pair<uint64_t, std::vector<std::pair<crypto::key_image, crypto::signature>>
     crypto::public_key tx_pub_key = get_tx_pub_key_from_received_outs(td);
     const std::vector<crypto::public_key> additional_tx_pub_keys = get_additional_tx_pub_keys_from_extra(td.m_tx);
 
-    // Populate this struct if you want to make use of "import_outputs" for Salvium!!!
-    assert(false);
-    origin_data od;
+    // Keep use_origin_data=false until origin_data plumbing is implemented for this path.
+    origin_data od{};
     rct::salvium_input_data_t sid;
     
     // generate ephemeral secret key
@@ -15285,7 +15316,12 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
                                                                            m_account);
       for (const auto &enote_scan_info : enote_scan_infos)
         if (enote_scan_info && enote_scan_info->subaddr_index)
-          tx_money_got_in_outs[enote_scan_info->asset_type] += enote_scan_info->amount; //! @TODO: check overflow
+        {
+          uint64_t &got_in_outs = tx_money_got_in_outs[enote_scan_info->asset_type];
+          THROW_WALLET_EXCEPTION_IF(enote_scan_info->amount > std::numeric_limits<uint64_t>::max() - got_in_outs,
+            error::wallet_internal_error, "Overflow while summing change outputs");
+          tx_money_got_in_outs[enote_scan_info->asset_type] += enote_scan_info->amount;
+        }
 
       // get asset types
       std::string source_asset;
@@ -15316,6 +15352,8 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
                 std::string(", expected ") + print_money(td.amount()));
           }
           amount = td.amount();
+          THROW_WALLET_EXCEPTION_IF(amount > std::numeric_limits<uint64_t>::max() - tx_money_spent_in_ins,
+            error::wallet_internal_error, "Overflow while summing spent inputs");
           tx_money_spent_in_ins += amount;
 
           LOG_PRINT_L0("Spent money: " << print_money(amount) << ", with tx: " << *spent_txid);
@@ -15994,9 +16032,8 @@ process:
     // the hot wallet wouldn't have known about key images (except if we already exported them)
     cryptonote::keypair in_ephemeral;
 
-    // Populate this struct if you want to make use of "import_outputs" for Salvium!!!
-    assert(false);
-    origin_data od;
+    // Keep use_origin_data=false until origin_data plumbing is implemented for this path.
+    origin_data od{};
     rct::salvium_input_data_t sid;
     
     THROW_WALLET_EXCEPTION_IF(td.m_tx.vout.empty(), error::wallet_internal_error, "tx with no outputs at index " + boost::lexical_cast<std::string>(i + offset));
@@ -16104,9 +16141,8 @@ size_t wallet2::import_outputs(const std::tuple<uint64_t, uint64_t, std::vector<
     if (!etd.m_additional_tx_keys.empty())
       add_additional_tx_pub_keys_to_extra(td.m_tx.extra, etd.m_additional_tx_keys);
 
-    // Populate this struct if you want to make use of "import_outputs" for Salvium!!!
-    assert(false);
-    origin_data od;
+    // Keep use_origin_data=false until origin_data plumbing is implemented for this path.
+    origin_data od{};
     rct::salvium_input_data_t sid;
     
     // the hot wallet wouldn't have known about key images (except if we already exported them)

@@ -747,6 +747,10 @@ namespace tools
     try
     {
       THROW_WALLET_EXCEPTION_IF(req.account_index >= m_wallet->get_num_subaddress_accounts(), error::account_index_outofbound);
+      const bool carrot_active = m_wallet->use_fork_rules(HF_VERSION_CARROT);
+      const carrot::AddressDeriveType default_derive_type = carrot_active
+        ? carrot::AddressDeriveType::Carrot
+        : carrot::AddressDeriveType::PreCarrot;
       res.addresses.clear();
       std::vector<uint32_t> req_address_index;
       if (req.address_index.empty())
@@ -766,14 +770,14 @@ namespace tools
         res.addresses.resize(res.addresses.size() + 1);
         auto& info = res.addresses.back();
         const cryptonote::subaddress_index index = {req.account_index, i};
-        info.address = m_wallet->get_subaddress_as_str({req.account_index, i});
+        info.address = m_wallet->get_subaddress_as_str({{req.account_index, i}, default_derive_type});
         info.address_cn = req.cryptonote ? m_wallet->get_subaddress_as_str({{req.account_index, i}, carrot::AddressDeriveType::PreCarrot}) : "";
         info.address_carrot = req.carrot ? m_wallet->get_subaddress_as_str({{req.account_index, i}, carrot::AddressDeriveType::Carrot}) : "";
         info.label = m_wallet->get_subaddress_label(index);
         info.address_index = index.minor;
         info.used = std::find_if(transfers.begin(), transfers.end(), [&](const tools::wallet2::transfer_details& td) { return td.m_subaddr_index == index; }) != transfers.end();
       }
-      res.address = m_wallet->get_subaddress_as_str({req.account_index, 0});
+      res.address = m_wallet->get_subaddress_as_str({{req.account_index, 0}, default_derive_type});
     }
     catch (const std::exception& e)
     {
@@ -1458,11 +1462,12 @@ namespace tools
       return false;
     }
 
-    // Verify supply amount is acceptable
-    if (req.supply < 1 || req.supply > MONEY_SUPPLY)
+    // Keep RPC validation aligned with wallet2::create_token to avoid late internal exceptions.
+    const uint64_t max_token_supply = MONEY_SUPPLY / COIN;
+    if (req.supply < 1 || req.supply > max_token_supply)
     {
       er.code = WALLET_RPC_ERROR_CODE_DENIED;
-      er.message = "Supply amount must be between 1 and MONEY_SUPPLY.";
+      er.message = std::string("Supply amount must be between 1 and ") + std::to_string(max_token_supply) + ".";
       return false;
     }
 
@@ -1679,8 +1684,16 @@ namespace tools
 
     CHECK_MULTISIG_ENABLED();
 
-    // Cast the TX type into the correct var
-    const cryptonote::transaction_type type = static_cast<cryptonote::transaction_type>(req.tx_type);
+    // Default omitted tx_type to TRANSFER for backwards-compatible RPC behavior.
+    cryptonote::transaction_type type = static_cast<cryptonote::transaction_type>(req.tx_type);
+    if (type == cryptonote::transaction_type::UNSET)
+      type = cryptonote::transaction_type::TRANSFER;
+    if (type > cryptonote::transaction_type::MAX)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Invalid tx_type";
+      return false;
+    }
 
     std::string source_asset;
     std::string dest_asset;
@@ -1745,8 +1758,16 @@ namespace tools
 
     CHECK_MULTISIG_ENABLED();
 
-    // Cast the TX type into the correct var
-    const cryptonote::transaction_type type = static_cast<cryptonote::transaction_type>(req.tx_type);
+    // Default omitted tx_type to TRANSFER for backwards-compatible RPC behavior.
+    cryptonote::transaction_type type = static_cast<cryptonote::transaction_type>(req.tx_type);
+    if (type == cryptonote::transaction_type::UNSET)
+      type = cryptonote::transaction_type::TRANSFER;
+    if (type > cryptonote::transaction_type::MAX)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Invalid tx_type";
+      return false;
+    }
 
     std::string source_asset;
     std::string dest_asset;

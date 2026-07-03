@@ -8932,12 +8932,6 @@ bool simple_wallet::audit(const std::vector<std::string> &args_)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::create_token(const std::vector<std::string> &args_)
 { 
-  // Disable until appropriate hard fork
-  if (m_wallet->get_current_hard_fork() < HF_VERSION_ENABLE_TOKENS) {
-    fail_msg_writer() << tr("create_token is not yet available");
-    return true;
-  }
-
   CHECK_IF_BACKGROUND_SYNCING("cannot create tokens while background syncing");
   if (!try_connect_to_daemon())
     return true;

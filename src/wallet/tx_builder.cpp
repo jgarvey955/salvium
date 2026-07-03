@@ -93,13 +93,13 @@ static bool is_transfer_usable_for_input_selection(const wallet2::transfer_detai
     if (is_miner_or_protocol)
       blocks_locked_for = CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW;
 
-    // Miner/protocol outputs can arrive with partial key image state during scan transitions.
-    // Keep standard strictness for normal transfers, but allow miner/protocol outputs through.
-    const bool key_image_usable = td.m_key_image_known && (!td.m_key_image_partial || is_miner_or_protocol);
-
     return !td.m_spent
-        && key_image_usable
+        && td.m_key_image_known
+        && !td.m_key_image_partial
         && !td.m_frozen
+        // Inputs without a resolved asset-type output index can produce
+        // invalid ring references in carrot-era input verification.
+        && td.m_asset_type_output_index != std::numeric_limits<uint64_t>::max()
         && (top_block_index +1 >= td.m_block_height + blocks_locked_for)
         // && last_locked_block_index <= top_block_index
         && td.m_subaddr_index.major == from_account
@@ -290,7 +290,7 @@ carrot::select_inputs_func_t make_wallet2_single_transfer_input_selector(
             ++stats.spent;
             continue;
         }
-        if (!(td.m_key_image_known && (!td.m_key_image_partial || is_miner_or_protocol)))
+        if (!td.m_key_image_known || td.m_key_image_partial)
         {
             ++stats.key_image;
             continue;
@@ -453,6 +453,7 @@ std::vector<cryptonote::tx_source_entry> get_sources(
 
         // Sanity check the asset_type for this TD is correct
         THROW_WALLET_EXCEPTION_IF(td.asset_type != source_asset, error::wallet_internal_error, "Input has wrong asset_type - expected " + source_asset + " but found " + td.asset_type);
+        THROW_WALLET_EXCEPTION_IF(td.m_tx.vin.empty(), error::wallet_internal_error, "Input TX has no inputs");
 
         src.amount = td.amount();
         src.rct = td.is_rct();
@@ -488,21 +489,13 @@ std::vector<cryptonote::tx_source_entry> get_sources(
         //paste real transaction to the random index
         auto it_to_replace = std::find_if(src.outputs.begin(), src.outputs.end(), [&](const tx_output_entry& a)
         {
-            // HERE BE DRAGONS!!!
-            // SRCG: ring tweak to indexed per asset_type - DO NOT COMMIT UNTIL IT IS ALL WORKING
-            //return a.first == td.m_global_output_index;
-            return a.first == td.m_asset_type_output_index;
-            // LAND AHOY!!!
+            return a.second.dest == rct::pk2rct(td.get_public_key());
         });
         THROW_WALLET_EXCEPTION_IF(it_to_replace == src.outputs.end(), error::wallet_internal_error,
             "real output not found");
 
         tx_output_entry real_oe;
-        // HERE BE DRAGONS!!!
-        // SRCG: ring tweak to indexed per asset_type - DO NOT COMMIT UNTIL IT IS ALL WORKING
-        //real_oe.first = td.m_global_output_index;
-        real_oe.first = td.m_asset_type_output_index;
-        // LAND AHOY!!!
+        real_oe.first = it_to_replace->first;
         real_oe.second.dest = rct::pk2rct(td.get_public_key());
         real_oe.second.mask = rct::commit(td.amount(), td.m_mask);
         *it_to_replace = real_oe;
