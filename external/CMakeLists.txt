@@ -71,4 +71,29 @@ add_subdirectory(db_drivers)
 add_subdirectory(easylogging++)
 add_subdirectory(qrcodegen)
 add_subdirectory(randomx EXCLUDE_FROM_ALL)
+if(ARCH_ID STREQUAL "riscv64")
+  set(RANDOMX_RV64_ZVKNED_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/randomx/src/aes_hash_rv64_zvkned.cpp")
+  if(EXISTS "${RANDOMX_RV64_ZVKNED_SOURCE}")
+    include(CheckCXXSourceCompiles)
+    set(_RANDOMX_SAVED_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -march=rv64gcv_zvkned")
+    check_cxx_source_compiles("
+      #include <riscv_vector.h>
+      int main() {
+        vuint32m1_t a = {};
+        vuint32m1_t b = {};
+        (void)__riscv_vaesem_vv_u32m1(a, b, 8);
+        return 0;
+      }
+    " RANDOMX_HAVE_RISCV_ZVKNED_INTRINSICS)
+    set(CMAKE_REQUIRED_FLAGS "${_RANDOMX_SAVED_REQUIRED_FLAGS}")
+
+    if(NOT RANDOMX_HAVE_RISCV_ZVKNED_INTRINSICS)
+      get_target_property(RANDOMX_SOURCES randomx SOURCES)
+      list(REMOVE_ITEM RANDOMX_SOURCES src/aes_hash_rv64_zvkned.cpp "${RANDOMX_RV64_ZVKNED_SOURCE}")
+      set_property(TARGET randomx PROPERTY SOURCES "${RANDOMX_SOURCES}")
+      target_sources(randomx PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/randomx_rv64_zvkned_fallback.cpp")
+    endif()
+  endif()
+endif()
 add_subdirectory(mx25519)
