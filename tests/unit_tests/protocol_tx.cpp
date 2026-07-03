@@ -230,10 +230,11 @@ uint64_t progress_chain(Blockchain *bc, uint64_t num_blocks) {
 
 TEST(protocol_tx, yield_payouts_round_down_proportionally_for_unequal_stakes)
 {
-  const std::pair<uint8_t, uint64_t> hard_forks[3] = {
+  const std::pair<uint8_t, uint64_t> hard_forks[4] = {
     std::make_pair(1, 1),
     std::make_pair(5, 1 * STAKE_LOCK_PERIOD),
     std::make_pair(6, 2 * STAKE_LOCK_PERIOD),
+    std::make_pair(0, 0),
   };
   const test_options test_options = {
     hard_forks,
@@ -269,10 +270,11 @@ TEST(protocol_tx, yield_payouts_round_down_proportionally_for_unequal_stakes)
 
 TEST(protocol_tx, yield_payouts_fail_when_ybi_window_is_incomplete)
 {
-  const std::pair<uint8_t, uint64_t> hard_forks[3] = {
+  const std::pair<uint8_t, uint64_t> hard_forks[4] = {
     std::make_pair(1, 1),
     std::make_pair(5, 1 * STAKE_LOCK_PERIOD),
     std::make_pair(6, 2 * STAKE_LOCK_PERIOD),
+    std::make_pair(0, 0),
   };
   const test_options test_options = {
     hard_forks,
@@ -295,10 +297,11 @@ TEST(protocol_tx, yield_payouts_fail_when_ybi_window_is_incomplete)
 
 TEST(protocol_tx, audit_payouts_return_locked_amount_without_yield)
 {
-  const std::pair<uint8_t, uint64_t> hard_forks[3] = {
+  const std::pair<uint8_t, uint64_t> hard_forks[4] = {
     std::make_pair(1, 1),
     std::make_pair(5, 1 * STAKE_LOCK_PERIOD),
     std::make_pair(6, 2 * STAKE_LOCK_PERIOD),
+    std::make_pair(0, 0),
   };
   const test_options test_options = {
     hard_forks,
@@ -322,10 +325,11 @@ TEST(protocol_tx, audit_payouts_return_locked_amount_without_yield)
  
 TEST(protocol_tx, validate)
 {
-  const std::pair<uint8_t, uint64_t> hard_forks[3] = {
+  const std::pair<uint8_t, uint64_t> hard_forks[4] = {
     std::make_pair(1, 1),
     std::make_pair(5, 1 * STAKE_LOCK_PERIOD),
     std::make_pair(6, 2 * STAKE_LOCK_PERIOD),
+    std::make_pair(0, 0),
   };
   const test_options test_options = {
     hard_forks,
