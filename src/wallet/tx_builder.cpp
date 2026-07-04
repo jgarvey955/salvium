@@ -1138,8 +1138,8 @@ bool get_address_openings_x_y(
         crypto::public_key address_spend_pubkey_out;
         carrot::payment_id_t nominal_payment_id_out;
         carrot::janus_anchor_t nominal_janus_anchor_out;
-        carrot::encrypted_janus_anchor_t encrypted_janus_anchor;
-        carrot::encrypted_payment_id_t encrypted_payment_id;
+          carrot::encrypted_janus_anchor_t encrypted_janus_anchor{};
+          carrot::encrypted_payment_id_t encrypted_payment_id{};
         carrot::scan_carrot_dest_info(
             rct::rct2pk(src.outputs[src.real_output].second.dest),
             src.outputs[src.real_output].second.mask,
