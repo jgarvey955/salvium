@@ -500,12 +500,6 @@ namespace cryptonote::txrules
     return r;
   }
   
-  static void restrict_type_to_sal1(tx_type_rules& tr)
-  {
-    tr.assets.allowed_assets = {"SAL1"};
-    tr.assets.asset_predicate = nullptr;
-  }
-
   // ---------- HF delta application ----------
   static hf_rules make_hf_0()
   {

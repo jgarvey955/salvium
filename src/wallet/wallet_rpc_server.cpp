@@ -4169,73 +4169,121 @@ namespace tools
   //------------------------------------------------------------------------------------------------------------------------------
   bool wallet_rpc_server::on_open_wallet(const wallet_rpc::COMMAND_RPC_OPEN_WALLET::request& req, wallet_rpc::COMMAND_RPC_OPEN_WALLET::response& res, epee::json_rpc::error& er, const connection_context *ctx)
   {
-    if (m_wallet_dir.empty())
+    try
     {
-      er.code = WALLET_RPC_ERROR_CODE_NO_WALLET_DIR;
-      er.message = "No wallet dir configured";
-      return false;
-    }
+      if (m_wallet_dir.empty())
+      {
+        er.code = WALLET_RPC_ERROR_CODE_NO_WALLET_DIR;
+        er.message = "No wallet dir configured";
+        return false;
+      }
 
-    namespace po = boost::program_options;
-    po::variables_map vm2;
-    const char *ptr = strchr(req.filename.c_str(), '/');
+      constexpr size_t kMaxFilenameSize = 255;
+      constexpr size_t kMaxPasswordSize = 4096;
+      static const std::string kAllowedFilenameChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-";
+      if (req.filename.empty() || req.filename.size() > kMaxFilenameSize)
+      {
+        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+        er.message = "Invalid filename";
+        return false;
+      }
+      if (req.filename.find_first_not_of(kAllowedFilenameChars) != std::string::npos)
+      {
+        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+        er.message = "Invalid filename";
+        return false;
+      }
+      if (req.password.size() > kMaxPasswordSize)
+      {
+        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+        er.message = "Password too long";
+        return false;
+      }
+
+      namespace po = boost::program_options;
+      po::variables_map vm2;
+      const char *ptr = strchr(req.filename.c_str(), '/');
 #ifdef _WIN32
-    if (!ptr)
-      ptr = strchr(req.filename.c_str(), '\\');
-    if (!ptr)
-      ptr = strchr(req.filename.c_str(), ':');
+      if (!ptr)
+        ptr = strchr(req.filename.c_str(), '\\');
+      if (!ptr)
+        ptr = strchr(req.filename.c_str(), ':');
 #endif
-    if (ptr)
-    {
-      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
-      er.message = "Invalid filename";
-      return false;
-    }
-    if (m_wallet && req.autosave_current)
-    {
+      if (ptr || req.filename == "." || req.filename == "..")
+      {
+        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+        er.message = "Invalid filename";
+        return false;
+      }
+
+      if (m_wallet && req.autosave_current)
+      {
+        try
+        {
+          m_wallet->store();
+        }
+        catch (const std::exception& e)
+        {
+          handle_rpc_exception(std::current_exception(), er, WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR);
+          return false;
+        }
+      }
+
+      std::string wallet_file = m_wallet_dir + "/" + req.filename;
+      if (!boost::filesystem::exists(wallet_file) || !boost::filesystem::is_regular_file(wallet_file))
+      {
+        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+        er.message = "Wallet file not found";
+        return false;
+      }
+      {
+        po::options_description desc("dummy");
+        const command_line::arg_descriptor<std::string, true> arg_password = {"password", "password"};
+        const char *argv[4];
+        int argc = 3;
+        argv[0] = "wallet-rpc";
+        argv[1] = "--password";
+        argv[2] = req.password.c_str();
+        argv[3] = NULL;
+        vm2 = *m_vm;
+        command_line::add_arg(desc, arg_password);
+        po::store(po::parse_command_line(argc, argv, desc), vm2);
+      }
+
+      std::unique_ptr<tools::wallet2> wal = nullptr;
       try
       {
-        m_wallet->store();
+        wal = tools::wallet2::make_from_file(vm2, true, wallet_file, nullptr).first;
       }
       catch (const std::exception& e)
       {
         handle_rpc_exception(std::current_exception(), er, WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR);
+      }
+
+      if (!wal)
+      {
+        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+        er.message = "Failed to open wallet : " + (!er.message.empty() ? er.message : "Unknown.");
         return false;
       }
+
+      if (m_wallet)
+        delete m_wallet;
+      m_wallet = wal.release();
+      return true;
     }
-    std::string wallet_file = m_wallet_dir + "/" + req.filename;
-    {
-      po::options_description desc("dummy");
-      const command_line::arg_descriptor<std::string, true> arg_password = {"password", "password"};
-      const char *argv[4];
-      int argc = 3;
-      argv[0] = "wallet-rpc";
-      argv[1] = "--password";
-      argv[2] = req.password.c_str();
-      argv[3] = NULL;
-      vm2 = *m_vm;
-      command_line::add_arg(desc, arg_password);
-      po::store(po::parse_command_line(argc, argv, desc), vm2);
-    }
-    std::unique_ptr<tools::wallet2> wal = nullptr;
-    try {
-      wal = tools::wallet2::make_from_file(vm2, true, wallet_file, nullptr).first;
-    }
-    catch (const std::exception& e)
-    {
-      handle_rpc_exception(std::current_exception(), er, WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR);
-    }
-    if (!wal)
+    catch (const std::exception &e)
     {
       er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
-      er.message = "Failed to open wallet : " + (!er.message.empty() ? er.message : "Unknown.");
+      er.message = std::string("Failed to open wallet: ") + e.what();
       return false;
     }
-
-    if (m_wallet)
-      delete m_wallet;
-    m_wallet = wal.release();
-    return true;
+    catch (...)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Failed to open wallet: unknown exception";
+      return false;
+    }
   }
   //------------------------------------------------------------------------------------------------------------------------------
   bool wallet_rpc_server::on_close_wallet(const wallet_rpc::COMMAND_RPC_CLOSE_WALLET::request& req, wallet_rpc::COMMAND_RPC_CLOSE_WALLET::response& res, epee::json_rpc::error& er, const connection_context *ctx)
@@ -4961,8 +5009,33 @@ namespace tools
   //------------------------------------------------------------------------------------------------------------------------------
   bool wallet_rpc_server::on_finalize_multisig(const wallet_rpc::COMMAND_RPC_FINALIZE_MULTISIG::request& req, wallet_rpc::COMMAND_RPC_FINALIZE_MULTISIG::response& res, epee::json_rpc::error& er, const connection_context *ctx)
   {
+    if (!m_wallet) return not_open(er);
+    if (m_restricted)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_DENIED;
+      er.message = "Command unavailable in restricted mode.";
+      return false;
+    }
+
+    const multisig::multisig_account_status ms_status{m_wallet->get_multisig_status()};
+    if (!ms_status.multisig_is_active)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_NOT_MULTISIG;
+      er.message = "This wallet is not multisig";
+      return false;
+    }
+
     CHECK_MULTISIG_ENABLED();
-    return false;
+
+    // finalize_multisig is currently a compatibility no-op in this RPC server.
+    if (!ms_status.is_ready)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_NOT_MULTISIG;
+      er.message = "This wallet is multisig, but not yet finalized";
+      return false;
+    }
+
+    return true;
   }
   //------------------------------------------------------------------------------------------------------------------------------
   bool wallet_rpc_server::on_exchange_multisig_keys(const wallet_rpc::COMMAND_RPC_EXCHANGE_MULTISIG_KEYS::request& req, wallet_rpc::COMMAND_RPC_EXCHANGE_MULTISIG_KEYS::response& res, epee::json_rpc::error& er, const connection_context *ctx)
@@ -5352,9 +5425,18 @@ namespace tools
       er.message = "Command unavailable in restricted mode.";
       return false;
     }
+    try
+    {
+      mlog_set_log(req.categories.c_str());
+      res.categories = mlog_get_categories();
+    }
+    catch (const std::exception &e)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = std::string("Failed to set log categories: ") + e.what();
+      return false;
+    }
 
-    mlog_set_log(req.categories.c_str());
-    res.categories = mlog_get_categories();
     return true;
   }
   //------------------------------------------------------------------------------------------------------------------------------
