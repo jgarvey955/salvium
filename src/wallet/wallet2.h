@@ -2116,6 +2116,7 @@ private:
     void set_spent(size_t idx, uint64_t height);
     void set_spent(const crypto::key_image &ki, const uint64_t height);
     void set_unspent(size_t idx);
+    bool is_locked_yield_marker(const transfer_details &td) const;
     bool is_spent(const transfer_details &td, bool strict = true) const;
     bool is_spent(size_t idx, bool strict = true) const;
   public:
