@@ -151,6 +151,7 @@ namespace
   constexpr const char default_rpc_username[] = "monero";
   constexpr size_t MAX_RPC_HEX_BLOB_SIZE = 128 * 1024 * 1024; // 64 MiB decoded
   constexpr size_t MAX_GET_ADDRESS_INDICES = 1000;
+  constexpr size_t MAX_GET_TRANSFERS_ENTRIES = 1000;
 
   bool check_hex_blob_size(const std::string &hex, const char *field, epee::json_rpc::error &er)
   {
@@ -3477,11 +3478,25 @@ namespace tools
       subaddr_indices.clear();
     }
 
+    size_t transfer_entries = 0;
+    auto check_transfer_entry_limit = [&er, &transfer_entries]() -> bool {
+      if (transfer_entries >= MAX_GET_TRANSFERS_ENTRIES)
+      {
+        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+        er.message = "Too many transfers requested";
+        return false;
+      }
+      ++transfer_entries;
+      return true;
+    };
+
     if (req.in)
     {
       std::list<std::pair<crypto::hash, tools::wallet2::payment_details>> payments;
       m_wallet->get_payments(payments, min_height, max_height, account_index, subaddr_indices);
       for (std::list<std::pair<crypto::hash, tools::wallet2::payment_details>>::const_iterator i = payments.begin(); i != payments.end(); ++i) {
+        if (!check_transfer_entry_limit())
+          return false;
         res.in.push_back(wallet_rpc::transfer_entry());
         fill_transfer_entry(res.in.back(), i->second.m_tx_hash, i->first, i->second);
       }
@@ -3492,6 +3507,8 @@ namespace tools
       std::list<std::pair<crypto::hash, tools::wallet2::confirmed_transfer_details>> payments;
       m_wallet->get_payments_out(payments, min_height, max_height, account_index, subaddr_indices);
       for (std::list<std::pair<crypto::hash, tools::wallet2::confirmed_transfer_details>>::const_iterator i = payments.begin(); i != payments.end(); ++i) {
+        if (!check_transfer_entry_limit())
+          return false;
         res.out.push_back(wallet_rpc::transfer_entry());
         fill_transfer_entry(res.out.back(), i->first, i->second);
       }
@@ -3506,6 +3523,8 @@ namespace tools
         if (!((req.failed && is_failed) || (!is_failed && req.pending)))
           continue;
         std::list<wallet_rpc::transfer_entry> &entries = is_failed ? res.failed : res.pending;
+        if (!check_transfer_entry_limit())
+          return false;
         entries.push_back(wallet_rpc::transfer_entry());
         fill_transfer_entry(entries.back(), i->first, i->second);
       }
@@ -3521,6 +3540,8 @@ namespace tools
       std::list<std::pair<crypto::hash, tools::wallet2::pool_payment_details>> payments;
       m_wallet->get_unconfirmed_payments(payments, account_index, subaddr_indices);
       for (std::list<std::pair<crypto::hash, tools::wallet2::pool_payment_details>>::const_iterator i = payments.begin(); i != payments.end(); ++i) {
+        if (!check_transfer_entry_limit())
+          return false;
         res.pool.push_back(wallet_rpc::transfer_entry());
         fill_transfer_entry(res.pool.back(), i->first, i->second);
       }
