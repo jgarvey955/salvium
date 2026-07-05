@@ -78,6 +78,7 @@ static constexpr size_t BLOCK_SIZE_SANITY_LEEWAY_RPC = 100;
 #define RESTRICTED_TRANSACTIONS_COUNT 100
 #define RESTRICTED_SPENT_KEY_IMAGES_COUNT 5000
 #define RESTRICTED_BLOCK_COUNT 1000
+static constexpr size_t MAX_BLOCK_HEADERS_REQUEST = 1000;
 static constexpr uint64_t MAX_FEE_ESTIMATE_GRACE_BLOCKS = 100;
 static constexpr size_t MAX_GET_TRANSACTIONS_COUNT = 1000;
 static constexpr size_t MAX_GET_OUTPUTS_COUNT = 50000;
@@ -2687,6 +2688,14 @@ namespace cryptonote
       return false;
     }
 
+    const size_t requested_headers = req.hashes.size() + (req.hash.empty() ? 0 : 1);
+    if (requested_headers > MAX_BLOCK_HEADERS_REQUEST)
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+      error_resp.message = "Too many block headers requested";
+      return false;
+    }
+
     auto get = [this](const std::string &hash, bool fill_pow_hash, block_header_response &block_header, bool restricted, epee::json_rpc::error& error_resp) -> bool {
       crypto::hash block_hash;
       bool hash_parsed = parse_hash256(hash, block_hash);
@@ -2757,6 +2766,12 @@ namespace cryptonote
     if (restricted && req.end_height - req.start_height > RESTRICTED_BLOCK_HEADER_RANGE)
     {
       error_resp.code = CORE_RPC_ERROR_CODE_RESTRICTED;
+      error_resp.message = "Too many block headers requested.";
+      return false;
+    }
+    if (req.end_height - req.start_height + 1 > MAX_BLOCK_HEADERS_REQUEST)
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
       error_resp.message = "Too many block headers requested.";
       return false;
     }
