@@ -153,6 +153,7 @@ namespace
   constexpr size_t MAX_GET_ADDRESS_INDICES = 1000;
   constexpr size_t MAX_GET_TRANSFERS_ENTRIES = 1000;
   constexpr size_t MAX_TX_NOTES_REQUEST = 1000;
+  constexpr size_t MAX_SCAN_TX_REQUEST = 1000;
   constexpr uint64_t MAX_RPC_REFRESH_BLOCKS = 1000;
 
   bool check_hex_blob_size(const std::string &hex, const char *field, epee::json_rpc::error &er)
@@ -4035,6 +4036,12 @@ namespace tools
   bool wallet_rpc_server::on_scan_tx(const wallet_rpc::COMMAND_RPC_SCAN_TX::request& req, wallet_rpc::COMMAND_RPC_SCAN_TX::response& res, epee::json_rpc::error& er, const connection_context *ctx)
   {
       CHECK_IF_RESTRICTED_BACKGROUND_SYNCING();
+      if (req.txids.size() > MAX_SCAN_TX_REQUEST)
+      {
+          er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+          er.message = "Too many transactions requested";
+          return false;
+      }
 
       std::unordered_set<crypto::hash> txids;
       std::list<std::string>::const_iterator i = req.txids.begin();
