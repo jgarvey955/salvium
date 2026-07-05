@@ -3162,14 +3162,21 @@ namespace cryptonote
       return r;
 
     const bool restricted = m_restricted && ctx;
-    size_t amounts = req.amounts.size();
-    if (restricted && amounts == 0)
+    std::vector<uint64_t> amounts;
+    if (!normalize_distribution_amounts(req.amounts, amounts))
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+      error_resp.message = "Too many amounts requested";
+      return false;
+    }
+
+    if (restricted && amounts.empty())
     {
       res.status = "Restricted RPC will not serve histograms on the whole blockchain. Use your own node.";
       return true;
     }
 
-    uint64_t cost = req.amounts.empty() ? COST_PER_FULL_OUTPUT_HISTOGRAM : (COST_PER_OUTPUT_HISTOGRAM * amounts);
+    uint64_t cost = amounts.empty() ? COST_PER_FULL_OUTPUT_HISTOGRAM : (COST_PER_OUTPUT_HISTOGRAM * amounts.size());
     CHECK_PAYMENT_MIN1(req, res, cost, false);
 
     if (restricted && req.recent_cutoff > 0 && req.recent_cutoff < (uint64_t)time(NULL) - OUTPUT_HISTOGRAM_RECENT_CUTOFF_RESTRICTION)
@@ -3181,7 +3188,7 @@ namespace cryptonote
     std::map<uint64_t, std::tuple<uint64_t, uint64_t, uint64_t>> histogram;
     try
     {
-      histogram = m_core.get_blockchain_storage().get_output_histogram(req.amounts, req.unlocked, req.recent_cutoff, req.min_count);
+      histogram = m_core.get_blockchain_storage().get_output_histogram(amounts, req.unlocked, req.recent_cutoff, req.min_count);
     }
     catch (const std::exception &e)
     {
