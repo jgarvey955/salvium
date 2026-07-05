@@ -152,6 +152,7 @@ namespace
   constexpr size_t MAX_RPC_HEX_BLOB_SIZE = 128 * 1024 * 1024; // 64 MiB decoded
   constexpr size_t MAX_GET_ADDRESS_INDICES = 1000;
   constexpr size_t MAX_GET_TRANSFERS_ENTRIES = 1000;
+  constexpr size_t MAX_TX_NOTES_REQUEST = 1000;
   constexpr uint64_t MAX_RPC_REFRESH_BLOCKS = 1000;
 
   bool check_hex_blob_size(const std::string &hex, const char *field, epee::json_rpc::error &er)
@@ -3087,6 +3088,12 @@ namespace tools
       er.message = "Different amount of txids and notes";
       return false;
     }
+    if (req.txids.size() > MAX_TX_NOTES_REQUEST)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Too many notes requested";
+      return false;
+    }
 
     std::list<crypto::hash> txids;
     std::list<std::string>::const_iterator i = req.txids.begin();
@@ -3118,6 +3125,12 @@ namespace tools
   {
     res.notes.clear();
     if (!m_wallet) return not_open(er);
+    if (req.txids.size() > MAX_TX_NOTES_REQUEST)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Too many notes requested";
+      return false;
+    }
 
     std::list<crypto::hash> txids;
     std::list<std::string>::const_iterator i = req.txids.begin();
