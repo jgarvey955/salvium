@@ -82,6 +82,7 @@ static constexpr size_t BLOCK_SIZE_SANITY_LEEWAY_RPC = 100;
 static constexpr size_t MAX_BLOCK_HEADERS_REQUEST = 1000;
 static constexpr uint64_t MAX_FEE_ESTIMATE_GRACE_BLOCKS = 100;
 static constexpr size_t MAX_OUTPUT_DISTRIBUTION_AMOUNTS = 64;
+static constexpr uint64_t MAX_RAW_YIELD_INFO_BLOCKS = 1000;
 static constexpr size_t MAX_GET_TRANSACTIONS_COUNT = 1000;
 static constexpr size_t MAX_GET_OUTPUTS_COUNT = 50000;
 static constexpr size_t MAX_SPENT_KEY_IMAGES_COUNT = 50000;
@@ -3291,6 +3292,24 @@ namespace cryptonote
     CHECK_CORE_READY();
     PERF_TIMER(on_get_yield_info);
     uint64_t height = m_core.get_current_blockchain_height();
+    if (req.to_height > 0 && req.from_height > req.to_height)
+    {
+      res.status = "Invalid start/end heights";
+      return true;
+    }
+    if (req.include_raw_data)
+    {
+      if (req.from_height == 0 || req.to_height == 0)
+      {
+        res.status = "Raw yield data requests must specify from_height and to_height";
+        return true;
+      }
+      if (req.to_height - req.from_height + 1 > MAX_RAW_YIELD_INFO_BLOCKS)
+      {
+        res.status = "Too many yield data blocks requested";
+        return true;
+      }
+    }
     std::map<uint64_t, yield_block_info> ybi_cache;
     if (!m_core.get_blockchain_storage().get_ybi_cache(ybi_cache)) {
       res.status = "failed to get YBI data from blockchain";
