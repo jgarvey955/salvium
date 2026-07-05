@@ -33,6 +33,7 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/preprocessor/stringize.hpp>
 #include <cstdint>
+#include <unordered_set>
 #include "include_base_utils.h"
 using namespace epee;
 
@@ -149,6 +150,7 @@ namespace
 
   constexpr const char default_rpc_username[] = "monero";
   constexpr size_t MAX_RPC_HEX_BLOB_SIZE = 128 * 1024 * 1024; // 64 MiB decoded
+  constexpr size_t MAX_GET_ADDRESS_INDICES = 1000;
 
   bool check_hex_blob_size(const std::string &hex, const char *field, epee::json_rpc::error &er)
   {
@@ -755,11 +757,35 @@ namespace tools
       std::vector<uint32_t> req_address_index;
       if (req.address_index.empty())
       {
-        for (uint32_t i = 0; i < m_wallet->get_num_subaddresses(req.account_index); ++i)
+        const uint32_t subaddress_count = m_wallet->get_num_subaddresses(req.account_index);
+        if (subaddress_count > MAX_GET_ADDRESS_INDICES)
+        {
+          er.code = WALLET_RPC_ERROR_CODE_WRONG_INDEX;
+          er.message = "Too many address indices requested";
+          return false;
+        }
+        for (uint32_t i = 0; i < subaddress_count; ++i)
           req_address_index.push_back(i);
       }
       else
       {
+        if (req.address_index.size() > MAX_GET_ADDRESS_INDICES)
+        {
+          er.code = WALLET_RPC_ERROR_CODE_WRONG_INDEX;
+          er.message = "Too many address indices requested";
+          return false;
+        }
+        std::unordered_set<uint32_t> seen;
+        seen.reserve(req.address_index.size());
+        for (uint32_t i: req.address_index)
+        {
+          if (!seen.insert(i).second)
+          {
+            er.code = WALLET_RPC_ERROR_CODE_WRONG_INDEX;
+            er.message = "Duplicate address index requested";
+            return false;
+          }
+        }
         req_address_index = req.address_index;
       }
       tools::wallet2::transfer_container transfers;
