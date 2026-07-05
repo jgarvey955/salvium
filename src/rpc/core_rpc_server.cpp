@@ -29,6 +29,7 @@
 // Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
 
 #include <regex>
+#include <unordered_set>
 #include <boost/preprocessor/stringize.hpp>
 #include <boost/uuid/nil_generator.hpp>
 #include <boost/filesystem.hpp>
@@ -80,6 +81,7 @@ static constexpr size_t BLOCK_SIZE_SANITY_LEEWAY_RPC = 100;
 #define RESTRICTED_BLOCK_COUNT 1000
 static constexpr size_t MAX_BLOCK_HEADERS_REQUEST = 1000;
 static constexpr uint64_t MAX_FEE_ESTIMATE_GRACE_BLOCKS = 100;
+static constexpr size_t MAX_OUTPUT_DISTRIBUTION_AMOUNTS = 64;
 static constexpr size_t MAX_GET_TRANSACTIONS_COUNT = 1000;
 static constexpr size_t MAX_GET_OUTPUTS_COUNT = 50000;
 static constexpr size_t MAX_SPENT_KEY_IMAGES_COUNT = 50000;
@@ -110,6 +112,23 @@ namespace
       return false;
 
     offset = std::distance(tx_extra.begin(), match) + 2;
+    return true;
+  }
+
+  static bool normalize_distribution_amounts(const std::vector<uint64_t> &amounts, std::vector<uint64_t> &normalized)
+  {
+    if (amounts.size() > MAX_OUTPUT_DISTRIBUTION_AMOUNTS)
+      return false;
+
+    normalized.clear();
+    normalized.reserve(amounts.size());
+    std::unordered_set<uint64_t> seen;
+    seen.reserve(amounts.size());
+    for (uint64_t amount: amounts)
+    {
+      if (seen.insert(amount).second)
+        normalized.push_back(amount);
+    }
     return true;
   }
 
@@ -3678,8 +3697,16 @@ namespace cryptonote
       return false;
     }
 
+    std::vector<uint64_t> amounts;
+    if (!normalize_distribution_amounts(req.amounts, amounts))
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+      error_resp.message = "Too many amounts requested";
+      return false;
+    }
+
     size_t n_0 = 0, n_non0 = 0;
-    for (uint64_t amount: req.amounts)
+    for (uint64_t amount: amounts)
       if (amount) ++n_non0; else ++n_0;
     CHECK_PAYMENT_MIN1(req, res, n_0 * COST_PER_OUTPUT_DISTRIBUTION_0 + n_non0 * COST_PER_OUTPUT_DISTRIBUTION, false);
 
@@ -3687,7 +3714,7 @@ namespace cryptonote
     {
       // 0 is placeholder for the whole chain
       const uint64_t req_to_height = req.to_height ? req.to_height : (m_core.get_current_blockchain_height() - 1);
-      for (uint64_t amount: req.amounts)
+      for (uint64_t amount: amounts)
       {
         auto data = rpc::RpcHandler::get_output_distribution([this](uint64_t amount, std::string asset_type, uint64_t from, uint64_t to, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base, uint64_t &num_spendable_global_outs) { 
           return m_core.get_output_distribution(amount, asset_type, from, to, start_height, distribution, base, num_spendable_global_outs); }, amount, req.rct_asset_type, req.from_height, req_to_height, [this](uint64_t height) { return m_core.get_blockchain_storage().get_db().get_block_hash_from_height(height); }, req.cumulative, m_core.get_current_blockchain_height());
@@ -3727,8 +3754,15 @@ namespace cryptonote
       return false;
     }
 
+    std::vector<uint64_t> amounts;
+    if (!normalize_distribution_amounts(req.amounts, amounts))
+    {
+      res.status = "Too many amounts requested";
+      return false;
+    }
+
     size_t n_0 = 0, n_non0 = 0;
-    for (uint64_t amount: req.amounts)
+    for (uint64_t amount: amounts)
       if (amount) ++n_non0; else ++n_0;
     CHECK_PAYMENT_MIN1(req, res, n_0 * COST_PER_OUTPUT_DISTRIBUTION_0 + n_non0 * COST_PER_OUTPUT_DISTRIBUTION, false);
 
@@ -3743,7 +3777,7 @@ namespace cryptonote
     {
       // 0 is placeholder for the whole chain
       const uint64_t req_to_height = req.to_height ? req.to_height : (m_core.get_current_blockchain_height() - 1);
-      for (uint64_t amount: req.amounts)
+      for (uint64_t amount: amounts)
       {
         auto data = rpc::RpcHandler::get_output_distribution([this](uint64_t amount, std::string asset_type, uint64_t from, uint64_t to, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base, uint64_t &num_spendable_global_outs) { 
           return m_core.get_output_distribution(amount, asset_type, from, to, start_height, distribution, base, num_spendable_global_outs); }, amount, req.rct_asset_type, req.from_height, req_to_height, [this](uint64_t height) { return m_core.get_blockchain_storage().get_db().get_block_hash_from_height(height); }, req.cumulative, m_core.get_current_blockchain_height());
