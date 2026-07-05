@@ -3214,7 +3214,7 @@ namespace cryptonote
   {
     RPC_TRACKER(get_coinbase_tx_sum);
     const uint64_t bc_height = m_core.get_current_blockchain_height();
-    if (req.height >= bc_height || req.count > bc_height)
+    if (req.height >= bc_height || req.count > bc_height || req.count > bc_height - req.height)
     {
       res.status = "height or count is too large";
       return true;
