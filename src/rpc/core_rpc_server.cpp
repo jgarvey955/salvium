@@ -78,6 +78,7 @@ static constexpr size_t BLOCK_SIZE_SANITY_LEEWAY_RPC = 100;
 #define RESTRICTED_TRANSACTIONS_COUNT 100
 #define RESTRICTED_SPENT_KEY_IMAGES_COUNT 5000
 #define RESTRICTED_BLOCK_COUNT 1000
+static constexpr uint64_t MAX_FEE_ESTIMATE_GRACE_BLOCKS = 100;
 static constexpr size_t MAX_GET_TRANSACTIONS_COUNT = 1000;
 static constexpr size_t MAX_GET_OUTPUTS_COUNT = 50000;
 static constexpr size_t MAX_SPENT_KEY_IMAGES_COUNT = 50000;
@@ -3313,6 +3314,13 @@ namespace cryptonote
       return r;
 
     CHECK_PAYMENT(req, res, COST_PER_FEE_ESTIMATE);
+
+    if (req.grace_blocks > MAX_FEE_ESTIMATE_GRACE_BLOCKS)
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+      error_resp.message = "Invalid grace blocks";
+      return false;
+    }
 
     m_core.get_blockchain_storage().get_dynamic_base_fee_estimate_2021_scaling(req.grace_blocks, res.fees);
     res.fee = res.fees[0];
