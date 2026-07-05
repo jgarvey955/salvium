@@ -83,6 +83,7 @@ static constexpr size_t MAX_BLOCK_HEADERS_REQUEST = 1000;
 static constexpr uint64_t MAX_FEE_ESTIMATE_GRACE_BLOCKS = 100;
 static constexpr size_t MAX_OUTPUT_DISTRIBUTION_AMOUNTS = 64;
 static constexpr uint64_t MAX_RAW_YIELD_INFO_BLOCKS = 1000;
+static constexpr uint64_t MAX_GENERATE_BLOCKS = 500;
 static constexpr size_t MAX_GET_TRANSACTIONS_COUNT = 1000;
 static constexpr size_t MAX_GET_OUTPUTS_COUNT = 50000;
 static constexpr size_t MAX_SPENT_KEY_IMAGES_COUNT = 50000;
@@ -2470,6 +2471,13 @@ namespace cryptonote
     {
       error_resp.code = CORE_RPC_ERROR_CODE_REGTEST_REQUIRED;
       error_resp.message = "Regtest required when generating blocks";      
+      return false;
+    }
+
+    if (req.amount_of_blocks > MAX_GENERATE_BLOCKS)
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+      error_resp.message = "Too many blocks requested";
       return false;
     }
 
