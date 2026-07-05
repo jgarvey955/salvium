@@ -152,6 +152,7 @@ namespace
   constexpr size_t MAX_RPC_HEX_BLOB_SIZE = 128 * 1024 * 1024; // 64 MiB decoded
   constexpr size_t MAX_GET_ADDRESS_INDICES = 1000;
   constexpr size_t MAX_GET_TRANSFERS_ENTRIES = 1000;
+  constexpr uint64_t MAX_RPC_REFRESH_BLOCKS = 1000;
 
   bool check_hex_blob_size(const std::string &hex, const char *field, epee::json_rpc::error &er)
   {
@@ -2904,7 +2905,10 @@ namespace tools
 
     try
     {
-      m_wallet->rescan_blockchain(req.hard);
+      m_wallet->rescan_blockchain(req.hard, false);
+      uint64_t blocks_fetched = 0;
+      bool received_money = false;
+      m_wallet->refresh(m_wallet->is_trusted_daemon(), 0, blocks_fetched, received_money, true, true, MAX_RPC_REFRESH_BLOCKS);
     }
     catch (const std::exception& e)
     {
@@ -3982,7 +3986,7 @@ namespace tools
     }
     try
     {
-      m_wallet->refresh(m_wallet->is_trusted_daemon(), req.start_height, res.blocks_fetched, res.received_money);
+      m_wallet->refresh(m_wallet->is_trusted_daemon(), req.start_height, res.blocks_fetched, res.received_money, true, true, MAX_RPC_REFRESH_BLOCKS);
       return true;
     }
     catch (const std::exception& e)
