@@ -164,6 +164,28 @@ namespace
   constexpr size_t MAX_SCAN_TX_REQUEST = 1000;
   constexpr uint64_t MAX_RPC_REFRESH_BLOCKS = 1000;
 
+  class scoped_atomic_flag
+  {
+  public:
+    explicit scoped_atomic_flag(std::atomic_flag &flag)
+      : m_flag(flag)
+      , m_acquired(!m_flag.test_and_set(std::memory_order_acquire))
+    {
+    }
+
+    ~scoped_atomic_flag()
+    {
+      if (m_acquired)
+        m_flag.clear(std::memory_order_release);
+    }
+
+    bool acquired() const { return m_acquired; }
+
+  private:
+    std::atomic_flag &m_flag;
+    const bool m_acquired;
+  };
+
   bool check_hex_blob_size(const std::string &hex, const char *field, epee::json_rpc::error &er)
   {
     if (hex.size() <= MAX_RPC_HEX_BLOB_SIZE)
@@ -5483,6 +5505,14 @@ namespace tools
     {
       er.code = WALLET_RPC_ERROR_CODE_PROXY_ALREADY_DEFINED;
       er.message = "It is not possible to set daemon specific proxy when --proxy is defined.";
+      return false;
+    }
+
+    scoped_atomic_flag set_daemon_guard(m_set_daemon_active);
+    if (!set_daemon_guard.acquired())
+    {
+      er.code = WALLET_RPC_ERROR_CODE_DAEMON_IS_BUSY;
+      er.message = "A daemon reconfiguration is already in progress.";
       return false;
     }
    

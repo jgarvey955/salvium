@@ -32,6 +32,7 @@
 
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/variables_map.hpp>
+#include <atomic>
 #include <string>
 #include "common/util.h"
 #include "net/http_server_impl_base.h"
@@ -296,6 +297,7 @@ namespace tools
       std::string m_wallet_dir;
       tools::private_file rpc_login_file;
       std::atomic<bool> m_stop;
+      std::atomic_flag m_set_daemon_active = ATOMIC_FLAG_INIT;
       bool m_restricted;
       const boost::program_options::variables_map *m_vm;
       uint32_t m_auto_refresh_period;
