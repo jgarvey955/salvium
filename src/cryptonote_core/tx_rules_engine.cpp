@@ -11,6 +11,7 @@
 #include "ringct/rctSigs.h"
 #include "tx_consensus_checks.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace cryptonote::txrules
@@ -117,6 +118,10 @@ namespace cryptonote::txrules
     }
 
     uint64_t total_fee = 0;
+    std::vector<crypto::hash> tx_prefix_hashes;
+    std::vector<crypto::key_image> first_key_images;
+    tx_prefix_hashes.reserve(tx.layer2_rollup_data.txs.size());
+    first_key_images.reserve(tx.layer2_rollup_data.txs.size());
 
     for (const auto& rtx : tx.layer2_rollup_data.txs)
     {
@@ -126,11 +131,25 @@ namespace cryptonote::txrules
         return false;
       }
 
+      if (std::find(tx_prefix_hashes.begin(), tx_prefix_hashes.end(), rtx.tx_prefix_hash) != tx_prefix_hashes.end())
+      {
+        if (why) *why = "ROLLUP contains duplicate tx_prefix_hash";
+        return false;
+      }
+      tx_prefix_hashes.push_back(rtx.tx_prefix_hash);
+
       if (rtx.first_key_image == crypto::key_image{})
       {
         if (why) *why = "ROLLUP contains null first_key_image";
         return false;
       }
+
+      if (std::find(first_key_images.begin(), first_key_images.end(), rtx.first_key_image) != first_key_images.end())
+      {
+        if (why) *why = "ROLLUP contains duplicate first_key_image";
+        return false;
+      }
+      first_key_images.push_back(rtx.first_key_image);
 
       if (rtx.tx_fee == 0)
       {
