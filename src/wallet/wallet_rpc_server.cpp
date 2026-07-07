@@ -32,6 +32,7 @@
 #include <boost/filesystem/operations.hpp>
 #include <boost/algorithm/string.hpp>
 #include <boost/preprocessor/stringize.hpp>
+#include <algorithm>
 #include <cstdint>
 #include <unordered_set>
 #include "include_base_utils.h"
@@ -150,6 +151,13 @@ namespace
 
   constexpr const char default_rpc_username[] = "monero";
   constexpr size_t MAX_RPC_HEX_BLOB_SIZE = 128 * 1024 * 1024; // 64 MiB decoded
+  constexpr size_t MAX_SUBMIT_TRANSFER_HEX_SIZE = 16 * 1024 * 1024; // 8 MiB decoded
+  constexpr size_t MAX_TX_KEY_HEX_KEYS = 32;
+  constexpr size_t MAX_VERIFY_DATA_SIZE = 1024 * 1024;
+  constexpr size_t MAX_VERIFY_SIGNATURE_SIZE = 4096;
+  constexpr size_t MAX_MULTISIG_INFO_COUNT = 32;
+  constexpr size_t MAX_MULTISIG_INFO_SIZE = 1024 * 1024;
+  constexpr size_t MAX_LOG_CATEGORIES_SIZE = 4096;
   constexpr size_t MAX_GET_ADDRESS_INDICES = 1000;
   constexpr size_t MAX_GET_TRANSFERS_ENTRIES = 1000;
   constexpr size_t MAX_TX_NOTES_REQUEST = 1000;
@@ -159,6 +167,16 @@ namespace
   bool check_hex_blob_size(const std::string &hex, const char *field, epee::json_rpc::error &er)
   {
     if (hex.size() <= MAX_RPC_HEX_BLOB_SIZE)
+      return true;
+
+    er.code = WALLET_RPC_ERROR_CODE_BAD_HEX;
+    er.message = std::string(field) + " is too large.";
+    return false;
+  }
+
+  bool check_hex_field_size(const std::string &hex, size_t max_size, const char *field, epee::json_rpc::error &er)
+  {
+    if (hex.size() <= max_size)
       return true;
 
     er.code = WALLET_RPC_ERROR_CODE_BAD_HEX;
@@ -1063,6 +1081,12 @@ namespace tools
       {
         er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
         er.message = std::string("Must specify key image to freeze");
+        return false;
+      }
+      if (req.key_image.size() != 64)
+      {
+        er.code = WALLET_RPC_ERROR_CODE_WRONG_KEY_IMAGE;
+        er.message = "key image has invalid length";
         return false;
       }
       crypto::key_image ki;
@@ -2167,8 +2191,14 @@ namespace tools
     }
 
     cryptonote::blobdata blob;
-    if (!check_hex_blob_size(req.tx_data_hex, "tx_data_hex", er))
+    if (!check_hex_field_size(req.tx_data_hex, MAX_SUBMIT_TRANSFER_HEX_SIZE, "tx_data_hex", er))
       return false;
+    if (req.tx_data_hex.size() % 2)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_BAD_HEX;
+      er.message = "tx_data_hex has invalid length.";
+      return false;
+    }
     if (!epee::string_tools::parse_hexstr_to_binbuff(req.tx_data_hex, blob))
     {
       er.code = WALLET_RPC_ERROR_CODE_BAD_HEX;
@@ -2221,7 +2251,6 @@ namespace tools
       er.message = "Command unavailable in restricted mode.";
       return false;
     }
-
     CHECK_MULTISIG_ENABLED();
     CHECK_IF_BACKGROUND_SYNCING();
 
@@ -3021,6 +3050,18 @@ namespace tools
       er.message = "Command unavailable in restricted mode.";
       return false;
     }
+    if (req.data.size() > MAX_VERIFY_DATA_SIZE)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Data is too large.";
+      return false;
+    }
+    if (req.signature.size() > MAX_VERIFY_SIGNATURE_SIZE)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Signature is too large.";
+      return false;
+    }
 
     cryptonote::address_parse_info info;
     er.message = "";
@@ -3219,6 +3260,12 @@ namespace tools
     if (!m_wallet) return not_open(er);
 
     crypto::hash txid;
+    if (req.txid.size() != 64)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_WRONG_TXID;
+      er.message = "TX ID has invalid length";
+      return false;
+    }
     if (!epee::string_tools::hex_to_pod(req.txid, txid))
     {
       er.code = WALLET_RPC_ERROR_CODE_WRONG_TXID;
@@ -3227,6 +3274,12 @@ namespace tools
     }
 
     epee::wipeable_string tx_key_str = req.tx_key;
+    if (tx_key_str.size() > 64 * MAX_TX_KEY_HEX_KEYS)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_WRONG_KEY;
+      er.message = "Tx key has too many entries";
+      return false;
+    }
     if (tx_key_str.size() < 64 || tx_key_str.size() % 64)
     {
       er.code = WALLET_RPC_ERROR_CODE_WRONG_KEY;
@@ -3973,8 +4026,7 @@ namespace tools
   {
     CHECK_IF_RESTRICTED_BACKGROUND_SYNCING();
 
-    const auto ab = m_wallet->get_address_book();
-    if (req.index >= ab.size())
+    if (req.index >= m_wallet->get_address_book_size())
     {
       er.code = WALLET_RPC_ERROR_CODE_WRONG_INDEX;
       er.message = "Index out of range: " + std::to_string(req.index);
@@ -4140,8 +4192,18 @@ namespace tools
   //------------------------------------------------------------------------------------------------------------------------------
   bool wallet_rpc_server::on_get_languages(const wallet_rpc::COMMAND_RPC_GET_LANGUAGES::request& req, wallet_rpc::COMMAND_RPC_GET_LANGUAGES::response& res, epee::json_rpc::error& er, const connection_context *ctx)
   {
-    crypto::ElectrumWords::get_language_list(res.languages, true);
-    crypto::ElectrumWords::get_language_list(res.languages_local, false);
+    static const std::vector<std::string> languages = [] {
+      std::vector<std::string> values;
+      crypto::ElectrumWords::get_language_list(values, true);
+      return values;
+    }();
+    static const std::vector<std::string> languages_local = [] {
+      std::vector<std::string> values;
+      crypto::ElectrumWords::get_language_list(values, false);
+      return values;
+    }();
+    res.languages = languages;
+    res.languages_local = languages_local;
     return true;
   }
   //------------------------------------------------------------------------------------------------------------------------------
@@ -4944,6 +5006,27 @@ namespace tools
       return false;
     }
     CHECK_IF_BACKGROUND_SYNCING();
+    if (req.multisig_info.empty() || req.multisig_info.size() > MAX_MULTISIG_INFO_COUNT)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Invalid multisig info count";
+      return false;
+    }
+    if (req.threshold == 0 || req.threshold > req.multisig_info.size() + 1)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Invalid multisig threshold";
+      return false;
+    }
+    for (const auto &info: req.multisig_info)
+    {
+      if (info.empty() || info.size() > MAX_MULTISIG_INFO_SIZE)
+      {
+        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+        er.message = "Invalid multisig info size";
+        return false;
+      }
+    }
 
     try
     {
@@ -5494,6 +5577,20 @@ namespace tools
     {
       er.code = WALLET_RPC_ERROR_CODE_DENIED;
       er.message = "Command unavailable in restricted mode.";
+      return false;
+    }
+    if (req.categories.size() > MAX_LOG_CATEGORIES_SIZE)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Log categories string is too large.";
+      return false;
+    }
+    if (std::any_of(req.categories.begin(), req.categories.end(), [](char c) {
+      return c == '\n' || c == '\r' || c == '\0';
+    }))
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = "Log categories string contains invalid control characters.";
       return false;
     }
     try

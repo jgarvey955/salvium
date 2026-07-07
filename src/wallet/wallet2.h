@@ -1703,6 +1703,7 @@ private:
     * \brief GUI Address book get/store
     */
     std::vector<address_book_row> get_address_book() const { return m_address_book; }
+    size_t get_address_book_size() const { return m_address_book.size(); }
     bool add_address_book_row(const cryptonote::account_public_address &address, const crypto::hash8 *payment_id, const std::string &description, bool is_subaddress, bool is_carrot);
     bool set_address_book_row(size_t row_id, const cryptonote::account_public_address &address, const crypto::hash8 *payment_id, const std::string &description, bool is_subaddress, bool is_carrot);
     bool delete_address_book_row(std::size_t row_id);
