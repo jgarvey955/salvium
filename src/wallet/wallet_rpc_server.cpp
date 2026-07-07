@@ -347,6 +347,7 @@ namespace tools
   //------------------------------------------------------------------------------------------------------------------------------
   wallet_rpc_server::~wallet_rpc_server()
   {
+    wait_for_set_daemon_worker();
     if (m_wallet)
       delete m_wallet;
   }
@@ -354,6 +355,18 @@ namespace tools
   void wallet_rpc_server::set_wallet(wallet2 *cr)
   {
     m_wallet = cr;
+  }
+  //------------------------------------------------------------------------------------------------------------------------------
+  void wallet_rpc_server::wait_for_set_daemon_worker()
+  {
+    std::thread worker;
+    {
+      std::lock_guard<std::mutex> lock(m_set_daemon_thread_mutex);
+      if (m_set_daemon_thread.joinable())
+        worker = std::move(m_set_daemon_thread);
+    }
+    if (worker.joinable())
+      worker.join();
   }
   //------------------------------------------------------------------------------------------------------------------------------
   bool wallet_rpc_server::run()
@@ -392,6 +405,7 @@ namespace tools
   //------------------------------------------------------------------------------------------------------------------------------
   void wallet_rpc_server::stop()
   {
+    wait_for_set_daemon_worker();
     if (m_wallet)
     {
       m_wallet->store();
@@ -5508,8 +5522,7 @@ namespace tools
       return false;
     }
 
-    scoped_atomic_flag set_daemon_guard(m_set_daemon_active);
-    if (!set_daemon_guard.acquired())
+    if (m_set_daemon_active.test_and_set(std::memory_order_acquire))
     {
       er.code = WALLET_RPC_ERROR_CODE_DAEMON_IS_BUSY;
       er.message = "A daemon reconfiguration is already in progress.";
@@ -5573,12 +5586,46 @@ namespace tools
     if (!req.username.empty() || !req.password.empty())
       daemon_login.emplace(req.username, req.password);
 
-    if (!m_wallet->set_daemon(req.address, daemon_login, req.trusted, std::move(ssl_options), req.proxy))
+    try
     {
-      er.code = WALLET_RPC_ERROR_CODE_NO_DAEMON_CONNECTION;
-      er.message = std::string("Unable to set daemon");
+      std::lock_guard<std::mutex> lock(m_set_daemon_thread_mutex);
+      if (m_set_daemon_thread.joinable())
+        m_set_daemon_thread.join();
+
+      wallet2 *wallet = m_wallet;
+      const std::string daemon_address = req.address;
+      const std::string proxy = req.proxy;
+      const bool trusted = req.trusted;
+
+      m_set_daemon_thread = std::thread(
+        [this, wallet, daemon_address, daemon_login = std::move(daemon_login), trusted, ssl_options = std::move(ssl_options), proxy]() mutable {
+          try
+          {
+            const bool ok = wallet->set_daemon(daemon_address, std::move(daemon_login), trusted, std::move(ssl_options), proxy);
+            if (ok)
+              MINFO("Asynchronous daemon reconfiguration completed for " << daemon_address);
+            else
+              MERROR("Asynchronous daemon reconfiguration failed for " << daemon_address);
+          }
+          catch (const std::exception &e)
+          {
+            MERROR("Asynchronous daemon reconfiguration failed for " << daemon_address << ": " << e.what());
+          }
+          catch (...)
+          {
+            MERROR("Asynchronous daemon reconfiguration failed for " << daemon_address << ": unknown exception");
+          }
+          m_set_daemon_active.clear(std::memory_order_release);
+        });
+    }
+    catch (const std::exception &e)
+    {
+      m_set_daemon_active.clear(std::memory_order_release);
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = std::string("Unable to start daemon reconfiguration: ") + e.what();
       return false;
     }
+
     return true;
   }
   //------------------------------------------------------------------------------------------------------------------------------
