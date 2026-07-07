@@ -134,6 +134,16 @@ namespace
     return true;
   }
 
+  static bool is_local_management_address(const epee::net_utils::network_address &address)
+  {
+    return address.is_loopback() || address.is_local();
+  }
+
+  static bool is_local_management_subnet(const epee::net_utils::ipv4_network_subnet &subnet)
+  {
+    return subnet.is_loopback() || subnet.is_local();
+  }
+
   class RPCTracker
   {
   public:
@@ -3060,6 +3070,12 @@ namespace cryptonote
         auto ns_parsed = net::get_ipv4_subnet_address(i->host);
         if (ns_parsed)
         {
+          if (i->ban && !req.allow_local && is_local_management_subnet(*ns_parsed))
+          {
+            error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+            error_resp.message = "Refusing to ban loopback/local subnet without allow_local";
+            return false;
+          }
           if (i->ban)
             m_p2p.block_subnet(*ns_parsed, i->seconds);
           else
@@ -3090,6 +3106,12 @@ namespace cryptonote
         }
         na = epee::net_utils::ipv4_network_address{i->ip, 0};
       }
+      if (i->ban && !req.allow_local && is_local_management_address(na))
+      {
+        error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+        error_resp.message = "Refusing to ban loopback/local address without allow_local";
+        return false;
+      }
       if (i->ban)
         m_p2p.block_host(na, i->seconds);
       else
@@ -3108,6 +3130,12 @@ namespace cryptonote
     std::vector<crypto::hash> txids;
     if (req.txids.empty())
     {
+      if (!req.confirm_all)
+      {
+        error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+        error_resp.message = "Full txpool flush requires confirm_all";
+        return false;
+      }
       std::vector<transaction> pool_txs;
       bool r = m_core.get_pool_transactions(pool_txs, true);
       if (!r)
@@ -3486,6 +3514,11 @@ namespace cryptonote
   bool core_rpc_server::on_out_peers(const COMMAND_RPC_OUT_PEERS::request& req, COMMAND_RPC_OUT_PEERS::response& res, const connection_context *ctx)
   {
     RPC_TRACKER(out_peers);
+    if (req.set && req.out_peers == 0 && !req.force)
+    {
+      res.status = "Failed";
+      return true;
+    }
     if (req.set)
       m_p2p.change_max_out_public_peers(req.out_peers);
     res.out_peers = m_p2p.get_max_out_public_peers();
@@ -3496,6 +3529,11 @@ namespace cryptonote
   bool core_rpc_server::on_in_peers(const COMMAND_RPC_IN_PEERS::request& req, COMMAND_RPC_IN_PEERS::response& res, const connection_context *ctx)
   {
     RPC_TRACKER(in_peers);
+    if (req.set && req.in_peers == 0 && !req.force)
+    {
+      res.status = "Failed";
+      return true;
+    }
     if (req.set)
       m_p2p.change_max_in_public_peers(req.in_peers);
     res.in_peers = m_p2p.get_max_in_public_peers();
