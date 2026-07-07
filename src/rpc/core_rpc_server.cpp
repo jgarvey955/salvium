@@ -1469,10 +1469,11 @@ namespace cryptonote
       return true;
     }
 
-    uint64_t output_count = m_core.get_blockchain_storage().get_num_mature_outputs(req.source_asset_type);
-    bool ok = cryptonote::tx_sanity_check(tx_blob, output_count);
-    if (!ok) {
-      if (req.do_sanity_checks && !cryptonote::tx_sanity_check(tx_blob, output_count)) {
+    if (req.do_sanity_checks)
+    {
+      uint64_t output_count = m_core.get_blockchain_storage().get_num_mature_outputs(req.source_asset_type);
+      if (!cryptonote::tx_sanity_check(tx_blob, output_count))
+      {
         res.status = "Failed";
         res.reason = "Sanity check failed";
         res.sanity_check_failed = true;
