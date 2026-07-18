@@ -9329,7 +9329,7 @@ bool simple_wallet::yield_info(const std::vector<std::string> &args) {
   std::vector<tools::wallet2::yield_payout_t> yield_payouts;
   if (!m_wallet->get_yield_summary_info(t_burnt, t_supply, t_locked, t_yield, yps, ybi_size, yield_payouts)) {
     fail_msg_writer() << "failed to get yield info. Make sure you are connected to a daemon.";
-    return false;
+    return true;
   }
 
   // Resort the payouts so they're in height order
