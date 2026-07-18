@@ -2312,16 +2312,40 @@ cryptonote::token_metadata_t wallet2::get_token_info(const std::string& asset_ty
 //----------------------------------------------------------------------------------------------------
 bool wallet2::get_yield_info(std::vector<cryptonote::yield_block_info>& ybi_data)
 {
-  // Issue an RPC call to get the block header (and thus the pricing record) at the specified height
-  cryptonote::COMMAND_RPC_GET_YIELD_INFO::request req = AUTO_VAL_INIT(req);
-  cryptonote::COMMAND_RPC_GET_YIELD_INFO::response res = AUTO_VAL_INIT(res);
-  m_daemon_rpc_mutex.lock();
-  req.include_raw_data = true;
-  bool r = invoke_http_json_rpc("/json_rpc", "get_yield_info", req, res, rpc_timeout);
-  m_daemon_rpc_mutex.unlock();
-  if (r && res.status == CORE_RPC_STATUS_OK)
+  static constexpr uint64_t max_yield_blocks_per_request = 1000;
+
+  std::string err;
+  const uint64_t daemon_height = get_daemon_blockchain_height(err);
+  if (!err.empty() || daemon_height <= 1)
   {
-    ybi_data.clear();
+    MERROR("Failed to retrieve daemon height for yield info: " << err);
+    return false;
+  }
+
+  // The daemon retains only the current stake-lock window of raw YBI data.
+  const uint64_t cache_size = std::min(daemon_height, get_config(m_nettype).STAKE_LOCK_PERIOD + 1);
+  const uint64_t first_height = std::max<uint64_t>(1, daemon_height - cache_size);
+  const uint64_t last_height = daemon_height - 1;
+
+  ybi_data.clear();
+  for (uint64_t from_height = first_height; from_height <= last_height;)
+  {
+    cryptonote::COMMAND_RPC_GET_YIELD_INFO::request req = AUTO_VAL_INIT(req);
+    cryptonote::COMMAND_RPC_GET_YIELD_INFO::response res = AUTO_VAL_INIT(res);
+    req.include_raw_data = true;
+    req.from_height = from_height;
+    req.to_height = std::min(last_height, from_height + max_yield_blocks_per_request - 1);
+
+    m_daemon_rpc_mutex.lock();
+    const bool r = invoke_http_json_rpc("/json_rpc", "get_yield_info", req, res, rpc_timeout);
+    m_daemon_rpc_mutex.unlock();
+    if (!r || res.status != CORE_RPC_STATUS_OK)
+    {
+      MERROR("Failed to retrieve yield info from daemon: " << (r ? res.status : "connection failed"));
+      ybi_data.clear();
+      return false;
+    }
+
     for (const auto& entry: res.yield_data) {
       // Create a YBI
       cryptonote::yield_block_info ybi;
@@ -2332,13 +2356,16 @@ bool wallet2::get_yield_info(std::vector<cryptonote::yield_block_info>& ybi_data
       ybi.network_health_percentage = entry.network_health_percentage;
       ybi_data.push_back(ybi);
     }
-    return true;
+
+    from_height = req.to_height + 1;
   }
-  else
+
+  if (ybi_data.empty())
   {
-    MERROR("Failed to retrieve yield info from daemon");
+    MERROR("Daemon returned no yield info");
     return false;
   }
+  return true;
 }
 //----------------------------------------------------------------------------------------------------
 bool wallet2::get_yield_summary_info(uint64_t &total_burnt,
