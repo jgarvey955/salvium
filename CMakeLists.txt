@@ -491,14 +491,19 @@ endif()
 set(PIC_FLAG "-fPIC")
 
 if(MINGW)
-  string(REGEX MATCH "^[^/]:/[^/]*" msys2_install_path "${CMAKE_C_COMPILER}")
-  message(STATUS "MSYS location: ${msys2_install_path}")
-  set(CMAKE_INCLUDE_PATH "${msys2_install_path}/mingw${ARCH_WIDTH}/include")
+  # Derive the active MSYS2 environment from the compiler. UCRT64 and
+  # MINGW64 both define MINGW and report the same architecture, but their
+  # headers and libraries are ABI-incompatible.
+  get_filename_component(mingw_bin_path "${CMAKE_C_COMPILER}" DIRECTORY)
+  get_filename_component(mingw_prefix "${mingw_bin_path}" DIRECTORY)
+  get_filename_component(msys2_install_path "${mingw_prefix}" DIRECTORY)
+  message(STATUS "MSYS location: ${msys2_install_path} (prefix: ${mingw_prefix})")
+  set(CMAKE_INCLUDE_PATH "${mingw_prefix}/include")
   # This is necessary because otherwise CMake will make Boost libraries -lfoo
   # rather than a full path. Unfortunately, this makes the shared libraries get
   # linked due to a bug in CMake which misses putting -static flags around the
   # -lfoo arguments.
-  set(DEFLIB ${msys2_install_path}/mingw${ARCH_WIDTH}/lib)
+  set(DEFLIB ${mingw_prefix}/lib)
   list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_DIRECTORIES ${DEFLIB})
   list(REMOVE_ITEM CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES ${DEFLIB})
 endif()
