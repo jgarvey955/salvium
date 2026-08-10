@@ -11034,12 +11034,16 @@ bool simple_wallet::check_mms()
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::check_salchat(bool redraw_prompt)
 {
-  if (!m_auto_refresh_enabled) return true;
+  if (!m_auto_refresh_enabled || m_in_command.load(std::memory_order_acquire)) return true;
   try
   {
     salchat::service service(*m_wallet);
     const auto result = service.check_waiting(100);
     const auto contacts = service.contacts();
+    // A foreground command may have started while the daemon poll was in
+    // progress. Defer the notification instead of redrawing readline's prompt
+    // in the middle of that command; the next idle check will report it.
+    if (m_in_command.load(std::memory_order_acquire)) return true;
     std::vector<std::pair<std::string, std::size_t>> senders;
     for (const auto& item: result.new_messages)
     {
@@ -13700,7 +13704,8 @@ bool simple_wallet::salchat_unlocked(const std::vector<std::string>& args)
             << "  " << contacts[i].salvium_address << "  blocked=" << (contacts[i].blocked?"yes":"no");
       }
       else if (args[1] == "remove" && args.size() == 3)
-        message_writer() << (service.remove_contact(resolve_contact(args[2])) ? "Contact removed." : "Contact not found.");
+        message_writer() << (service.remove_contact(resolve_contact(args[2])) ?
+          "Contact and local message history deleted." : "Contact not found.");
       else if ((args[1] == "block" || args[1] == "unblock") && args.size() == 3)
         message_writer() << (service.block_contact(resolve_contact(args[2]),args[1]=="block") ? "Contact updated." : "Contact not found.");
       else { usage(); return true; }

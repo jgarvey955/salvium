@@ -44,7 +44,7 @@ Expiration removes relay copies. It cannot erase screenshots, exports, backups, 
 salchat delete <message_number|message_id>
 ```
 
-Deletion removes the selected message from the local encrypted wallet state. It does not remotely delete the recipient's copy.
+Deletion removes the selected message from the local encrypted wallet state. Removing a contact also deletes that contact's local message history and pending delivery receipts. Replay fingerprints remain so already-processed relay envelopes cannot recreate deleted messages. Neither operation remotely deletes another wallet's copy.
 
 ## Metadata and privacy limits
 

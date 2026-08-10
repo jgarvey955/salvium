@@ -43,7 +43,9 @@ background-wallet mode.
 - `salchat_add_contact`: accepts `label` plus either the complete contact
   string in `address`, or an SC `address` and separate
   `encryption_public_key`.
-- `salchat_remove_contact`: accepts `contact_id`.
+- `salchat_remove_contact`: accepts `contact_id` and atomically deletes the
+  contact, its local message history, and its pending delivery receipts. Bounded
+  replay fingerprints remain so previously processed envelopes stay rejected.
 - `salchat_block_contact`: accepts `contact_id` and `blocked`.
 - `salchat_list_contacts`: returns bounded contact metadata.
 

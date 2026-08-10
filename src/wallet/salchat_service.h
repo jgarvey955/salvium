@@ -13,6 +13,16 @@ namespace salchat
 {
   namespace detail
   {
+    template<typename T>
+    std::size_t erase_contact_records(std::vector<T>& records,
+      const crypto::hash& contact_id)
+    {
+      const std::size_t old_size = records.size();
+      records.erase(std::remove_if(records.begin(), records.end(),
+        [&](const T& item) { return item.contact_id == contact_id; }), records.end());
+      return old_size - records.size();
+    }
+
     class receive_batcher
     {
     public:
@@ -62,6 +72,12 @@ namespace salchat
       FIELD(sender_salvium_address) FIELD(sender_encryption_public_key) VARINT_FIELD(expires_height)
     END_SERIALIZE()
   };
+
+  namespace detail
+  {
+    std::size_t erase_contact_messages(std::vector<message>& messages,
+      const crypto::hash& contact_id);
+  }
 
   struct public_identity
   {

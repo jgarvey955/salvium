@@ -333,3 +333,31 @@ TEST(salchat_wallet, rejects_invalid_utf8_and_display_reordering_controls)
     std::string("spoof ") + "\xe2\x80\xae" + "txt",
     3600,1000,envelope,error));
 }
+
+TEST(salchat_wallet, contact_removal_erases_only_matching_history_and_receipts)
+{
+  const crypto::hash removed_contact = crypto::rand<crypto::hash>();
+  const crypto::hash retained_contact = crypto::rand<crypto::hash>();
+
+  std::vector<salchat::message> messages(3);
+  messages[0].contact_id = removed_contact;
+  messages[0].content = "first removed message";
+  messages[1].contact_id = retained_contact;
+  messages[1].content = "retained message";
+  messages[2].contact_id = removed_contact;
+  messages[2].content = "second removed message";
+
+  EXPECT_EQ(salchat::detail::erase_contact_messages(messages, removed_contact), 2u);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages.front().contact_id, retained_contact);
+  EXPECT_EQ(messages.front().content, "retained message");
+
+  struct receipt_record
+  {
+    crypto::hash contact_id{};
+  };
+  std::vector<receipt_record> receipts{{removed_contact}, {retained_contact}, {removed_contact}};
+  EXPECT_EQ(salchat::detail::erase_contact_records(receipts, removed_contact), 2u);
+  ASSERT_EQ(receipts.size(), 1u);
+  EXPECT_EQ(receipts.front().contact_id, retained_contact);
+}

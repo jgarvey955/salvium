@@ -179,6 +179,15 @@ namespace salchat
     if (sodium_init() < 0) throw std::runtime_error("libsodium initialization failed");
   }
 
+  std::size_t detail::erase_contact_messages(std::vector<message>& messages,
+    const crypto::hash& contact_id)
+  {
+    for (auto& item: messages)
+      if (item.contact_id == contact_id)
+        wipe_string(item.content);
+    return erase_contact_records(messages, contact_id);
+  }
+
   service::state service::load() const
   {
     std::string encoded;
@@ -434,9 +443,17 @@ namespace salchat
   {
     const std::lock_guard<std::recursive_mutex> lock(state_mutex);
     crypto::hash parsed{}; if (!from_hex(id, parsed)) throw std::runtime_error("invalid contact ID");
-    auto value = load(); const auto old = value.contacts.size();
-    value.contacts.erase(std::remove_if(value.contacts.begin(), value.contacts.end(), [&](const contact& c){ return c.id == parsed; }), value.contacts.end());
-    if (value.contacts.size() == old) return false;
+    auto value = load();
+    const auto found = std::find_if(value.contacts.begin(), value.contacts.end(),
+      [&](const contact& item) { return item.id == parsed; });
+    if (found == value.contacts.end()) return false;
+
+    value.contacts.erase(found);
+    detail::erase_contact_messages(value.messages, parsed);
+    detail::erase_contact_records(value.pending_receipts, parsed);
+    // Keep the bounded message-ID and ciphertext-hash replay sets. Otherwise
+    // an envelope already accepted before removal could immediately reappear
+    // as a quarantined message after its contact and history were deleted.
     save(value);
     return true;
   }
@@ -841,6 +858,9 @@ namespace salchat
     const std::lock_guard<std::recursive_mutex> lock(state_mutex);
     crypto::hash parsed{}; if (!from_hex(id, parsed)) throw std::runtime_error("invalid message ID");
     auto value = load(); const auto old = value.messages.size();
+    for (auto& item: value.messages)
+      if (item.id == parsed)
+        wipe_string(item.content);
     value.messages.erase(std::remove_if(value.messages.begin(), value.messages.end(), [&](const message& m){ return m.id == parsed; }), value.messages.end());
     if (value.messages.size() == old) return false;
     save(value);
