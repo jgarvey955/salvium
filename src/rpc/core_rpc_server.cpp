@@ -181,7 +181,7 @@ namespace cryptonote
   //-----------------------------------------------------------------------------------
   void core_rpc_server::init_options(boost::program_options::options_description& desc)
   {
-    command_line::add_arg(desc, arg_salchat_enable);
+    command_line::add_arg(desc, arg_salchat_enabled);
     command_line::add_arg(desc, arg_salchat_max_packet_bytes);
     command_line::add_arg(desc, arg_salchat_max_cache_bytes);
     command_line::add_arg(desc, arg_salchat_max_cache_messages);

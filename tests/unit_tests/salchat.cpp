@@ -50,6 +50,41 @@ namespace
     std::memset(&token,5,sizeof(token));
     return token;
   }
+
+  unsigned int parse_salchat_enabled(const std::vector<std::string>& arguments)
+  {
+    boost::program_options::options_description options{"SalChat options"};
+    command_line::add_arg(options, cryptonote::arg_salchat_enabled);
+    boost::program_options::variables_map values;
+    boost::program_options::store(
+      boost::program_options::command_line_parser(arguments).options(options).run(), values);
+    boost::program_options::notify(values);
+    return command_line::get_arg(values, cryptonote::arg_salchat_enabled);
+  }
+}
+
+TEST(salchat, relay_enable_setting_defaults_on_and_requires_an_explicit_value)
+{
+  EXPECT_TRUE(cryptonote::salchat_config{}.enabled);
+  EXPECT_EQ(parse_salchat_enabled({}), 1u);
+  EXPECT_EQ(parse_salchat_enabled({"--salchat-enabled=1"}), 1u);
+  EXPECT_EQ(parse_salchat_enabled({"--salchat-enabled=0"}), 0u);
+  EXPECT_TRUE(cryptonote::salchat_enabled_from_setting(1));
+  EXPECT_FALSE(cryptonote::salchat_enabled_from_setting(0));
+  EXPECT_TRUE(cryptonote::valid_salchat_enabled_setting(0));
+  EXPECT_TRUE(cryptonote::valid_salchat_enabled_setting(1));
+  EXPECT_FALSE(cryptonote::valid_salchat_enabled_setting(2));
+  EXPECT_THROW(parse_salchat_enabled({"--salchat-enabled"}), boost::program_options::error);
+
+  const auto envelope = valid_envelope(1000);
+  std::string error;
+  cryptonote::salchat_relay enabled_by_default;
+  EXPECT_EQ(enabled_by_default.insert(envelope, 1000, error), cryptonote::salchat_result::accepted);
+
+  cryptonote::salchat_config disabled_config;
+  disabled_config.enabled = cryptonote::salchat_enabled_from_setting(0);
+  cryptonote::salchat_relay explicitly_disabled{disabled_config};
+  EXPECT_EQ(explicitly_disabled.insert(envelope, 1000, error), cryptonote::salchat_result::disabled);
 }
 
 TEST(salchat, validates_and_suppresses_duplicates)

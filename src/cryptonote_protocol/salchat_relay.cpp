@@ -17,7 +17,7 @@ extern "C"
 
 namespace cryptonote
 {
-  const command_line::arg_descriptor<bool> arg_salchat_enable{"salchat-enable", "Enable experimental Salchat opaque message relay", false};
+  const command_line::arg_descriptor<unsigned int> arg_salchat_enabled{"salchat-enabled", "Enable Salchat opaque message relay (0 or 1)", 1};
   const command_line::arg_descriptor<std::size_t> arg_salchat_max_packet_bytes{"salchat-max-packet-bytes", "Maximum Salchat wire payload bytes", SALCHAT_MAX_PACKET_BYTES};
   const command_line::arg_descriptor<std::size_t> arg_salchat_max_cache_bytes{"salchat-max-cache-bytes", "Maximum in-memory Salchat cache bytes", 64 * 1024 * 1024};
   const command_line::arg_descriptor<std::size_t> arg_salchat_max_cache_messages{"salchat-max-cache-messages", "Maximum in-memory Salchat envelope count", 10000};

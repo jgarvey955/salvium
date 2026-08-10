@@ -763,7 +763,7 @@ TEST(cryptonote_protocol_handler, race_condition)
           }).options([]{
             options_description_t options_description{};
             cryptonote::core::init_options(options_description);
-            command_line::add_arg(options_description, cryptonote::arg_salchat_enable);
+            command_line::add_arg(options_description, cryptonote::arg_salchat_enabled);
             command_line::add_arg(options_description, cryptonote::arg_salchat_max_packet_bytes);
             command_line::add_arg(options_description, cryptonote::arg_salchat_max_cache_bytes);
             command_line::add_arg(options_description, cryptonote::arg_salchat_max_cache_messages);
@@ -798,7 +798,7 @@ TEST(cryptonote_protocol_handler, race_condition)
           }).options([]{
             options_description_t options_description{};
             cryptonote::core::init_options(options_description);
-            command_line::add_arg(options_description, cryptonote::arg_salchat_enable);
+            command_line::add_arg(options_description, cryptonote::arg_salchat_enabled);
             command_line::add_arg(options_description, cryptonote::arg_salchat_max_packet_bytes);
             command_line::add_arg(options_description, cryptonote::arg_salchat_max_cache_bytes);
             command_line::add_arg(options_description, cryptonote::arg_salchat_max_cache_messages);

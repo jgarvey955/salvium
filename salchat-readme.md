@@ -6,7 +6,7 @@ SalChat is an experimental, off-chain, end-to-end encrypted messaging layer for 
 
 The sender encrypts a signed envelope for a contact and submits it to a SalChat-enabled daemon. The daemon validates and temporarily caches the opaque envelope, then forwards it to a limited fan-out of compatible peers. Relays do not route to a wallet address. Instead, each envelope contains an opaque recipient tag derived from the recipient's SalChat encryption public key, network, and time epoch. The recipient wallet polls its daemon for the tags it can recognize, decrypts matching envelopes locally, stores accepted messages in its encrypted wallet state, and acknowledges them. A valid acknowledgement removes the relay copy.
 
-Relaying defaults to three peers and no more than eight hops. SalChat is disabled by default on daemons and is enabled with `--salchat-enable`.
+Relaying defaults to three peers and no more than eight hops. SalChat is enabled by default on daemons. Set `salchat-enabled=0` in the daemon configuration (or pass `--salchat-enabled=0`) to turn it off.
 
 ## Identity and keys
 
@@ -71,15 +71,18 @@ These bounds preserve daemon availability and cap memory/bandwidth use. They do 
 
 ## Daemon operation
 
-Start a daemon relay explicitly:
+Start the daemon normally; the SalChat relay is enabled by default:
 
 ```text
-salviumd --salchat-enable
+salviumd
 ```
+
+To turn the relay off explicitly, set `salchat-enabled=0` in the daemon configuration or start it with `salviumd --salchat-enabled=0`. The only accepted values are `0` and `1`.
 
 Relevant daemon options include:
 
 ```text
+--salchat-enabled=0|1
 --salchat-max-packet-bytes
 --salchat-max-cache-bytes
 --salchat-max-cache-messages

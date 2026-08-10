@@ -949,8 +949,8 @@ namespace nodetool
 
     res = init_config();
     CHECK_AND_ASSERT_MES(res, false, "Failed to init config.");
-    const auto salchat = vm.find("salchat-enable");
-    const bool salchat_enabled = salchat != vm.end() && salchat->second.as<bool>();
+    const auto salchat = vm.find("salchat-enabled");
+    const bool salchat_enabled = salchat == vm.end() || salchat->second.as<unsigned int>() != 0;
     public_zone.m_config.m_support_flags = get_p2p_support_flags(salchat_enabled);
 
     for (auto& zone : m_network_zones)

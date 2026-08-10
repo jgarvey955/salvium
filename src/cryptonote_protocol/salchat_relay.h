@@ -13,7 +13,7 @@
 
 namespace cryptonote
 {
-  extern const command_line::arg_descriptor<bool> arg_salchat_enable;
+  extern const command_line::arg_descriptor<unsigned int> arg_salchat_enabled;
   extern const command_line::arg_descriptor<std::size_t> arg_salchat_max_packet_bytes;
   extern const command_line::arg_descriptor<std::size_t> arg_salchat_max_cache_bytes;
   extern const command_line::arg_descriptor<std::size_t> arg_salchat_max_cache_messages;
@@ -22,11 +22,21 @@ namespace cryptonote
   extern const command_line::arg_descriptor<std::uint64_t> arg_salchat_max_peer_kbps;
   extern const command_line::arg_descriptor<std::uint64_t> arg_salchat_max_global_kbps;
 
+  inline bool valid_salchat_enabled_setting(const unsigned int value) noexcept
+  {
+    return value <= 1;
+  }
+
+  inline bool salchat_enabled_from_setting(const unsigned int value) noexcept
+  {
+    return value == 1;
+  }
+
   enum class salchat_result { accepted, duplicate, disabled, malformed, rate_limited };
 
   struct salchat_config
   {
-    bool enabled = false;
+    bool enabled = true;
     std::size_t max_packet_bytes = SALCHAT_MAX_PACKET_BYTES;
     std::size_t max_cache_bytes = 64 * 1024 * 1024;
     std::size_t max_cache_messages = 10000;

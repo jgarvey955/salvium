@@ -115,7 +115,13 @@ namespace cryptonote
     m_block_download_max_size = command_line::get_arg(vm, cryptonote::arg_block_download_max_size);
     m_sync_pruned_blocks = command_line::get_arg(vm, cryptonote::arg_sync_pruned_blocks);
     salchat_config salchat;
-    salchat.enabled = command_line::get_arg(vm, arg_salchat_enable);
+    const unsigned int salchat_enabled = command_line::get_arg(vm, arg_salchat_enabled);
+    if (!valid_salchat_enabled_setting(salchat_enabled))
+    {
+      MERROR("Invalid --salchat-enabled value (expected 0 or 1)");
+      return false;
+    }
+    salchat.enabled = salchat_enabled_from_setting(salchat_enabled);
     salchat.max_packet_bytes = command_line::get_arg(vm, arg_salchat_max_packet_bytes);
     salchat.max_cache_bytes = command_line::get_arg(vm, arg_salchat_max_cache_bytes);
     salchat.max_cache_messages = command_line::get_arg(vm, arg_salchat_max_cache_messages);

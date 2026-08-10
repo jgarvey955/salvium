@@ -76,7 +76,7 @@ hard bounds. Relay selection and sending occur after releasing the cache mutex.
 Legacy peers omit the new bit and never receive Salchat notifications. Unknown
 notification behavior is therefore irrelevant during normal mixed-version
 operation. A peer without the bit is not penalized or disconnected. The feature
-is disabled by default. Salchat state is owned by the protocol handler and is
+is enabled by default and can be disabled with `salchat-enabled=0`. Salchat state is owned by the protocol handler and is
 memory-only; restart loses it. No Salchat type is referenced from transaction,
 block, mempool, consensus, staking, or blockchain database code.
 
