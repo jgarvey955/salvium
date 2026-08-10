@@ -3075,6 +3075,11 @@ namespace wallet_rpc
     struct request_t { BEGIN_KV_SERIALIZE_MAP() END_KV_SERIALIZE_MAP() }; using request=epee::misc_utils::struct_init<request_t>;
     struct response_t { salchat_identity_info identity; BEGIN_KV_SERIALIZE_MAP() KV_SERIALIZE(identity) END_KV_SERIALIZE_MAP() }; using response=epee::misc_utils::struct_init<response_t>;
   };
+  struct COMMAND_RPC_SALCHAT_ROTATE_IDENTITY
+  {
+    struct request_t { BEGIN_KV_SERIALIZE_MAP() END_KV_SERIALIZE_MAP() }; using request=epee::misc_utils::struct_init<request_t>;
+    struct response_t { salchat_identity_info identity; BEGIN_KV_SERIALIZE_MAP() KV_SERIALIZE(identity) END_KV_SERIALIZE_MAP() }; using response=epee::misc_utils::struct_init<response_t>;
+  };
   struct COMMAND_RPC_SALCHAT_GET_ADDRESS
   {
     struct request_t { BEGIN_KV_SERIALIZE_MAP() END_KV_SERIALIZE_MAP() }; using request=epee::misc_utils::struct_init<request_t>;

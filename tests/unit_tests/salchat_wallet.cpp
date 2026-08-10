@@ -164,6 +164,72 @@ TEST(salchat_wallet, address_keys_are_deterministic_and_bound_to_contact)
   EXPECT_FALSE(salchat::valid_contact(contact));
 }
 
+TEST(salchat_wallet, generated_message_keys_are_random_valid_and_convergent)
+{
+  crypto::secret_key first_secret{};
+  crypto::public_key first_public{};
+  crypto::secret_key second_secret{};
+  crypto::public_key second_public{};
+  ASSERT_TRUE(salchat::generate_message_keys(first_secret, first_public));
+  ASSERT_TRUE(salchat::generate_message_keys(second_secret, second_public));
+  EXPECT_NE(first_secret, crypto::null_skey);
+  EXPECT_NE(first_public, crypto::public_key{});
+  EXPECT_NE(first_secret, second_secret);
+  EXPECT_NE(first_public, second_public);
+  EXPECT_TRUE(salchat::valid_encryption_public_key(first_public));
+  EXPECT_TRUE(salchat::valid_encryption_public_key(second_public));
+
+  crypto::public_key derived{};
+  ASSERT_TRUE(salchat::message_public_key(first_secret, derived));
+  EXPECT_EQ(derived, first_public);
+}
+
+TEST(salchat_wallet, retired_message_key_overlap_uses_time_and_chain_height)
+{
+  constexpr std::uint64_t retired_at = 1000000;
+  constexpr std::uint64_t retired_height = 50000;
+  EXPECT_TRUE(salchat::detail::retired_message_key_active(
+    retired_at, retired_height, retired_at, retired_height));
+  EXPECT_TRUE(salchat::detail::retired_message_key_active(
+    retired_at, retired_height,
+    retired_at + cryptonote::SALCHAT_MAX_TTL_SECONDS,
+    retired_height + cryptonote::SALCHAT_MESSAGE_LIFETIME_BLOCKS - 1));
+  EXPECT_TRUE(salchat::detail::retired_message_key_active(
+    retired_at, retired_height,
+    retired_at + cryptonote::SALCHAT_MAX_TTL_SECONDS - 1,
+    retired_height + cryptonote::SALCHAT_MESSAGE_LIFETIME_BLOCKS));
+  EXPECT_FALSE(salchat::detail::retired_message_key_active(
+    retired_at, retired_height,
+    retired_at + cryptonote::SALCHAT_MAX_TTL_SECONDS,
+    retired_height + cryptonote::SALCHAT_MESSAGE_LIFETIME_BLOCKS));
+  EXPECT_TRUE(salchat::detail::retired_message_key_active(
+    retired_at, retired_height, retired_at - 1, retired_height - 1));
+}
+
+TEST(salchat_wallet, retired_key_still_decrypts_pre_rotation_envelope)
+{
+  const auto alice = make_identity();
+  const auto bob = make_identity();
+  cryptonote::salchat_p2p_envelope envelope;
+  std::string error;
+  ASSERT_TRUE(salchat::encrypt_payload(alice.k_generate_image, alice.k_prove_spend,
+    alice.message_secret_key, alice.spend_public_key, alice.view_public_key,
+    as_contact(bob, "Bob"), cryptonote::MAINNET, salchat::message_type::text,
+    "waiting before rotation", 3600, 1000, envelope, error)) << error;
+
+  crypto::secret_key replacement_secret{};
+  crypto::public_key replacement_public{};
+  ASSERT_TRUE(salchat::generate_message_keys(replacement_secret, replacement_public));
+  salchat::decrypted_payload wrong_key;
+  EXPECT_FALSE(salchat::decrypt_payload(replacement_secret, bob.spend_public_key,
+    bob.view_public_key, cryptonote::MAINNET, envelope, wrong_key, 1000, error));
+
+  salchat::decrypted_payload recovered;
+  ASSERT_TRUE(salchat::decrypt_payload(bob.message_secret_key, bob.spend_public_key,
+    bob.view_public_key, cryptonote::MAINNET, envelope, recovered, 1000, error)) << error;
+  EXPECT_EQ(recovered.content, "waiting before rotation");
+}
+
 TEST(salchat_wallet, failed_message_key_derivation_clears_outputs)
 {
   const auto initialized=make_identity();
@@ -181,11 +247,13 @@ TEST(salchat_wallet, receive_batcher_honors_limit_and_stops_without_progress)
   salchat::detail::receive_batcher complete(250);
   ASSERT_EQ(complete.next_limit(),100u);
   ASSERT_TRUE(complete.advance(100,true,true));
+  EXPECT_EQ(complete.remaining(),150u);
   ASSERT_EQ(complete.next_limit(),100u);
   ASSERT_TRUE(complete.advance(100,true,true));
   ASSERT_EQ(complete.next_limit(),50u);
   EXPECT_FALSE(complete.advance(50,true,true));
   EXPECT_EQ(complete.next_limit(),0u);
+  EXPECT_EQ(complete.remaining(),0u);
 
   salchat::detail::receive_batcher short_response(250);
   EXPECT_FALSE(short_response.advance(42,true,true));

@@ -11,6 +11,8 @@ namespace tools { class wallet2; }
 
 namespace salchat
 {
+  constexpr std::size_t MAX_RETIRED_MESSAGE_KEYS = 16;
+
   namespace detail
   {
     template<typename T>
@@ -41,6 +43,8 @@ namespace salchat
         m_active = persist && made_progress && returned == requested && m_remaining != 0;
         return m_active;
       }
+
+      std::size_t remaining() const noexcept { return m_remaining; }
 
     private:
       std::size_t m_remaining;
@@ -77,6 +81,8 @@ namespace salchat
   {
     std::size_t erase_contact_messages(std::vector<message>& messages,
       const crypto::hash& contact_id);
+    bool retired_message_key_active(std::uint64_t retired_at, std::uint64_t retired_height,
+      std::uint64_t now, std::uint64_t current_height) noexcept;
   }
 
   struct public_identity
@@ -104,6 +110,7 @@ namespace salchat
     explicit service(tools::wallet2& wallet);
 
     public_identity get_identity() const;
+    public_identity rotate_identity();
     std::string get_address() const;
     contact add_contact(const std::string& label, const std::string& address_or_contact_id,
       const std::string& encryption_public_key = {},

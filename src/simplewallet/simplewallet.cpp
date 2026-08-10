@@ -13504,7 +13504,9 @@ bool simple_wallet::salchat(const std::vector<std::string>& args)
     (args[0] == "identity" || args[0] == "address" || args[0] == "status") &&
     !m_wallet->get_attribute("salchat.message-key.v4", stored_message_key);
   const bool needs_spend_authority = needs_key_initialization || (!args.empty() &&
-    ((args[0] == "send" && args.size() >= 3) ||
+    ((args[0] == "identity" && args.size() == 2 &&
+        (args[1] == "generate" || args[1] == "rotate")) ||
+      (args[0] == "send" && args.size() >= 3) ||
       (args[0] == "receive" && args.size() <= 2) ||
       (args[0] == "chat" && args.size() == 2)));
   if (needs_spend_authority)
@@ -13522,6 +13524,7 @@ bool simple_wallet::salchat_unlocked(const std::vector<std::string>& args)
   {
     message_writer() << "Salchat commands:\n"
       "  salchat identity show\n"
+      "  salchat identity generate\n"
       "  salchat address\n"
       "  salchat contact add <label> <SC_address:encryption_key>\n"
       "  salchat contact accept <label> <message_number|message_id>\n"
@@ -13658,7 +13661,25 @@ bool simple_wallet::salchat_unlocked(const std::vector<std::string>& args)
     };
     if (args[0] == "identity")
     {
-      if (args.size() != 2 || args[1] != "show") { usage(); return true; }
+      if (args.size() != 2 || (args[1] != "show" && args[1] != "generate" && args[1] != "rotate"))
+      { usage(); return true; }
+      if (args[1] == "generate" || args[1] == "rotate")
+      {
+        if (!user_confirms(
+              "Generate a new Salchat encryption key? Your contact code will change. "
+              "Share the new code with every contact and back up this wallet file after rotation. "
+              "Up to 16 still-valid prior keys are retained for already-waiting messages; "
+              "more rapid rotations can evict the oldest key."))
+        {
+          message_writer() << "Salchat key rotation cancelled.";
+          return true;
+        }
+        const auto identity = service.rotate_identity();
+        success_msg_writer() << "New Salchat encryption key generated.\nContact code: "
+          << identity.salvium_address << ":" << identity.encryption_public_key
+          << "\nBack up the wallet file now and share this new contact code with every contact.";
+        return true;
+      }
       const auto identity = service.get_identity();
       if (!identity.initialized) { message_writer() << "Salchat Carrot identity is unavailable."; return true; }
       message_writer() << "Spend public key: " << identity.spend_public_key

@@ -38,6 +38,11 @@ background-wallet mode.
 ### Identity and contact methods
 
 - `salchat_get_identity`: returns the wallet's public Carrot-linked identity.
+- `salchat_rotate_identity`: generates and persists a new random encryption key
+  and returns the replacement public identity. This changes the contact code.
+  Back up the wallet file and redistribute the new code. Rotation is always
+  allowed. Up to 16 still-valid retired keys are kept for relay-valid waiting
+  messages; further rotations during one overlap evict the oldest key.
 - `salchat_get_address`: returns the complete importable
   `SC-address:64-hex-encryption-key` contact string.
 - `salchat_add_contact`: accepts `label` plus either the complete contact
@@ -49,12 +54,14 @@ background-wallet mode.
 - `salchat_block_contact`: accepts `contact_id` and `blocked`.
 - `salchat_list_contacts`: returns bounded contact metadata.
 
-The wallet derives a dedicated Salchat encryption secret once, stores it in the
-encrypted wallet cache, and publishes only its public encryption key in the
-contact string. It is separate from the wallet view key and remains stable
-across CLI, wallet-RPC, GUI, and process restarts. Messages remain authenticated
-to the contact's Carrot identity. A wallet view key alone cannot decrypt or
-forge Salchat messages.
+The wallet derives its initial dedicated Salchat encryption secret, stores it
+in the encrypted wallet cache, and publishes only its public encryption key in
+the contact string. Explicit rotation replaces it with a random key stored in
+the wallet file; that replacement is not recoverable from the seed alone. The
+key is separate from the wallet view key and remains stable across CLI,
+wallet-RPC, GUI, and process restarts. Messages remain authenticated to the
+contact's Carrot identity. A wallet view key alone cannot decrypt or forge
+Salchat messages.
 Confirm high-value contacts out of band.
 
 ### Message methods

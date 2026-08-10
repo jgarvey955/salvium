@@ -138,6 +138,38 @@ namespace salchat
       reinterpret_cast<const unsigned char*>(&public_key)) == 0;
   }
 
+  bool message_public_key(const crypto::secret_key& message_secret_key,
+    crypto::public_key& encryption_public_key)
+  {
+    sodium_memzero(&encryption_public_key, sizeof(encryption_public_key));
+    if (message_secret_key == crypto::null_skey || sodium_init() < 0 ||
+        crypto_scalarmult_curve25519_base(
+          reinterpret_cast<unsigned char*>(&encryption_public_key),
+          reinterpret_cast<const unsigned char*>(message_secret_key.data)) != 0 ||
+        !valid_encryption_public_key(encryption_public_key))
+    {
+      sodium_memzero(&encryption_public_key, sizeof(encryption_public_key));
+      return false;
+    }
+    return true;
+  }
+
+  bool generate_message_keys(crypto::secret_key& message_secret_key,
+    crypto::public_key& encryption_public_key)
+  {
+    sodium_memzero(&message_secret_key, sizeof(message_secret_key));
+    sodium_memzero(&encryption_public_key, sizeof(encryption_public_key));
+    if (sodium_init() < 0)
+      return false;
+    randombytes_buf(message_secret_key.data, sizeof(message_secret_key.data));
+    if (!message_public_key(message_secret_key, encryption_public_key))
+    {
+      sodium_memzero(&message_secret_key, sizeof(message_secret_key));
+      return false;
+    }
+    return true;
+  }
+
   bool derive_message_keys(const crypto::secret_key& wallet_seed,
     crypto::secret_key& message_secret_key, crypto::public_key& encryption_public_key)
   {
@@ -154,15 +186,7 @@ namespace salchat
     });
     rct::hash_to_scalar(derived, input.data(), input.size());
     message_secret_key = rct::rct2sk(derived);
-    if (crypto_scalarmult_curve25519_base(
-          reinterpret_cast<unsigned char*>(&encryption_public_key),
-          reinterpret_cast<const unsigned char*>(message_secret_key.data)) != 0)
-    {
-      sodium_memzero(&message_secret_key, sizeof(message_secret_key));
-      sodium_memzero(&encryption_public_key, sizeof(encryption_public_key));
-      return false;
-    }
-    if (!valid_encryption_public_key(encryption_public_key))
+    if (!message_public_key(message_secret_key, encryption_public_key))
     {
       sodium_memzero(&message_secret_key, sizeof(message_secret_key));
       sodium_memzero(&encryption_public_key, sizeof(encryption_public_key));

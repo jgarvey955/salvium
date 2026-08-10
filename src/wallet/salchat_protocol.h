@@ -65,6 +65,10 @@ namespace salchat
   crypto::hash make_recipient_tag(const crypto::public_key& encryption, std::uint64_t epoch,
     cryptonote::network_type nettype);
   bool valid_encryption_public_key(const crypto::public_key& key);
+  bool message_public_key(const crypto::secret_key& message_secret_key,
+    crypto::public_key& encryption_public_key);
+  bool generate_message_keys(crypto::secret_key& message_secret_key,
+    crypto::public_key& encryption_public_key);
   bool derive_message_keys(const crypto::secret_key& wallet_seed,
     crypto::secret_key& message_secret_key, crypto::public_key& encryption_public_key);
   bool valid_contact(const contact& value);

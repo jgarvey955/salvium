@@ -173,6 +173,7 @@ namespace tools
         MAP_JON_RPC_WE("start_background_sync", on_start_background_sync, wallet_rpc::COMMAND_RPC_START_BACKGROUND_SYNC)
         MAP_JON_RPC_WE("stop_background_sync", on_stop_background_sync, wallet_rpc::COMMAND_RPC_STOP_BACKGROUND_SYNC)
         MAP_JON_RPC_WE("salchat_get_identity", on_salchat_get_identity, wallet_rpc::COMMAND_RPC_SALCHAT_GET_IDENTITY)
+        MAP_JON_RPC_WE("salchat_rotate_identity", on_salchat_rotate_identity, wallet_rpc::COMMAND_RPC_SALCHAT_ROTATE_IDENTITY)
         MAP_JON_RPC_WE("salchat_get_address", on_salchat_get_address, wallet_rpc::COMMAND_RPC_SALCHAT_GET_ADDRESS)
         MAP_JON_RPC_WE("salchat_add_contact", on_salchat_add_contact, wallet_rpc::COMMAND_RPC_SALCHAT_ADD_CONTACT)
         MAP_JON_RPC_WE("salchat_accept_contact", on_salchat_accept_contact, wallet_rpc::COMMAND_RPC_SALCHAT_ACCEPT_CONTACT)
@@ -287,6 +288,7 @@ namespace tools
       bool on_start_background_sync(const wallet_rpc::COMMAND_RPC_START_BACKGROUND_SYNC::request& req, wallet_rpc::COMMAND_RPC_START_BACKGROUND_SYNC::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_stop_background_sync(const wallet_rpc::COMMAND_RPC_STOP_BACKGROUND_SYNC::request& req, wallet_rpc::COMMAND_RPC_STOP_BACKGROUND_SYNC::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_salchat_get_identity(const wallet_rpc::COMMAND_RPC_SALCHAT_GET_IDENTITY::request&, wallet_rpc::COMMAND_RPC_SALCHAT_GET_IDENTITY::response&, epee::json_rpc::error&, const connection_context *ctx = NULL);
+      bool on_salchat_rotate_identity(const wallet_rpc::COMMAND_RPC_SALCHAT_ROTATE_IDENTITY::request&, wallet_rpc::COMMAND_RPC_SALCHAT_ROTATE_IDENTITY::response&, epee::json_rpc::error&, const connection_context *ctx = NULL);
       bool on_salchat_get_address(const wallet_rpc::COMMAND_RPC_SALCHAT_GET_ADDRESS::request&, wallet_rpc::COMMAND_RPC_SALCHAT_GET_ADDRESS::response&, epee::json_rpc::error&, const connection_context *ctx = NULL);
       bool on_salchat_add_contact(const wallet_rpc::COMMAND_RPC_SALCHAT_ADD_CONTACT::request&, wallet_rpc::COMMAND_RPC_SALCHAT_ADD_CONTACT::response&, epee::json_rpc::error&, const connection_context *ctx = NULL);
       bool on_salchat_accept_contact(const wallet_rpc::COMMAND_RPC_SALCHAT_ACCEPT_CONTACT::request&, wallet_rpc::COMMAND_RPC_SALCHAT_ACCEPT_CONTACT::response&, epee::json_rpc::error&, const connection_context *ctx = NULL);

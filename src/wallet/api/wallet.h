@@ -219,6 +219,7 @@ public:
     virtual bool setCacheAttribute(const std::string &key, const std::string &val) override;
     virtual std::string getCacheAttribute(const std::string &key) const override;
     bool salchatGetIdentity(SalchatIdentity &identity) const override;
+    bool salchatRotateIdentity(SalchatIdentity &identity) override;
     bool salchatGetAddress(std::string &address) const override;
     bool salchatAddContact(const std::string &label, const std::string &address,
                            SalchatContact &contact, uint64_t &promotedMessages) override;

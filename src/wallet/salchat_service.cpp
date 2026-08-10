@@ -25,6 +25,7 @@ namespace salchat
   {
     constexpr char STATE_ATTRIBUTE[] = "salchat.state.v4";
     constexpr char MESSAGE_KEY_ATTRIBUTE[] = "salchat.message-key.v4";
+    constexpr char RETIRED_MESSAGE_KEYS_ATTRIBUTE[] = "salchat.retired-message-keys.v4";
     constexpr std::uint32_t STATE_VERSION = 4;
     constexpr std::uint64_t EPOCH_SECONDS = 3600;
     constexpr std::size_t MAX_STATE_BYTES = 16 * 1024 * 1024;
@@ -47,6 +48,18 @@ namespace salchat
       END_SERIALIZE()
     };
 
+    struct retired_message_key
+    {
+      crypto::secret_key secret{};
+      std::uint64_t retired_at = 0;
+      std::uint64_t retired_height = 0;
+    };
+
+    struct message_key_history
+    {
+      std::vector<retired_message_key> keys;
+    };
+
     template<typename T> bool from_hex(const std::string& text, T& value)
     {
       std::string bytes;
@@ -64,6 +77,159 @@ namespace salchat
     bool valid_label(const std::string& label)
     {
       return !label.empty() && label.size() <= MAX_LABEL_BYTES && valid_text(label, false);
+    }
+
+    bool parse_secret_hex(const std::string& text, crypto::secret_key& secret)
+    {
+      std::string bytes;
+      const auto wipe_bytes = epee::misc_utils::create_scope_leave_handler([&]() {
+        wipe_string(bytes);
+      });
+      if (text.size() != sizeof(secret.data) * 2 ||
+          !epee::string_tools::parse_hexstr_to_binbuff(text, bytes) ||
+          bytes.size() != sizeof(secret.data))
+        return false;
+      std::memcpy(secret.data, bytes.data(), sizeof(secret.data));
+      return true;
+    }
+
+    bool parse_u64(const std::string& text, std::uint64_t& value)
+    {
+      if (text.empty() || !std::all_of(text.begin(), text.end(),
+            [](const unsigned char c) { return c >= '0' && c <= '9'; }))
+        return false;
+      try
+      {
+        std::size_t consumed = 0;
+        const unsigned long long parsed = std::stoull(text, &consumed);
+        if (consumed != text.size()) return false;
+        value = static_cast<std::uint64_t>(parsed);
+        return parsed == value;
+      }
+      catch (...) { return false; }
+    }
+
+    void wipe_message_key_history(message_key_history& history) noexcept
+    {
+      for (auto& item: history.keys)
+        sodium_memzero(&item.secret, sizeof(item.secret));
+    }
+
+    bool load_message_key_history(tools::wallet2& wallet, message_key_history& history)
+    {
+      std::string encoded;
+      const auto wipe_encoded = epee::misc_utils::create_scope_leave_handler([&]() {
+        wipe_string(encoded);
+      });
+      if (!wallet.get_attribute(RETIRED_MESSAGE_KEYS_ATTRIBUTE, encoded))
+        return false;
+      if (encoded.empty() || encoded.size() > 4096 || encoded[0] != '1')
+        throw std::runtime_error("corrupt retired Salchat message-key history");
+      history.keys.reserve(MAX_RETIRED_MESSAGE_KEYS);
+      std::size_t position = 1;
+      while (position < encoded.size())
+      {
+        if (encoded[position] != ';' || history.keys.size() >= MAX_RETIRED_MESSAGE_KEYS)
+          throw std::runtime_error("corrupt retired Salchat message-key history");
+        const std::size_t secret_end = encoded.find(',', position + 1);
+        const std::size_t time_end = secret_end == std::string::npos ? std::string::npos :
+          encoded.find(',', secret_end + 1);
+        const std::size_t record_end = time_end == std::string::npos ? std::string::npos :
+          encoded.find(';', time_end + 1);
+        if (secret_end == std::string::npos || time_end == std::string::npos)
+          throw std::runtime_error("corrupt retired Salchat message-key history");
+        std::string secret_text = encoded.substr(position + 1, secret_end - position - 1);
+        const auto wipe_secret_text = epee::misc_utils::create_scope_leave_handler([&]() {
+          wipe_string(secret_text);
+        });
+        retired_message_key retired;
+        const auto wipe_retired = epee::misc_utils::create_scope_leave_handler([&]() {
+          sodium_memzero(&retired.secret, sizeof(retired.secret));
+        });
+        if (!parse_secret_hex(secret_text, retired.secret) ||
+            !parse_u64(encoded.substr(secret_end + 1, time_end - secret_end - 1), retired.retired_at) ||
+            !parse_u64(encoded.substr(time_end + 1,
+              (record_end == std::string::npos ? encoded.size() : record_end) - time_end - 1),
+              retired.retired_height) || retired.retired_at == 0 ||
+            std::any_of(history.keys.begin(), history.keys.end(),
+              [&](const retired_message_key& item) { return item.secret == retired.secret; }))
+        {
+          throw std::runtime_error("corrupt retired Salchat message-key history");
+        }
+        crypto::public_key public_key{};
+        if (!message_public_key(retired.secret, public_key))
+          throw std::runtime_error("corrupt retired Salchat message-key history");
+        history.keys.push_back(retired);
+        if (record_end == std::string::npos)
+          break;
+        position = record_end;
+      }
+      return true;
+    }
+
+    void save_message_key_history(tools::wallet2& wallet, const message_key_history& history)
+    {
+      if (history.keys.size() > MAX_RETIRED_MESSAGE_KEYS)
+        throw std::runtime_error("retired Salchat message-key history exceeds its limit");
+      std::string encoded = "1";
+      const auto wipe_encoded = epee::misc_utils::create_scope_leave_handler([&]() {
+        wipe_string(encoded);
+      });
+      for (const auto& retired: history.keys)
+      {
+        std::string secret_bytes(
+          reinterpret_cast<const char*>(retired.secret.data), sizeof(retired.secret.data));
+        const auto wipe_secret_bytes = epee::misc_utils::create_scope_leave_handler([&]() {
+          wipe_string(secret_bytes);
+        });
+        std::string secret_hex = epee::string_tools::buff_to_hex_nodelimer(secret_bytes);
+        const auto wipe_secret_hex = epee::misc_utils::create_scope_leave_handler([&]() {
+          wipe_string(secret_hex);
+        });
+        encoded.push_back(';');
+        encoded.append(secret_hex);
+        encoded.push_back(',');
+        encoded.append(std::to_string(retired.retired_at));
+        encoded.push_back(',');
+        encoded.append(std::to_string(retired.retired_height));
+      }
+      if (encoded.size() > 4096)
+        throw std::runtime_error("retired Salchat message-key history exceeds its safe size");
+      wallet.set_attribute(RETIRED_MESSAGE_KEYS_ATTRIBUTE, encoded);
+    }
+
+    void save_message_key(tools::wallet2& wallet, const crypto::secret_key& secret)
+    {
+      std::string secret_bytes(reinterpret_cast<const char*>(secret.data), sizeof(secret.data));
+      const auto wipe_secret_bytes = epee::misc_utils::create_scope_leave_handler([&]() {
+        wipe_string(secret_bytes);
+      });
+      std::string secret_hex = epee::string_tools::buff_to_hex_nodelimer(secret_bytes);
+      const auto wipe_secret_hex = epee::misc_utils::create_scope_leave_handler([&]() {
+        wipe_string(secret_hex);
+      });
+      wallet.set_attribute(MESSAGE_KEY_ATTRIBUTE, secret_hex);
+    }
+
+    bool wallet_has_salchat_spend_authority(tools::wallet2& wallet)
+    {
+      const auto& keys = wallet.get_account().get_keys();
+      crypto::secret_key prove_spend{};
+      crypto::secret_key view_balance{};
+      crypto::secret_key generate_image{};
+      crypto::public_key spend_public{};
+      const auto wipe_derived_keys = epee::misc_utils::create_scope_leave_handler([&]() {
+        sodium_memzero(&prove_spend, sizeof(prove_spend));
+        sodium_memzero(&view_balance, sizeof(view_balance));
+        sodium_memzero(&generate_image, sizeof(generate_image));
+      });
+      if (keys.s_master == crypto::null_skey)
+        return false;
+      carrot::make_carrot_provespend_key(keys.s_master, prove_spend);
+      carrot::make_carrot_viewbalance_secret(keys.s_master, view_balance);
+      carrot::make_carrot_generateimage_key(view_balance, generate_image);
+      carrot::make_carrot_spend_pubkey(generate_image, prove_spend, spend_public);
+      return spend_public == keys.m_carrot_main_address.m_spend_public_key;
     }
 
     bool message_secret_for_wallet(tools::wallet2& wallet, crypto::secret_key& secret,
@@ -84,42 +250,17 @@ namespace salchat
             bytes.size() != sizeof(secret.data))
           throw std::runtime_error("corrupt Salchat message key");
         std::memcpy(secret.data, bytes.data(), sizeof(secret.data));
-        if (secret == crypto::null_skey ||
-            crypto_scalarmult_curve25519_base(reinterpret_cast<unsigned char*>(&encryption),
-              reinterpret_cast<const unsigned char*>(secret.data)) != 0 ||
-            !valid_encryption_public_key(encryption))
+        if (!message_public_key(secret, encryption))
           throw std::runtime_error("corrupt Salchat message key");
         return true;
       }
 
       const auto& keys = wallet.get_account().get_keys();
-      crypto::secret_key prove_spend{};
-      crypto::secret_key view_balance{};
-      crypto::secret_key generate_image{};
-      crypto::public_key spend_public{};
-      const auto wipe_derived_keys = epee::misc_utils::create_scope_leave_handler([&]() {
-        sodium_memzero(&prove_spend, sizeof(prove_spend));
-        sodium_memzero(&view_balance, sizeof(view_balance));
-        sodium_memzero(&generate_image, sizeof(generate_image));
-      });
-      carrot::make_carrot_provespend_key(keys.s_master, prove_spend);
-      carrot::make_carrot_viewbalance_secret(keys.s_master, view_balance);
-      carrot::make_carrot_generateimage_key(view_balance, generate_image);
-      carrot::make_carrot_spend_pubkey(generate_image, prove_spend, spend_public);
-      if (keys.s_master == crypto::null_skey ||
-          spend_public != keys.m_carrot_main_address.m_spend_public_key)
+      if (!wallet_has_salchat_spend_authority(wallet))
         throw std::runtime_error("unlock the wallet once to initialize its stable Salchat message key");
       if (!derive_message_keys(keys.s_master, secret, encryption))
         throw std::runtime_error("wallet Salchat message key is unavailable");
-      std::string secret_bytes(reinterpret_cast<const char*>(secret.data), sizeof(secret.data));
-      const auto wipe_secret_bytes = epee::misc_utils::create_scope_leave_handler([&]() {
-        wipe_string(secret_bytes);
-      });
-      std::string secret_hex = epee::string_tools::buff_to_hex_nodelimer(secret_bytes);
-      const auto wipe_secret_hex = epee::misc_utils::create_scope_leave_handler([&]() {
-        wipe_string(secret_hex);
-      });
-      wallet.set_attribute(MESSAGE_KEY_ATTRIBUTE, secret_hex);
+      save_message_key(wallet, secret);
       return true;
     }
 
@@ -186,6 +327,17 @@ namespace salchat
       if (item.contact_id == contact_id)
         wipe_string(item.content);
     return erase_contact_records(messages, contact_id);
+  }
+
+  bool detail::retired_message_key_active(const std::uint64_t retired_at,
+    const std::uint64_t retired_height, const std::uint64_t now,
+    const std::uint64_t current_height) noexcept
+  {
+    const bool active_by_time = now < retired_at ||
+      now - retired_at < cryptonote::SALCHAT_MAX_TTL_SECONDS;
+    const bool active_by_height = current_height < retired_height ||
+      current_height - retired_height < cryptonote::SALCHAT_MESSAGE_LIFETIME_BLOCKS;
+    return active_by_time || active_by_height;
   }
 
   service::state service::load() const
@@ -304,6 +456,65 @@ namespace salchat
     out.spend_public_key = to_hex(address.m_spend_public_key);
     out.signing_public_key = out.spend_public_key;
     out.encryption_public_key = to_hex(encryption);
+    out.salvium_address = account.get_carrot_public_address_str(m_wallet.nettype());
+    out.created_at = account.get_createtime();
+    return out;
+  }
+
+  public_identity service::rotate_identity()
+  {
+    const std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    if (!wallet_has_salchat_spend_authority(m_wallet))
+      throw std::runtime_error("unlock the wallet to generate a new Salchat encryption key");
+
+    const std::uint64_t now = static_cast<std::uint64_t>(std::time(nullptr));
+    const std::uint64_t chain_height = m_wallet.get_blockchain_current_height();
+    crypto::secret_key current_secret{};
+    crypto::public_key current_public{};
+    crypto::secret_key new_secret{};
+    crypto::public_key new_public{};
+    message_key_history history;
+    const auto wipe_secrets = epee::misc_utils::create_scope_leave_handler([&]() {
+      sodium_memzero(&current_secret, sizeof(current_secret));
+      sodium_memzero(&new_secret, sizeof(new_secret));
+      wipe_message_key_history(history);
+    });
+
+    message_secret_for_wallet(m_wallet, current_secret, current_public);
+    load_message_key_history(m_wallet, history);
+
+    if (!generate_message_keys(new_secret, new_public) || new_public == current_public)
+      throw std::runtime_error("failed to generate a new Salchat encryption key");
+
+    std::vector<std::size_t> active_indices;
+    for (std::size_t i = 0; i < history.keys.size(); ++i)
+      if (detail::retired_message_key_active(history.keys[i].retired_at,
+            history.keys[i].retired_height, now, chain_height))
+        active_indices.push_back(i);
+    const std::size_t retain = std::min<std::size_t>(
+      active_indices.size(), MAX_RETIRED_MESSAGE_KEYS - 1);
+    message_key_history retained;
+    const auto wipe_retained = epee::misc_utils::create_scope_leave_handler([&]() {
+      wipe_message_key_history(retained);
+    });
+    retained.keys.reserve(retain + 1);
+    for (std::size_t i = active_indices.size() - retain; i < active_indices.size(); ++i)
+      retained.keys.push_back(history.keys[active_indices[i]]);
+    wipe_message_key_history(history);
+    history.keys.clear();
+    history = std::move(retained);
+    history.keys.push_back({current_secret, now, chain_height});
+    save_message_key_history(m_wallet, history);
+    save_message_key(m_wallet, new_secret);
+    m_wallet.store();
+
+    public_identity out;
+    const auto& account = m_wallet.get_account();
+    const auto& address = account.get_keys().m_carrot_main_address;
+    out.initialized = true;
+    out.spend_public_key = to_hex(address.m_spend_public_key);
+    out.signing_public_key = out.spend_public_key;
+    out.encryption_public_key = to_hex(new_public);
     out.salvium_address = account.get_carrot_public_address_str(m_wallet.nettype());
     out.created_at = account.get_createtime();
     return out;
@@ -542,26 +753,31 @@ namespace salchat
     const std::lock_guard<std::recursive_mutex> lock(state_mutex);
     if (limit == 0 || limit > 1000) throw std::runtime_error("receive limit must be between 1 and 1000");
     auto value = load();
-    std::vector<std::string> recipient_tags;
     const std::uint64_t now = static_cast<std::uint64_t>(std::time(nullptr));
     const std::uint64_t chain_height = m_wallet.get_blockchain_current_height();
     const std::uint64_t epoch = now / EPOCH_SECONDS;
     const auto& account_keys = m_wallet.get_account().get_keys();
     crypto::secret_key message_secret{};
     crypto::public_key carrot_encryption_public_key{};
+    message_key_history retired_keys;
+    std::vector<crypto::public_key> retired_encryption_public_keys;
     const auto wipe_message_secret = epee::misc_utils::create_scope_leave_handler([&]() {
       sodium_memzero(&message_secret, sizeof(message_secret));
+      wipe_message_key_history(retired_keys);
     });
     message_secret_for_wallet(m_wallet, message_secret, carrot_encryption_public_key);
-    // Include the next epoch because the daemon accepts a small amount of
-    // sender clock skew, including messages created just across an hour edge.
-    if (epoch != std::numeric_limits<std::uint64_t>::max())
-      recipient_tags.push_back(to_hex(make_recipient_tag(
-        carrot_encryption_public_key, epoch + 1, m_wallet.nettype())));
-    constexpr std::uint64_t offline_epochs = cryptonote::SALCHAT_MAX_TTL_SECONDS / EPOCH_SECONDS;
-    for (std::uint64_t age = 0; age <= offline_epochs && age <= epoch; ++age)
-      recipient_tags.push_back(to_hex(make_recipient_tag(
-        carrot_encryption_public_key, epoch - age, m_wallet.nettype())));
+    load_message_key_history(m_wallet, retired_keys);
+    retired_encryption_public_keys.reserve(retired_keys.keys.size());
+    for (const auto& retired: retired_keys.keys)
+    {
+      if (!detail::retired_message_key_active(
+            retired.retired_at, retired.retired_height, now, chain_height))
+        continue;
+      crypto::public_key public_key{};
+      if (!message_public_key(retired.secret, public_key))
+        throw std::runtime_error("corrupt retired Salchat message key");
+      retired_encryption_public_keys.push_back(public_key);
+    }
 
     receive_result result;
     struct pending_ack
@@ -571,13 +787,49 @@ namespace salchat
     };
     std::unordered_set<std::string> seen_ids;
     std::unordered_set<std::string> seen_hashes;
-    const std::unordered_set<std::string> requested_tags(recipient_tags.begin(), recipient_tags.end());
     for (const auto& id: value.seen_message_ids) seen_ids.insert(to_hex(id));
     for (const auto& hash: value.seen_ciphertext_hashes) seen_hashes.insert(to_hex(hash));
 
-    detail::receive_batcher batches(limit);
-    while (const std::size_t batch_limit = batches.next_limit())
+    struct decryption_key_view
     {
+      const crypto::secret_key* secret;
+      const crypto::public_key* public_key;
+    };
+    std::vector<decryption_key_view> decryption_keys;
+    // Poll the current key first so traffic addressed to a retired or
+    // compromised public key cannot starve delivery to the replacement key.
+    decryption_keys.push_back({&message_secret, &carrot_encryption_public_key});
+    std::size_t retired_public_index = 0;
+    for (const auto& retired: retired_keys.keys)
+    {
+      if (!detail::retired_message_key_active(
+            retired.retired_at, retired.retired_height, now, chain_height))
+        continue;
+      decryption_keys.push_back(
+        {&retired.secret, &retired_encryption_public_keys[retired_public_index++]});
+    }
+
+    std::size_t remaining = limit;
+    for (const decryption_key_view& decryption_key: decryption_keys)
+    {
+      std::vector<std::string> recipient_tags;
+      // Include the next epoch because the daemon accepts a small amount of
+      // sender clock skew, including messages created just across an hour edge.
+      if (epoch != std::numeric_limits<std::uint64_t>::max())
+        recipient_tags.push_back(to_hex(make_recipient_tag(
+          *decryption_key.public_key, epoch + 1, m_wallet.nettype())));
+      constexpr std::uint64_t offline_epochs = cryptonote::SALCHAT_MAX_TTL_SECONDS / EPOCH_SECONDS;
+      for (std::uint64_t age = 0; age <= offline_epochs && age <= epoch; ++age)
+        recipient_tags.push_back(to_hex(make_recipient_tag(
+          *decryption_key.public_key, epoch - age, m_wallet.nettype())));
+      if (recipient_tags.size() > cryptonote::SALCHAT_MAX_POLL_TAGS)
+        throw std::runtime_error("Salchat recipient-tag window exceeds the daemon limit");
+      const std::unordered_set<std::string> requested_tags(
+        recipient_tags.begin(), recipient_tags.end());
+
+      detail::receive_batcher batches(remaining);
+      while (const std::size_t batch_limit = batches.next_limit())
+      {
       cryptonote::COMMAND_RPC_SALCHAT_POLL::request request;
       cryptonote::COMMAND_RPC_SALCHAT_POLL::response response;
       request.recipient_tags = recipient_tags;
@@ -626,7 +878,7 @@ namespace salchat
               sodium_memzero(&duplicate.ack_token, sizeof(duplicate.ack_token));
               if (!duplicate.content.empty()) sodium_memzero(&duplicate.content[0], duplicate.content.size());
             });
-            if (decrypt_payload(message_secret,
+            if (decrypt_payload(*decryption_key.secret,
                 account_keys.m_carrot_main_address.m_spend_public_key,
                 account_keys.m_carrot_main_address.m_view_public_key, m_wallet.nettype(),
                 envelope, duplicate, now, chain_height, validation_error))
@@ -643,7 +895,7 @@ namespace salchat
               sodium_memzero(&plain.ack_token, sizeof(plain.ack_token));
               if (!plain.content.empty()) sodium_memzero(&plain.content[0], plain.content.size());
             });
-            if (decrypt_payload(message_secret,
+            if (decrypt_payload(*decryption_key.secret,
                 account_keys.m_carrot_main_address.m_spend_public_key,
                 account_keys.m_carrot_main_address.m_view_public_key, m_wallet.nettype(),
                 envelope, plain, now, chain_height, validation_error))
@@ -770,7 +1022,11 @@ namespace salchat
         batch_state_changed = batch_state_changed || state_changed;
       }
 
-      if (!persist) return result;
+      if (!persist)
+      {
+        batches.advance(batch_size, false, false);
+        break;
+      }
 
       // Persist every complete inbound batch before acknowledging it. The
       // acknowledgement removes that batch from the relay so the next poll can
@@ -793,6 +1049,10 @@ namespace salchat
       }
 
       if (!batches.advance(batch_size, persist, batch_made_progress))
+        break;
+      }
+      remaining = batches.remaining();
+      if (remaining == 0)
         break;
     }
 

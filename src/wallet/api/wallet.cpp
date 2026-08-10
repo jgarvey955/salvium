@@ -2204,6 +2204,12 @@ bool WalletImpl::salchatGetIdentity(SalchatIdentity &identity) const
     catch (const std::exception &e) { setStatusError(e.what()); return false; }
 }
 
+bool WalletImpl::salchatRotateIdentity(SalchatIdentity &identity)
+{
+    try { clearStatus(); LOCK_REFRESH(); epee::wipeable_string password(m_password); tools::wallet_keys_unlocker unlocker(*m_wallet, &password); identity = salchat_identity(salchat::service(*m_wallet).rotate_identity()); return true; }
+    catch (const std::exception &e) { setStatusError(e.what()); return false; }
+}
+
 bool WalletImpl::salchatGetAddress(std::string &address) const
 {
     try { clearStatus(); boost::lock_guard<boost::mutex> guard(m_refreshMutex2); epee::wipeable_string password(m_password); tools::wallet_keys_unlocker unlocker(*m_wallet, &password); address = salchat::service(*m_wallet).get_address(); return true; }

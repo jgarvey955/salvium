@@ -2902,6 +2902,9 @@ namespace tools
   bool wallet_rpc_server::on_salchat_get_identity(const wallet_rpc::COMMAND_RPC_SALCHAT_GET_IDENTITY::request&, wallet_rpc::COMMAND_RPC_SALCHAT_GET_IDENTITY::response& res, epee::json_rpc::error& er, const connection_context*)
   { if(!salchat_rpc_allowed(m_wallet,m_restricted,er)) return false; try { res.identity=salchat_rpc_identity(salchat::service(*m_wallet).get_identity()); return true; } catch(const std::exception& e){ return salchat_rpc_error(e,er); } }
 
+  bool wallet_rpc_server::on_salchat_rotate_identity(const wallet_rpc::COMMAND_RPC_SALCHAT_ROTATE_IDENTITY::request&, wallet_rpc::COMMAND_RPC_SALCHAT_ROTATE_IDENTITY::response& res, epee::json_rpc::error& er, const connection_context*)
+  { if(!salchat_rpc_allowed(m_wallet,m_restricted,er)) return false; try { res.identity=salchat_rpc_identity(salchat::service(*m_wallet).rotate_identity()); return true; } catch(const std::exception& e){ return salchat_rpc_error(e,er); } }
+
   bool wallet_rpc_server::on_salchat_get_address(const wallet_rpc::COMMAND_RPC_SALCHAT_GET_ADDRESS::request&, wallet_rpc::COMMAND_RPC_SALCHAT_GET_ADDRESS::response& res, epee::json_rpc::error& er, const connection_context*)
   { if(!salchat_rpc_allowed(m_wallet,m_restricted,er)) return false; try { res.address=salchat::service(*m_wallet).get_address(); return true; } catch(const std::exception& e){ return salchat_rpc_error(e,er); } }
 

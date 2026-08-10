@@ -1199,6 +1199,7 @@ struct Wallet
     virtual std::string getCacheAttribute(const std::string &key) const = 0;
 
     virtual bool salchatGetIdentity(SalchatIdentity &identity) const = 0;
+    virtual bool salchatRotateIdentity(SalchatIdentity &identity) = 0;
     virtual bool salchatGetAddress(std::string &address) const = 0;
     virtual bool salchatAddContact(const std::string &label, const std::string &address,
                                   SalchatContact &contact, uint64_t &promotedMessages) = 0;

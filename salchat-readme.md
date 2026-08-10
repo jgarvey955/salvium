@@ -16,7 +16,7 @@ A SalChat public identity contains:
 - the Carrot spend public key, also used as the message-signing identity; and
 - a dedicated SalChat X25519 encryption public key.
 
-The private SalChat message key is deterministically recovered from wallet master seed material using domain-separated hash-to-scalar derivation:
+The initial private SalChat message key is deterministically recovered from wallet master seed material using domain-separated hash-to-scalar derivation:
 
 ```text
 msg_sk = Hs("SalChat-msg-v4" || seed)
@@ -25,6 +25,8 @@ msg_sk = Hs("SalChat-msg-v4" || seed)
 `Hs` maps the domain label and seed to a valid scalar. Domain separation prevents reuse of the wallet's spend, view, or other protocol keys. The corresponding public key is exchanged with the Carrot address when adding a contact.
 
 The private view key is not used for SalChat encryption. A view-only wallet or a party given the private view key cannot derive `msg_sk` and cannot decrypt captured SalChat v4 envelopes. The wallet master seed or derived private message key must still be protected: compromise of either can decrypt recorded messages addressed to that identity. SalChat uses a fresh ephemeral X25519 key for every envelope and XChaCha20-Poly1305 authenticated encryption, but it does not currently implement a Double Ratchet; compromise of the long-term message key can therefore expose recorded messages.
+
+An unlocked wallet can explicitly replace its encryption key with `salchat identity generate`. The replacement is generated randomly and stored only in the encrypted wallet file, so the wallet file must be backed up after rotation; restoring the seed alone recovers the original deterministic key, not a later replacement. The public contact code changes and must be redistributed. Rotation is always allowed. The wallet keeps up to 16 still-valid retired keys for the complete time-and-block relay overlap so already-waiting messages remain decryptable; rotating more than 16 times during one overlap evicts the oldest key and may make messages addressed to that oldest code unreadable.
 
 The sender signs the complete immutable envelope with Carrot spend authority. The signature binds the sender identity, ciphertext, recipient tag, keys, creation and expiration data, acknowledgement capability, and hop limit. The mutable hop counter is intentionally excluded so relays can increment it. Signing is off-chain and does not spend funds.
 
@@ -97,6 +99,12 @@ Display the local public identity:
 salchat identity show
 ```
 
+Generate a replacement encryption key after confirming the contact-code and backup warnings:
+
+```text
+salchat identity generate
+```
+
 Share the displayed main Carrot address and encryption key together. Add a known contact with a combined identity:
 
 ```text
@@ -131,7 +139,7 @@ salchat delete <message_number|message_id>
 
 ## Wallet RPC and GUI API
 
-The wallet RPC exposes `salchat_get_identity`, contact management, sending, receiving, message listing/get/delete, and status methods. `salchat_add_contact` accepts `label`, `address`, and `encryption_public_key`. Message responses include `expires_height` and `blocks_left`.
+The wallet RPC exposes `salchat_get_identity`, `salchat_rotate_identity`, contact management, sending, receiving, message listing/get/delete, and status methods. `salchat_add_contact` accepts `label`, `address`, and `encryption_public_key`. Message responses include `expires_height` and `blocks_left`.
 
 The GUI-facing wallet API provides the same identity, contact, send/receive, listing, status, and deletion operations. `SalchatMessage` includes `expiresHeight` and `blocksLeft`. Applications should display block expiry as approximate time because actual block production varies.
 
@@ -143,7 +151,7 @@ SalChat v4 is the first production SalChat wire protocol. It does not change Sal
 
 - Message contents are end-to-end encrypted and never placed on-chain.
 - The private view key alone cannot decrypt SalChat v4 messages.
-- The wallet seed and derived message secret can decrypt recorded incoming envelopes and must remain secret.
+- The wallet seed, encrypted wallet file, and current or retired message secrets can decrypt their corresponding recorded incoming envelopes and must remain secret.
 - Relay metadata and source-IP exposure remain possible.
 - Expiration and local deletion cannot destroy copies outside the user's control.
 - SalChat remains experimental and should receive independent cryptographic and protocol review before high-risk use.
