@@ -463,7 +463,7 @@ elseif(CMAKE_SYSTEM_NAME MATCHES ".*BSDI.*")
   set(BSDI TRUE)
 endif()
 
-include_directories(external/rapidjson/include external/easylogging++ src contrib/epee/include external external/supercop/include external/mx25519/include)
+include_directories(external/rapidjson/include external/easylogging++ src contrib/epee/include external external/miniupnp/miniupnpc/include external/supercop/include external/mx25519/include)
 
 if(APPLE)
   cmake_policy(SET CMP0042 NEW)
@@ -600,9 +600,27 @@ endif()
 find_package(OpenSSL REQUIRED)
 message(STATUS "Using OpenSSL include dir at ${OPENSSL_INCLUDE_DIR}")
 include_directories(${OPENSSL_INCLUDE_DIR})
-if(STATIC AND NOT IOS)
-  if(UNIX)
+if(NOT IOS)
+  if(UNIX AND (STATIC OR OPENSSL_CRYPTO_LIBRARY MATCHES "\\.a$"))
     set(OPENSSL_LIBRARIES "${OPENSSL_LIBRARIES};${CMAKE_DL_LIBS};${CMAKE_THREAD_LIBS_INIT}")
+  endif()
+  if(UNIX)
+    # OpenSSL 3 static archives on current Linux distributions may use private
+    # dependencies that CMake's FindOpenSSL target does not propagate. Add the
+    # installed archives only when a static libcrypto was selected.
+    if(OPENSSL_CRYPTO_LIBRARY MATCHES "\\.a$")
+      find_library(OPENSSL_JITTERENTROPY_LIBRARY NAMES jitterentropy)
+      find_library(OPENSSL_ZSTD_LIBRARY NAMES zstd)
+      set(OPENSSL_CRYPTO_PRIVATE_LIBRARIES ${CMAKE_DL_LIBS} ${CMAKE_THREAD_LIBS_INIT})
+      if(OPENSSL_JITTERENTROPY_LIBRARY)
+        list(APPEND OPENSSL_CRYPTO_PRIVATE_LIBRARIES "${OPENSSL_JITTERENTROPY_LIBRARY}")
+      endif()
+      if(OPENSSL_ZSTD_LIBRARY)
+        list(APPEND OPENSSL_CRYPTO_PRIVATE_LIBRARIES "${OPENSSL_ZSTD_LIBRARY}")
+      endif()
+      list(APPEND OPENSSL_LIBRARIES ${OPENSSL_CRYPTO_PRIVATE_LIBRARIES})
+      list(APPEND OPENSSL_CRYPTO_LIBRARIES ${OPENSSL_CRYPTO_PRIVATE_LIBRARIES})
+    endif()
   endif()
 endif()
 
@@ -678,11 +696,17 @@ endfunction ()
 # Generate header for embedded translations, use target toolchain if depends, otherwise use the
 # lrelease and lupdate binaries from the host
 include(ExternalProject)
+set(TRANSLATIONS_HOST_TOOLCHAIN_ARGS)
+if(NOT CMAKE_CROSSCOMPILING)
+  list(APPEND TRANSLATIONS_HOST_TOOLCHAIN_ARGS
+    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+    -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
+endif()
 ExternalProject_Add(generate_translations_header
   SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/translations"
   BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/translations"
   STAMP_DIR ${LRELEASE_PATH}
-  CMAKE_ARGS -DLRELEASE_PATH=${LRELEASE_PATH}
+  CMAKE_ARGS -DLRELEASE_PATH=${LRELEASE_PATH} ${TRANSLATIONS_HOST_TOOLCHAIN_ARGS}
   INSTALL_COMMAND ${CMAKE_COMMAND} -E echo "")
 include_directories("${CMAKE_CURRENT_BINARY_DIR}/translations")
 add_subdirectory(external)

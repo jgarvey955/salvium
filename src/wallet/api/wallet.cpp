@@ -39,10 +39,12 @@
 #include "subaddress_account.h"
 #include "common_defines.h"
 #include "common/util.h"
+#include "wallet/salchat_service.h"
 
 #include "mnemonics/electrum-words.h"
 #include "mnemonics/english.h"
 #include <boost/format.hpp>
+#include <cstring>
 #include <sstream>
 #include <unordered_map>
 
@@ -92,6 +94,25 @@ using namespace cryptonote;
 
 namespace Monero {
 
+void WalletListener::onDevicePassphraseRequestSecure(bool& on_device,
+    const DevicePassphraseCallback& receive)
+{
+    // Preserve existing listener implementations, but erase the returned
+    // string even if allocation or the receiving callback throws.
+    auto passphrase = onDevicePassphraseRequest(on_device);
+    struct WipeReturnedPassphrase
+    {
+        optional<std::string>& value;
+        ~WipeReturnedPassphrase()
+        {
+            if (value && !(*value).empty())
+                memwipe(&(*value)[0], (*value).size());
+        }
+    } wipe{passphrase};
+    if (passphrase && !on_device)
+        receive((*passphrase).data(), (*passphrase).size());
+}
+
 namespace {
     // copy-pasted from simplewallet
     static const int    DEFAULT_REFRESH_INTERVAL_MILLIS = 1000 * 10;
@@ -101,6 +122,33 @@ namespace {
     static const int    DEFAULT_REMOTE_NODE_REFRESH_INTERVAL_MILLIS = 1000 * 10;
     // Connection timeout 20 sec
     static const int    DEFAULT_CONNECTION_TIMEOUT_MILLIS = 1000 * 20;
+
+    bool is_reserved_cache_attribute(const std::string &key)
+    {
+      return key.compare(0, 8, "salchat.") == 0;
+    }
+
+    SalchatIdentity salchat_identity(const salchat::public_identity &in)
+    {
+      return {in.initialized, in.spend_public_key, in.signing_public_key, in.encryption_public_key,
+        in.salvium_address, in.created_at};
+    }
+
+    SalchatContact salchat_contact(const salchat::contact &in)
+    {
+      return {salchat::service::id_hex(in.id), in.label,
+        salchat::service::key_hex(in.spend_public_key),
+        salchat::service::key_hex(in.signing_public_key), salchat::service::key_hex(in.encryption_public_key),
+        in.salvium_address, in.blocked, in.created_at};
+    }
+
+    SalchatMessage salchat_message(const salchat::message &in, const uint64_t currentHeight)
+    {
+      return {salchat::service::id_hex(in.id), salchat::service::id_hex(in.contact_id), in.content,
+        in.sender_salvium_address, salchat::service::key_hex(in.sender_signing_public_key), static_cast<uint8_t>(in.type),
+        static_cast<uint8_t>(in.direction), static_cast<uint8_t>(in.state), in.created_at, in.received_at,
+        in.expires_height, in.expires_height > currentHeight ? in.expires_height-currentHeight : 0};
+    }
 
     std::string get_default_ringdb_path(cryptonote::network_type nettype)
     {
@@ -274,15 +322,18 @@ struct Wallet2CallbackImpl : public tools::i_wallet2_callback
 
     virtual boost::optional<epee::wipeable_string> on_device_passphrase_request(bool & on_device)
     {
+      boost::optional<epee::wipeable_string> passphrase;
       if (m_listener) {
-        auto passphrase = m_listener->onDevicePassphraseRequest(on_device);
-        if (passphrase) {
-          return boost::make_optional(epee::wipeable_string((*passphrase).data(), (*passphrase).size()));
-        }
+        m_listener->onDevicePassphraseRequestSecure(on_device,
+          [&](const char* data, std::size_t size) {
+            passphrase.emplace();
+            if (size != 0)
+              passphrase->append(data, size);
+          });
       } else {
         on_device = true;
       }
-      return boost::none;
+      return on_device ? boost::none : std::move(passphrase);
     }
 
     virtual void on_device_progress(const hw::device_progress & event)
@@ -358,7 +409,8 @@ bool Wallet::keyValid(const std::string &secret_key_string, const std::string &a
       error = tr("Failed to parse key");
       return false;
   }
-  crypto::secret_key key = *reinterpret_cast<const crypto::secret_key*>(key_data.data());
+  crypto::secret_key key;
+  std::memcpy(key.data, key_data.data(), sizeof(key.data));
 
   // check the key match the given address
   crypto::public_key pkey;
@@ -456,13 +508,8 @@ WalletImpl::~WalletImpl()
 {
 
     LOG_PRINT_L1(__FUNCTION__);
+    close(false); // Stops refresh before deinitializing the wallet or its callback.
     m_wallet->callback(NULL);
-    // Pause refresh thread - prevents refresh from starting again
-    WalletImpl::pauseRefresh(); // Call the method directly (not polymorphically) to protect against UB in destructor.
-    // Close wallet - stores cache and stops ongoing refresh operation 
-    close(false); // do not store wallet as part of the closing activities
-    // Stop refresh thread
-    stopRefresh();
 
     if (m_wallet2Callback->getListener()) {
       m_wallet2Callback->getListener()->onSetWallet(nullptr);
@@ -608,7 +655,7 @@ bool WalletImpl::recoverFromKeysWithPassword(const std::string &path,
             return false;
         }
         has_spendkey = true;
-        spendkey = *reinterpret_cast<const crypto::secret_key*>(spendkey_data.data());
+        std::memcpy(spendkey.data, spendkey_data.data(), sizeof(spendkey.data));
     }
 
     // parse view secret key
@@ -630,7 +677,7 @@ bool WalletImpl::recoverFromKeysWithPassword(const std::string &path,
           setStatusError(tr("failed to parse secret view key"));
           return false;
       }
-      viewkey = *reinterpret_cast<const crypto::secret_key*>(viewkey_data.data());
+      std::memcpy(viewkey.data, viewkey_data.data(), sizeof(viewkey.data));
     }
     // check the spend and view keys match the given address
     crypto::public_key pkey;
@@ -676,6 +723,7 @@ bool WalletImpl::recoverFromKeysWithPassword(const std::string &path,
         setStatusError(string(tr("failed to generate new wallet: ")) + e.what());
         return false;
     }
+    m_password = password;
     return true;
 }
 
@@ -690,9 +738,10 @@ bool WalletImpl::recoverFromDevice(const std::string &path, const std::string &p
         LOG_PRINT_L1("Generated new wallet from device: " + device_name);
     }
     catch (const std::exception& e) {
-        setStatusError(string(tr("failed to generate new wallet: ")) + e.what());
+        setStatusCritical(string(tr("failed to generate new wallet: ")) + e.what());
         return false;
     }
+    m_password = password;
     return true;
 }
 
@@ -761,6 +810,7 @@ bool WalletImpl::recover(const std::string &path, const std::string &password, c
     try {
         m_wallet->set_seed_language(old_language);
         m_wallet->generate(path, password, recovery_key, true, false);
+        m_password = password;
 
     } catch (const std::exception &e) {
         setStatusCritical(e.what());
@@ -770,10 +820,13 @@ bool WalletImpl::recover(const std::string &path, const std::string &password, c
 
 bool WalletImpl::close(bool store)
 {
-
     bool result = false;
     LOG_PRINT_L1("closing wallet...");
     try {
+        m_wallet->stop();
+        stopRefresh();
+        boost::mutex::scoped_lock lock(m_refreshMutex);
+        boost::mutex::scoped_lock lock2(m_refreshMutex2);
         if (store) {
             // Do not store wallet with invalid status
             // Status Critical refers to errors on opening or creating wallets.
@@ -977,8 +1030,9 @@ void WalletImpl::stop()
 
 bool WalletImpl::store(const std::string &path)
 {
-    clearStatus();
     try {
+        LOCK_REFRESH();
+        clearStatus();
         if (path.empty()) {
             m_wallet->store();
         } else {
@@ -1005,6 +1059,7 @@ string WalletImpl::keysFilename() const
 
 bool WalletImpl::init(const std::string &daemon_address, uint64_t upper_transaction_size_limit, const std::string &daemon_username, const std::string &daemon_password, bool use_ssl, bool lightWallet, const std::string &proxy_address)
 {
+    (void)lightWallet;
     clearStatus();
     if(daemon_username != "")
         m_daemon_login.emplace(daemon_username, daemon_password);
@@ -1631,6 +1686,14 @@ PendingTransaction* WalletImpl::restoreMultisigTransaction(const string& signDat
 
 PendingTransaction *WalletImpl::createStakeTransaction(uint64_t amount, uint32_t mixin_count, PendingTransaction::Priority priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
 {
+  if (amount == 0) {
+    clearStatus();
+    auto *transaction = new PendingTransactionImpl(*this);
+    setStatusError(tr("Stake amount must be greater than zero"));
+    statusWithErrorString(transaction->m_status, transaction->m_errorString);
+    return transaction;
+  }
+
   // Need to populate {dst_entr, payment_id, asset_type, is_return}
   const bool is_carrot = m_wallet->get_current_hard_fork() >= HF_VERSION_CARROT;
   const string dst_addr = m_wallet->get_subaddress_as_str({{subaddr_account, 0}, is_carrot ? carrot::AddressDeriveType::Carrot : carrot::AddressDeriveType::PreCarrot});//MY LOCAL (SUB)ADDRESS
@@ -1640,7 +1703,7 @@ PendingTransaction *WalletImpl::createStakeTransaction(uint64_t amount, uint32_t
 
   LOG_ERROR("createStakeTransaction: called");
   
-  return createTransactionMultDest(Monero::transaction_type::STAKE, std::vector<string> {dst_addr}, payment_id, amount ? (std::vector<uint64_t> {amount}) : (optional<std::vector<uint64_t>>()), mixin_count, asset_type, is_return, priority, subaddr_account, subaddr_indices);
+  return createTransactionMultDest(Monero::transaction_type::STAKE, std::vector<string> {dst_addr}, payment_id, std::vector<uint64_t> {amount}, mixin_count, asset_type, is_return, priority, subaddr_account, subaddr_indices);
 }
 
 PendingTransaction *WalletImpl::createCreateTokenTransaction(const std::string &asset_type, uint64_t supply, const std::string &metadata, const std::string &name, uint32_t size, std::string hash, std::string url, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices){
@@ -1750,27 +1813,11 @@ PendingTransaction *WalletImpl::createAuditTransaction(
     uint32_t subaddr_account,
     std::set<uint32_t> subaddr_indices
 ) {
-    // Need to populate {dst_entr, payment_id, asset_type, is_return}
-    const bool is_carrot = m_wallet->get_current_hard_fork() >= HF_VERSION_CARROT;
-    const string dst_addr = m_wallet->get_subaddress_as_str({{subaddr_account, 0}, is_carrot ? carrot::AddressDeriveType::Carrot : carrot::AddressDeriveType::PreCarrot});//MY LOCAL (SUB)ADDRESS
-    const string payment_id = "";
-    const string asset_type = "SAL";
-    const bool is_return = false;
-
-    LOG_ERROR("createAuditTransaction: called");
-  
-    return createTransactionMultDest(
-        Monero::transaction_type::AUDIT,
-        std::vector<string> {dst_addr},
-        payment_id,
-        (optional<std::vector<uint64_t>>()), 
-        mixin_count,
-        asset_type,
-        is_return,
-        priority,
-        subaddr_account,
-        subaddr_indices
-    );
+    clearStatus();
+    auto *transaction = new PendingTransactionImpl(*this);
+    setStatusError(tr("Creating new AUDIT transactions is no longer supported"));
+    statusWithErrorString(transaction->m_status, transaction->m_errorString);
+    return transaction;
 }
 
 // TODO:
@@ -1787,6 +1834,12 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const Monero::transact
 
 {
     clearStatus();
+    if (tx_type == Monero::transaction_type::AUDIT) {
+        auto *transaction = new PendingTransactionImpl(*this);
+        setStatusError(tr("Creating new AUDIT transactions is no longer supported"));
+        statusWithErrorString(transaction->m_status, transaction->m_errorString);
+        return transaction;
+    }
     // Pause refresh thread while creating transaction
     pauseRefresh();
       
@@ -1814,6 +1867,10 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const Monero::transact
             break;
         }
         if (!payment_id.empty()) {
+            if (m_wallet->get_current_hard_fork() >= HF_VERSION_CARROT) {
+                setStatusError(tr("Standalone payment IDs are not supported for Carrot transactions. Use an integrated address instead."));
+                break;
+            }
             crypto::hash payment_id_long;
             if (tools::wallet2::parse_long_payment_id(payment_id, payment_id_long)) {
                 cryptonote::set_payment_id_to_tx_extra_nonce(extra_nonce, payment_id_long);
@@ -1872,41 +1929,18 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const Monero::transact
                                                                           adjusted_priority,
                                                                           extra, subaddr_account, subaddr_indices);
             } else {
-              std::vector<tools::wallet2::pending_tx> m_pending_txs;
-              for (const auto subaddr_index : subaddr_indices) {
-
-                // Skip this wallet if there is no balance unlocked to audit
-                std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> unlocked_balance_per_subaddr = m_wallet->unlocked_balance_per_subaddress(subaddr_account, asset_type, true);
-                if (unlocked_balance_per_subaddr.count(subaddr_index) == 0) continue;
-
-                try {
-          
-                  const auto result = m_wallet->create_transactions_all(0,
-                                                                        converted_tx_type,
-                                                                        asset_type,
-                                                                        info.address,
-                                                                        info.is_subaddress,
-                                                                        1,
-                                                                        fake_outs_count,
-                                                                        0 /* unlock_time */,
-                                                                        adjusted_priority,
-                                                                        extra,
-                                                                        subaddr_account,
-                                                                        std::set<uint32_t> {subaddr_index}
-                                                                        );
-                  m_pending_txs.insert(m_pending_txs.end(), result.begin(), result.end());
-
-                } catch (const std::exception &e) {
-                  
-                  // Let's skip this wallet - we have already reported the error
-                  if (unlocked_balance_per_subaddr[subaddr_index].first < 250000000) {
-                    std::ostringstream writer;
-                    writer << boost::format(tr("Subaddress index %u has insufficient funds (%s) to pay for audit")) % subaddr_index % print_money(unlocked_balance_per_subaddr[subaddr_index].first);
-                    setStatusError(writer.str());
-                  }
-                }
-              }
-              transaction->m_pending_tx = m_pending_txs;
+              transaction->m_pending_tx = m_wallet->create_transactions_all(0,
+                                                                            converted_tx_type,
+                                                                            asset_type,
+                                                                            info.address,
+                                                                            info.is_subaddress,
+                                                                            1,
+                                                                            fake_outs_count,
+                                                                            0 /* unlock_time */,
+                                                                            adjusted_priority,
+                                                                            extra,
+                                                                            subaddr_account,
+                                                                            subaddr_indices);
             }
             pendingTxPostProcess(transaction);
 
@@ -2145,6 +2179,12 @@ void WalletImpl::setDefaultMixin(uint32_t arg)
 
 bool WalletImpl::setCacheAttribute(const std::string &key, const std::string &val)
 {
+    clearStatus();
+    if (is_reserved_cache_attribute(key))
+    {
+        setStatusError(tr("Reserved private Salchat state cannot be accessed through generic attributes."));
+        return false;
+    }
     if (checkBackgroundSync("cannot set cache attribute"))
         return false;
     m_wallet->set_attribute(key, val);
@@ -2153,9 +2193,131 @@ bool WalletImpl::setCacheAttribute(const std::string &key, const std::string &va
 
 std::string WalletImpl::getCacheAttribute(const std::string &key) const
 {
+    clearStatus();
+    if (is_reserved_cache_attribute(key))
+    {
+        setStatusError(tr("Reserved private Salchat state cannot be accessed through generic attributes."));
+        return {};
+    }
     std::string value;
     m_wallet->get_attribute(key, value);
     return value;
+}
+
+bool WalletImpl::salchatGetIdentity(SalchatIdentity &identity) const
+{
+    try { clearStatus(); boost::lock_guard<boost::mutex> guard(m_refreshMutex2); epee::wipeable_string password(m_password); tools::wallet_keys_unlocker unlocker(*m_wallet, &password); identity = salchat_identity(salchat::service(*m_wallet).get_identity()); return true; }
+    catch (const std::exception &e) { setStatusError(e.what()); return false; }
+}
+
+bool WalletImpl::salchatRotateIdentity(SalchatIdentity &identity)
+{
+    try { clearStatus(); LOCK_REFRESH(); epee::wipeable_string password(m_password); tools::wallet_keys_unlocker unlocker(*m_wallet, &password); identity = salchat_identity(salchat::service(*m_wallet).rotate_identity()); return true; }
+    catch (const std::exception &e) { setStatusError(e.what()); return false; }
+}
+
+bool WalletImpl::salchatGetAddress(std::string &address) const
+{
+    try { clearStatus(); boost::lock_guard<boost::mutex> guard(m_refreshMutex2); epee::wipeable_string password(m_password); tools::wallet_keys_unlocker unlocker(*m_wallet, &password); address = salchat::service(*m_wallet).get_address(); return true; }
+    catch (const std::exception &e) { setStatusError(e.what()); return false; }
+}
+
+bool WalletImpl::salchatAddContact(const std::string &label, const std::string &address,
+                                  SalchatContact &contact, uint64_t &promotedMessages)
+{
+    try { clearStatus(); LOCK_REFRESH(); std::size_t promoted=0; contact = salchat_contact(salchat::service(*m_wallet).add_contact(label, address, {}, &promoted)); promotedMessages=promoted; return true; }
+    catch (const std::exception &e) { promotedMessages=0; setStatusError(e.what()); return false; }
+}
+
+bool WalletImpl::salchatAcceptContact(const std::string &label, const std::string &messageId,
+                                     SalchatContact &contact, uint64_t &promotedMessages)
+{
+    try { clearStatus(); LOCK_REFRESH(); std::size_t promoted=0; contact = salchat_contact(salchat::service(*m_wallet).accept_contact(label, messageId, &promoted)); promotedMessages=promoted; return true; }
+    catch (const std::exception &e) { promotedMessages=0; setStatusError(e.what()); return false; }
+}
+
+bool WalletImpl::salchatRemoveContact(const std::string &contactId)
+{
+    try { clearStatus(); LOCK_REFRESH(); return salchat::service(*m_wallet).remove_contact(contactId); }
+    catch (const std::exception &e) { setStatusError(e.what()); return false; }
+}
+
+bool WalletImpl::salchatBlockContact(const std::string &contactId, bool blocked)
+{
+    try { clearStatus(); LOCK_REFRESH(); return salchat::service(*m_wallet).block_contact(contactId, blocked); }
+    catch (const std::exception &e) { setStatusError(e.what()); return false; }
+}
+
+std::vector<SalchatContact> WalletImpl::salchatContacts() const
+{
+    std::vector<SalchatContact> out;
+    try { clearStatus(); boost::lock_guard<boost::mutex> guard(m_refreshMutex2); for (const auto &item: salchat::service(*m_wallet).contacts()) out.push_back(salchat_contact(item)); }
+    catch (const std::exception &e) { setStatusError(e.what()); }
+    return out;
+}
+
+SalchatSendResult WalletImpl::salchatSendMessage(const std::string &contactId, const std::string &message, uint64_t ttl)
+{
+    try
+    {
+      clearStatus(); LOCK_REFRESH(); epee::wipeable_string password(m_password); tools::wallet_keys_unlocker unlocker(*m_wallet, &password); const auto result = salchat::service(*m_wallet).send_text(contactId, message, ttl);
+      return {result.message_id, result.reason, result.submitted};
+    }
+    catch (const std::exception &e) { setStatusError(e.what()); return {{}, e.what(), false}; }
+}
+
+SalchatReceiveResult WalletImpl::salchatReceiveMessages(uint64_t limit)
+{
+    try
+    {
+      clearStatus(); LOCK_REFRESH(); epee::wipeable_string password(m_password); tools::wallet_keys_unlocker unlocker(*m_wallet, &password); const auto result = salchat::service(*m_wallet).receive(limit);
+      SalchatReceiveResult out{result.received, result.quarantined, result.rejected};
+      out.newMessages.reserve(result.new_messages.size());
+      const auto height=m_wallet->get_blockchain_current_height();
+      for (const auto &item: result.new_messages) out.newMessages.push_back(salchat_message(item,height));
+      return out;
+    }
+    catch (const std::exception &e) { setStatusError(e.what()); return {}; }
+}
+
+std::vector<SalchatMessage> WalletImpl::salchatMessages(const std::string &contactId, uint64_t limit) const
+{
+    std::vector<SalchatMessage> out;
+    try { clearStatus(); boost::lock_guard<boost::mutex> guard(m_refreshMutex2); const auto height=m_wallet->get_blockchain_current_height(); for (const auto &item: salchat::service(*m_wallet).messages(contactId, limit)) out.push_back(salchat_message(item,height)); }
+    catch (const std::exception &e) { setStatusError(e.what()); }
+    return out;
+}
+
+bool WalletImpl::salchatGetMessage(const std::string &messageId, SalchatMessage &message) const
+{
+    try
+    {
+      clearStatus(); boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
+      salchat::message found; if (!salchat::service(*m_wallet).get_message(messageId, found)) return false;
+      message = salchat_message(found,m_wallet->get_blockchain_current_height()); return true;
+    }
+    catch (const std::exception &e) { setStatusError(e.what()); return false; }
+}
+
+bool WalletImpl::salchatDeleteMessage(const std::string &messageId)
+{
+    try { clearStatus(); LOCK_REFRESH(); return salchat::service(*m_wallet).delete_message(messageId); }
+    catch (const std::exception &e) { setStatusError(e.what()); return false; }
+}
+
+SalchatStatus WalletImpl::salchatStatus() const
+{
+    SalchatStatus out;
+    try
+    {
+      clearStatus(); boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
+      salchat::service service(*m_wallet); bool enabled = false; std::string error;
+      out.daemonAvailable = service.daemon_status(enabled, out.cachedMessages, error);
+      out.daemonEnabled = enabled; out.error = error; out.identityInitialized = service.get_identity().initialized;
+      out.contacts = service.contacts().size(); out.messages = service.message_count();
+    }
+    catch (const std::exception &e) { out.error = e.what(); setStatusError(e.what()); }
+    return out;
 }
 
 bool WalletImpl::setUserNote(const std::string &txid, const std::string &note)
@@ -2165,7 +2327,8 @@ bool WalletImpl::setUserNote(const std::string &txid, const std::string &note)
     cryptonote::blobdata txid_data;
     if(!epee::string_tools::parse_hexstr_to_binbuff(txid, txid_data) || txid_data.size() != sizeof(crypto::hash))
       return false;
-    const crypto::hash htxid = *reinterpret_cast<const crypto::hash*>(txid_data.data());
+    crypto::hash htxid;
+    std::memcpy(std::addressof(htxid), txid_data.data(), sizeof(htxid));
 
     m_wallet->set_tx_note(htxid, note);
     return true;
@@ -2178,7 +2341,8 @@ std::string WalletImpl::getUserNote(const std::string &txid) const
     cryptonote::blobdata txid_data;
     if(!epee::string_tools::parse_hexstr_to_binbuff(txid, txid_data) || txid_data.size() != sizeof(crypto::hash))
       return "";
-    const crypto::hash htxid = *reinterpret_cast<const crypto::hash*>(txid_data.data());
+    crypto::hash htxid;
+    std::memcpy(std::addressof(htxid), txid_data.data(), sizeof(htxid));
 
     return m_wallet->get_tx_note(htxid);
 }
@@ -2490,7 +2654,8 @@ bool WalletImpl::verifyMessageWithPublicKey(const std::string &message, const st
     }
 
     try {
-        crypto::public_key pkey = *reinterpret_cast<const crypto::public_key*>(pkeyData.data());
+        crypto::public_key pkey;
+        std::memcpy(std::addressof(pkey), pkeyData.data(), sizeof(pkey));
         return m_wallet->verify_with_public_key(message, pkey, signature);
     } catch (const std::exception& e) {
         m_status = Status_Error;
@@ -2656,7 +2821,7 @@ void WalletImpl::doRefresh()
 
 void WalletImpl::startRefresh()
 {
-    if (!m_refreshEnabled) {
+    if (!m_refreshThreadDone && !m_refreshEnabled) {
         LOG_PRINT_L2(__FUNCTION__ << ": refresh started/resumed...");
         m_refreshEnabled = true;
         m_refreshCV.notify_one();
@@ -2712,7 +2877,11 @@ void WalletImpl::pendingTxPostProcess(PendingTransactionImpl * pending)
 
 bool WalletImpl::doInit(const string &daemon_address, const std::string &proxy_address, uint64_t upper_transaction_size_limit, bool ssl)
 {
-    if (!m_wallet->init(daemon_address, m_daemon_login, proxy_address, upper_transaction_size_limit))
+    const epee::net_utils::ssl_options_t ssl_options(
+        ssl ? epee::net_utils::ssl_support_t::e_ssl_support_enabled
+            : epee::net_utils::ssl_support_t::e_ssl_support_autodetect);
+    if (!m_wallet->init(daemon_address, m_daemon_login, proxy_address,
+                        upper_transaction_size_limit, true, ssl_options))
        return false;
 
     // in case new wallet, this will force fast-refresh (pulling hashes instead of blocks)
@@ -3028,7 +3197,10 @@ uint64_t WalletImpl::getBytesSent()
 YieldInfo * WalletImpl::getYieldInfo()
 {
   auto yi = new YieldInfoImpl(*this);
-  bool ok = m_wallet->get_yield_summary_info(yi->m_burnt, yi->m_supply, yi->m_locked, yi->m_yield, yi->m_yield_per_stake, yi->m_num_entries, yi->m_payouts);
+  if (!yi->update())
+  {
+    setStatusError(yi->errorString());
+  }
   return yi;
 }
 

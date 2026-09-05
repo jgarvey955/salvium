@@ -50,7 +50,7 @@ function(_trezor_protobuf_fix_vars)
 endfunction()
 
 macro(trezor_fatal_msg msg)
-    if ($ENV{USE_DEVICE_TREZOR_MANDATORY})
+    if (USE_DEVICE_TREZOR_MANDATORY)
         message(FATAL_ERROR
                 "${msg}\n"
                 "==========================================================================\n"
@@ -193,9 +193,7 @@ if(Protobuf_FOUND AND USE_DEVICE_TREZOR AND TREZOR_PYTHON)
     
     execute_process(COMMAND ${TREZOR_PYTHON} tools/build_protob.py ${TREZOR_PROTOBUF_PARAMS} WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/../src/device_trezor/trezor RESULT_VARIABLE RET OUTPUT_VARIABLE OUT ERROR_VARIABLE ERR)
     if(RET)
-        trezor_fatal_msg("Trezor: protobuf messages could not be regenerated (err=${RET}, python ${PYTHON})."
-                "OUT: ${OUT}, ERR: ${ERR}."
-                "Please read src/device_trezor/trezor/tools/README.md")
+        trezor_fatal_msg("Trezor: protobuf messages could not be regenerated (err=${RET}, python ${TREZOR_PYTHON}).\nOUT: ${OUT}\nERR: ${ERR}\nPlease read src/device_trezor/trezor/tools/README.md")
     endif()
 
     message(STATUS "Trezor: protobuf messages regenerated out: \"${OUT}.\"")

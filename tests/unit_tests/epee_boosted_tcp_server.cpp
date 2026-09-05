@@ -41,6 +41,9 @@
 #include "string_tools.h"
 #include "net/abstract_tcp_server2.h"
 #include "net/levin_protocol_handler_async.h"
+#include "net/http_server_impl_base.h"
+#include "net/http_client.h"
+#include "crypto/crypto.h"
 
 namespace
 {
@@ -579,6 +582,73 @@ TEST(test_epee_connection, ssl_handshake)
   work.reset();
   for (;workers.size(); workers.pop_back())
     workers.back().join();
+}
+
+namespace
+{
+struct transport_http_server : epee::http_server_impl_base<transport_http_server>
+{
+  bool handle_http_request(const epee::net_utils::http::http_request_info&,
+      epee::net_utils::http::http_response_info& response,
+      epee::net_utils::connection_context_base& context) override
+  {
+    response.m_response_code = 200;
+    response.m_response_comment = "OK";
+    response.m_body = context.m_ssl ? "tls" : "plain";
+    return true;
+  }
+  std::vector<uint8_t> fingerprint()
+  {
+    std::vector<uint8_t> result(EVP_MAX_MD_SIZE);
+    unsigned length = 0;
+    X509* certificate = SSL_CTX_get0_certificate(m_net_server.get_ssl_context().native_handle());
+    if (!certificate || !X509_digest(certificate, EVP_sha256(), result.data(), &length))
+      throw std::runtime_error("Cannot fingerprint test certificate");
+    result.resize(length);
+    return result;
+  }
+};
+}
+
+TEST(transport_tls, http_fallback_and_https_pin_preservation)
+{
+  using namespace epee::net_utils;
+  for (const auto mode : {ssl_support_t::e_ssl_support_autodetect, ssl_support_t::e_ssl_support_disabled})
+  {
+    transport_http_server server;
+    ASSERT_TRUE(server.init([](size_t n, uint8_t* p) { crypto::rand(n, p); }, "0", "127.0.0.1",
+        "::1", false, true, {}, boost::none, mode));
+    ASSERT_TRUE(server.run(2, false));
+    auto stop = epee::misc_utils::create_scope_leave_handler([&] {
+      server.send_stop_signal(); server.timed_wait_server_stop(5000); server.deinit();
+    });
+    const auto endpoint = std::string("127.0.0.1:") + std::to_string(server.get_binded_port());
+    http::http_simple_client client;
+    ASSERT_TRUE(client.set_server("http://" + endpoint, boost::none));
+    const http::http_response_info* response = nullptr;
+    ASSERT_TRUE(client.invoke("/", "GET", "", std::chrono::seconds(3), &response));
+    ASSERT_NE(nullptr, response);
+    EXPECT_EQ(mode == ssl_support_t::e_ssl_support_disabled ? "plain" : "tls", response->m_body);
+    if (mode == ssl_support_t::e_ssl_support_autodetect)
+    {
+      ssl_options_t pinned({server.fingerprint()}, "");
+      ASSERT_TRUE(client.set_server("https://" + endpoint, boost::none, pinned));
+      ASSERT_TRUE(client.invoke("/", "GET", "", std::chrono::seconds(3), &response));
+      EXPECT_EQ("tls", response->m_body);
+      ssl_options_t wrong({std::vector<uint8_t>(32, 0xa5)}, "");
+      ASSERT_TRUE(client.set_server("https://" + endpoint, boost::none, wrong));
+      EXPECT_FALSE(client.invoke("/", "GET", "", std::chrono::seconds(3), &response));
+      pinned.support = ssl_support_t::e_ssl_support_autodetect;
+      EXPECT_THROW(pinned.create_context(), std::exception);
+      pinned.support = ssl_support_t::e_ssl_support_disabled;
+      EXPECT_THROW(pinned.create_context(), std::exception);
+    }
+    else
+    {
+      ASSERT_TRUE(client.set_server("https://" + endpoint, boost::none));
+      EXPECT_FALSE(client.invoke("/", "GET", "", std::chrono::seconds(3), &response));
+    }
+  }
 }
 
 

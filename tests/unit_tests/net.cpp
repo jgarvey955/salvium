@@ -32,7 +32,8 @@
 #include <boost/archive/portable_binary_oarchive.hpp>
 #include <boost/archive/portable_binary_iarchive.hpp>
 #include <boost/asio/buffer.hpp>
-#include <boost/asio/io_service.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -56,6 +57,7 @@
 
 #include "crypto/crypto.h"
 #include "net/dandelionpp.h"
+#include "net/abstract_http_client.h"
 #include "net/error.h"
 #include "net/i2p_address.h"
 #include "net/net_utils_base.h"
@@ -67,6 +69,57 @@
 #include "p2p/net_peerlist_boost_serialization.h"
 #include "serialization/keyvalue_serialization.h"
 #include "storages/portable_storage.h"
+
+namespace
+{
+  class recording_http_client final : public epee::net_utils::http::abstract_http_client
+  {
+  public:
+    using abstract_http_client::set_server;
+
+    void set_server(std::string new_host, std::string new_port,
+                    boost::optional<epee::net_utils::http::login>,
+                    epee::net_utils::ssl_options_t new_ssl) override
+    {
+      host = std::move(new_host);
+      port = std::move(new_port);
+      ssl = std::move(new_ssl);
+    }
+    void set_auto_connect(bool) override {}
+    bool connect(std::chrono::milliseconds) override { return false; }
+    bool disconnect() override { return true; }
+    bool is_connected(bool*) override { return false; }
+    bool invoke(const boost::string_ref, const boost::string_ref, const boost::string_ref,
+                std::chrono::milliseconds, const epee::net_utils::http::http_response_info**,
+                const epee::net_utils::http::fields_list&) override { return false; }
+    bool invoke_get(const boost::string_ref, std::chrono::milliseconds, const std::string&,
+                    const epee::net_utils::http::http_response_info**,
+                    const epee::net_utils::http::fields_list&) override { return false; }
+    bool invoke_post(const boost::string_ref, const std::string&, std::chrono::milliseconds,
+                     const epee::net_utils::http::http_response_info**,
+                     const epee::net_utils::http::fields_list&) override { return false; }
+    uint64_t get_bytes_sent() const override { return 0; }
+    uint64_t get_bytes_received() const override { return 0; }
+
+    std::string host;
+    std::string port;
+    epee::net_utils::ssl_options_t ssl{epee::net_utils::ssl_support_t::e_ssl_support_disabled};
+  };
+}
+
+TEST(http_client, https_url_requires_verified_tls)
+{
+  recording_http_client client;
+  ASSERT_TRUE(client.set_server("https://example.com", boost::none));
+  EXPECT_EQ(client.host, "example.com");
+  EXPECT_EQ(client.port, "443");
+  EXPECT_EQ(client.ssl.support, epee::net_utils::ssl_support_t::e_ssl_support_enabled);
+  EXPECT_EQ(client.ssl.verification, epee::net_utils::ssl_verification_t::system_ca);
+
+  ASSERT_TRUE(client.set_server("http://example.com", boost::none));
+  EXPECT_EQ(client.port, "80");
+  EXPECT_EQ(client.ssl.support, epee::net_utils::ssl_support_t::e_ssl_support_autodetect);
+}
 
 namespace
 {
@@ -972,8 +1025,8 @@ namespace
 
     struct io_thread
     {
-        boost::asio::io_service io_service;
-        boost::asio::io_service::work work;
+        boost::asio::io_context io_service;
+        boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work;
         stream_type::socket server;
         stream_type::acceptor acceptor;
         boost::thread io;
@@ -981,7 +1034,7 @@ namespace
 
         io_thread()
           : io_service(),
-            work(io_service),
+            work(boost::asio::make_work_guard(io_service)),
             server(io_service),
             acceptor(io_service),
             io([this] () { try { this->io_service.run(); } catch (const std::exception& e) { MERROR(e.what()); }}),
@@ -1021,7 +1074,7 @@ namespace
 
 TEST(socks_client, unsupported_command)
 {
-    boost::asio::io_service io_service{};
+    boost::asio::io_context io_service{};
     stream_type::socket client{io_service};
 
     auto test_client = net::socks::make_connect_client(
@@ -1039,7 +1092,7 @@ TEST(socks_client, unsupported_command)
 
 TEST(socks_client, no_command)
 {
-    boost::asio::io_service io_service{};
+    boost::asio::io_context io_service{};
     stream_type::socket client{io_service};
 
     auto test_client = net::socks::make_connect_client(
@@ -1193,7 +1246,7 @@ TEST(socks_connector, host)
 {
     io_thread io{};
     boost::asio::steady_timer timeout{io.io_service};
-    timeout.expires_from_now(std::chrono::seconds{5});
+    timeout.expires_after(std::chrono::seconds{5});
 
     boost::unique_future<boost::asio::ip::tcp::socket> sock =
         net::socks::connector{io.acceptor.local_endpoint()}("example.com", "8080", timeout);
@@ -1220,7 +1273,7 @@ TEST(socks_connector, ipv4)
 {
     io_thread io{};
     boost::asio::steady_timer timeout{io.io_service};
-    timeout.expires_from_now(std::chrono::seconds{5});
+    timeout.expires_after(std::chrono::seconds{5});
 
     boost::unique_future<boost::asio::ip::tcp::socket> sock =
         net::socks::connector{io.acceptor.local_endpoint()}("250.88.125.99", "8080", timeout);
@@ -1246,7 +1299,7 @@ TEST(socks_connector, error)
 {
     io_thread io{};
     boost::asio::steady_timer timeout{io.io_service};
-    timeout.expires_from_now(std::chrono::seconds{5});
+    timeout.expires_after(std::chrono::seconds{5});
 
     boost::unique_future<boost::asio::ip::tcp::socket> sock =
         net::socks::connector{io.acceptor.local_endpoint()}("250.88.125.99", "8080", timeout);
@@ -1272,7 +1325,7 @@ TEST(socks_connector, timeout)
 {
     io_thread io{};
     boost::asio::steady_timer timeout{io.io_service};
-    timeout.expires_from_now(std::chrono::milliseconds{10});
+    timeout.expires_after(std::chrono::milliseconds{10});
 
     boost::unique_future<boost::asio::ip::tcp::socket> sock =
         net::socks::connector{io.acceptor.local_endpoint()}("250.88.125.99", "8080", timeout);
@@ -1843,3 +1896,31 @@ TEST(zmq, read_write_termination)
     EXPECT_EQ(net::zmq::make_error_code(ETERM), received.error());
 }
 
+TEST(http_client, https_preserves_explicit_certificate_trust)
+{
+  recording_http_client client;
+  epee::net_utils::ssl_options_t options{{std::vector<uint8_t>(32, 0x42)}, "trusted-ca.pem"};
+  options.auth = {"client-key.pem", "client-cert.pem"};
+  ASSERT_TRUE(client.set_server("https://example.com", boost::none, options));
+  EXPECT_EQ(epee::net_utils::ssl_support_t::e_ssl_support_enabled, client.ssl.support);
+  EXPECT_EQ(epee::net_utils::ssl_verification_t::user_certificates, client.ssl.verification);
+  EXPECT_EQ("trusted-ca.pem", client.ssl.ca_path);
+  EXPECT_EQ("client-key.pem", client.ssl.auth.private_key_path);
+}
+TEST(tor_address, uppercase_host_is_canonicalized_before_dispatch)
+{
+  std::string upper = "VWW6YBAL4BD7SZMGNCYRUUCPGFKQAHZDDI37KTCEO3AH7NGMCOPNPYYD.ONION:19080";
+  const auto address = net::get_network_address(upper, 19080);
+  ASSERT_TRUE(address);
+  EXPECT_EQ(epee::net_utils::zone::tor, address->get_zone());
+  EXPECT_EQ(std::string("vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd.onion"), address->host_str());
+}
+TEST(i2p_address, uppercase_host_and_invalid_ports)
+{
+  const std::string host = "VWW6YBAL4BD7SZMGNCYRUUCPGFKQAHZDDI37KTCEO3AH7NGMCOPN.B32.I2P";
+  const auto address = net::get_network_address(host + ":19080", 19080);
+  ASSERT_TRUE(address);
+  EXPECT_EQ(epee::net_utils::zone::i2p, address->get_zone());
+  for (const auto& port : {"-1", "65536", "19080x", "999999999999999999999"})
+    EXPECT_FALSE(net::i2p_address::make(host + ":" + port));
+}

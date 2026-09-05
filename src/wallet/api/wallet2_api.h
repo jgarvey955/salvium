@@ -39,6 +39,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstdint>
+#include <functional>
 
 //  Public interface for libwallet library
 namespace Monero {
@@ -89,7 +90,7 @@ struct YieldInfo
     Status_Error
   };
 
-  virtual ~YieldInfo() = 0;
+  virtual ~YieldInfo() = default;
   virtual int status() const = 0;
   virtual std::string errorString() const = 0;
   virtual bool update() = 0;
@@ -99,6 +100,11 @@ struct YieldInfo
   virtual uint64_t ybi_data_size() const = 0;
   virtual uint64_t yield() const = 0;
   virtual uint64_t yield_per_stake() const = 0;
+  virtual uint64_t total_accrued_from_past_completions() const = 0;
+  virtual uint64_t currently_staked() const = 0;
+  virtual uint64_t accrued_from_current_stake() const = 0;
+  virtual uint64_t blockchain_height() const = 0;
+  virtual uint64_t stake_lock_period() const = 0;
   virtual std::string period() const = 0;
   virtual std::vector<std::tuple<size_t, std::string, std::string, uint64_t, uint64_t>> payouts() const = 0;
 };
@@ -469,6 +475,53 @@ struct WalletListener
      * @brief If the listener is created before the wallet this enables to set created wallet object
      */
     virtual void onSetWallet(Wallet * wallet) { (void)wallet; };
+
+    // Consume host-entered bytes synchronously, without returning an ordinary
+    // string. The receiver must not retain the pointer after this call.
+    // The default implementation supports existing string-based listeners.
+    using DevicePassphraseCallback = std::function<void(const char*, std::size_t)>;
+    virtual void onDevicePassphraseRequestSecure(bool& on_device,
+        const DevicePassphraseCallback& receive);
+};
+
+struct SalchatIdentity
+{
+    bool initialized = false;
+    std::string spendPublicKey, signingPublicKey, encryptionPublicKey, salviumAddress;
+    uint64_t createdAt = 0;
+};
+
+struct SalchatContact
+{
+    std::string contactId, label, spendPublicKey, signingPublicKey, encryptionPublicKey, salviumAddress;
+    bool blocked = false;
+    uint64_t createdAt = 0;
+};
+
+struct SalchatMessage
+{
+    std::string messageId, contactId, content, senderSalviumAddress, senderSigningPublicKey;
+    uint8_t type = 0, direction = 0, state = 0;
+    uint64_t createdAt = 0, receivedAt = 0, expiresHeight = 0, blocksLeft = 0;
+};
+
+struct SalchatSendResult
+{
+    std::string messageId, reason;
+    bool submitted = false;
+};
+
+struct SalchatReceiveResult
+{
+    uint64_t received = 0, quarantined = 0, rejected = 0;
+    std::vector<SalchatMessage> newMessages;
+};
+
+struct SalchatStatus
+{
+    bool identityInitialized = false, daemonAvailable = false, daemonEnabled = false;
+    uint64_t contacts = 0, messages = 0, cachedMessages = 0;
+    std::string error;
 };
 
 
@@ -634,7 +687,7 @@ struct Wallet
      * \param upper_transaction_size_limit
      * \param daemon_username
      * \param daemon_password
-     * \param lightWallet - start wallet in light mode, connect to a openmonero compatible server.
+     * \param lightWallet - deprecated and ignored; Salvium always uses full-wallet synchronization.
      * \param proxy_address - set proxy address, empty string to disable
      * \return  - true on success
      */
@@ -1146,17 +1199,34 @@ struct Wallet
 
     /*!
      * \brief setCacheAttribute - attach an arbitrary string to a wallet cache attribute
-     * \param key - the key
+     * \param key - the key; the reserved salchat. namespace is rejected
      * \param val - the value
      * \return true if successful, false otherwise
      */
     virtual bool setCacheAttribute(const std::string &key, const std::string &val) = 0;
     /*!
      * \brief getCacheAttribute - return an arbitrary string attached to a wallet cache attribute
-     * \param key - the key
+     * \param key - the key; the reserved salchat. namespace is rejected
      * \return the attached string, or empty string if there is none
      */
     virtual std::string getCacheAttribute(const std::string &key) const = 0;
+
+    virtual bool salchatGetIdentity(SalchatIdentity &identity) const = 0;
+    virtual bool salchatRotateIdentity(SalchatIdentity &identity) = 0;
+    virtual bool salchatGetAddress(std::string &address) const = 0;
+    virtual bool salchatAddContact(const std::string &label, const std::string &address,
+                                  SalchatContact &contact, uint64_t &promotedMessages) = 0;
+    virtual bool salchatAcceptContact(const std::string &label, const std::string &messageId,
+                                     SalchatContact &contact, uint64_t &promotedMessages) = 0;
+    virtual bool salchatRemoveContact(const std::string &contactId) = 0;
+    virtual bool salchatBlockContact(const std::string &contactId, bool blocked) = 0;
+    virtual std::vector<SalchatContact> salchatContacts() const = 0;
+    virtual SalchatSendResult salchatSendMessage(const std::string &contactId, const std::string &message, uint64_t ttl = 604800) = 0;
+    virtual SalchatReceiveResult salchatReceiveMessages(uint64_t limit = 100) = 0;
+    virtual std::vector<SalchatMessage> salchatMessages(const std::string &contactId = {}, uint64_t limit = 100) const = 0;
+    virtual bool salchatGetMessage(const std::string &messageId, SalchatMessage &message) const = 0;
+    virtual bool salchatDeleteMessage(const std::string &messageId) = 0;
+    virtual SalchatStatus salchatStatus() const = 0;
     /*!
      * \brief setUserNote - attach an arbitrary string note to a txid
      * \param txid - the transaction id to attach the note to
