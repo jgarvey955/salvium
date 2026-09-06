@@ -641,13 +641,13 @@ private:
       std::vector<cryptonote::tx_destination_entry> splitted_dsts; // split, includes change
       std::vector<size_t> selected_transfers;
       std::vector<uint8_t> extra;
-      uint64_t unlock_time;
+      uint64_t unlock_time = 0;
       cryptonote::transaction_type tx_type = cryptonote::transaction_type::UNSET;
-      bool use_rct;
-      rct::RCTConfig rct_config;
-      bool use_view_tags;
+      bool use_rct = false;
+      rct::RCTConfig rct_config{ rct::RangeProofBorromean, 0 };
+      bool use_view_tags = false;
       std::vector<cryptonote::tx_destination_entry> dests; // original setup, does not include change
-      uint32_t subaddr_account;   // subaddress account of your wallet to be used in this transfer
+      uint32_t subaddr_account = 0;   // subaddress account of your wallet to be used in this transfer
       std::set<uint32_t> subaddr_indices;  // set of address indices used as inputs in this transfer
 
       enum construction_flags_ : uint8_t
@@ -659,7 +659,7 @@ private:
         // ...
         // final flag     = 1 << 7  // 10000000
       };
-      uint8_t construction_flags;
+      uint8_t construction_flags = 0;
 
       BEGIN_SERIALIZE_OBJECT()
         FIELD(sources)
@@ -756,7 +756,7 @@ private:
           tx_construction_data,
           carrot::CarrotTransactionProposalV1
         >;
-      tx_reconstruct_variant_t construction_data;
+      tx_reconstruct_variant_t construction_data = tx_construction_data{};
 
       BEGIN_SERIALIZE_OBJECT()
         VERSION_FIELD(3)
