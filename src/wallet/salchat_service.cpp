@@ -320,6 +320,14 @@ namespace salchat
     if (sodium_init() < 0) throw std::runtime_error("libsodium initialization failed");
   }
 
+  bool detail::message_expired(const message& item, const std::uint64_t now,
+    const std::uint64_t current_height) noexcept
+  {
+    return (item.expires_height != 0 && current_height >= item.expires_height) ||
+      (item.expires_at != 0 && now >= item.expires_at) ||
+      (now >= item.created_at && now - item.created_at >= cryptonote::SALCHAT_MAX_TTL_SECONDS);
+  }
+
   std::size_t detail::erase_contact_messages(std::vector<message>& messages,
     const crypto::hash& contact_id)
   {
@@ -395,6 +403,8 @@ namespace salchat
                   sender_info.address.m_view_public_key, item.sender_encryption_public_key));
           return item.id == crypto::null_hash || item.contact_id == crypto::null_hash ||
             item.expires_height == 0 || !valid_sender ||
+            (item.expires_at != 0 && (item.expires_at <= item.created_at ||
+              item.expires_at - item.created_at > cryptonote::SALCHAT_MAX_TTL_SECONDS)) ||
             item.type != message_type::text || !valid_state || item.content.empty() ||
             item.content.size() > MAX_TEXT_BYTES || !valid_text(item.content) ||
             !cryptonote::valid_salchat_spend_public_key(item.sender_signing_public_key);
@@ -410,6 +420,28 @@ namespace salchat
               item.created_at == 0;
           }))
       throw std::runtime_error("invalid Salchat replay or receipt state");
+
+    // Local history must obey expiry even when no daemon is reachable. Keep
+    // replay markers so a deleted message cannot be accepted a second time.
+    const auto now = static_cast<std::uint64_t>(std::time(nullptr));
+    const auto height = m_wallet.get_blockchain_current_height();
+    std::unordered_set<crypto::hash> expired_ids;
+    for (auto& item: value.messages)
+      if (detail::message_expired(item, now, height))
+      {
+        expired_ids.insert(item.id);
+        wipe_string(item.content);
+      }
+    value.messages.erase(std::remove_if(value.messages.begin(), value.messages.end(),
+      [&](const message& item) { return expired_ids.count(item.id) != 0; }), value.messages.end());
+    const auto old_receipt_count = value.pending_receipts.size();
+    value.pending_receipts.erase(std::remove_if(value.pending_receipts.begin(), value.pending_receipts.end(),
+      [&](const pending_receipt& item) {
+        return expired_ids.count(item.message_id) != 0 ||
+          (now >= item.created_at && now - item.created_at >= cryptonote::SALCHAT_MAX_TTL_SECONDS);
+      }), value.pending_receipts.end());
+    if (!expired_ids.empty() || old_receipt_count != value.pending_receipts.size())
+      save(value);
     return value;
   }
 
@@ -709,7 +741,7 @@ namespace salchat
         message_secret,
         account_keys.m_carrot_main_address.m_spend_public_key,
         account_keys.m_carrot_main_address.m_view_public_key, *found, m_wallet.nettype(),
-        message_type::text, text, cryptonote::SALCHAT_MAX_TTL_SECONDS,
+        message_type::text, text, ttl,
         static_cast<std::uint64_t>(std::time(nullptr)), m_wallet.get_blockchain_current_height(),
         envelope, protocol_error))
       throw std::runtime_error(protocol_error);
@@ -721,6 +753,7 @@ namespace salchat
     record.id = envelope.message_id; record.contact_id = found->id; record.direction = message_direction::outgoing;
     record.state = message_state::failed; record.content = text; record.created_at = envelope.created_at;
     record.expires_height = envelope.expires_height;
+    record.expires_at = envelope.expires_at;
     record.sender_salvium_address = m_wallet.get_account().get_carrot_public_address_str(m_wallet.nettype());
     record.sender_signing_public_key = account_keys.m_carrot_main_address.m_spend_public_key;
     record.sender_encryption_public_key = message_public;
@@ -946,6 +979,7 @@ namespace salchat
                   record.sender_salvium_address = known->salvium_address;
                   record.created_at = plain.created_at; record.received_at = now;
                   record.expires_height = envelope.expires_height;
+                  record.expires_at = envelope.expires_at;
                   record.sender_signing_public_key = plain.sender_signing_public_key;
                   record.sender_encryption_public_key = plain.sender_encryption_public_key;
                   if (persist)
@@ -986,6 +1020,7 @@ namespace salchat
                   m_wallet.nettype(), false, sender_address);
                 record.created_at = plain.created_at; record.received_at = now;
                 record.expires_height = envelope.expires_height;
+                record.expires_at = envelope.expires_at;
                 record.sender_signing_public_key = plain.sender_signing_public_key;
                 record.sender_encryption_public_key = plain.sender_encryption_public_key;
                 if (persist)

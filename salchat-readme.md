@@ -38,9 +38,11 @@ Every envelope has a signed block-height lifetime:
 expires_height = created_height + 5040
 ```
 
-At Salvium's 120-second target, 5,040 blocks represent approximately one week. Relays reject expired envelopes and prune cached copies once their local chain reaches the expiration height. Wallet RPC and GUI-facing API results expose both `expires_height` and `blocks_left`; the CLI shows `blocks_left` beside each message.
+At Salvium's 120-second target, 5,040 blocks represent approximately one week. Envelopes also carry a signed expiration time set by the sender's requested `ttl` (1–604,800 seconds, default one week). Relays reject and prune envelopes when either limit is reached. Wallet RPC and GUI-facing API results expose both `expires_height` and `blocks_left`; the CLI shows `blocks_left` beside each message. These block counts describe the height limit; a shorter requested relay TTL can expire earlier.
 
-Expiration removes relay copies. It cannot erase screenshots, exports, backups, logs, or copies already saved by another person. Local wallet messages can be deleted explicitly:
+The wallet also removes expired incoming, outgoing and quarantined messages whenever SalChat loads its saved state. Cleanup works offline and is saved to the wallet, so expired history does not return after reopening. Older saved messages did not retain the requested time limit; those use seven days from their original send time or their saved block-height limit, whichever comes first. Contacts and replay fingerprints remain in place. The GUI refreshes local history every ten seconds while the chat page is open and idle, even if its daemon is unavailable.
+
+Expiration cannot erase screenshots, exports, backups, logs, or copies kept by another person. Local wallet messages can also be deleted explicitly:
 
 ```text
 salchat delete <message_number|message_id>

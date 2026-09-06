@@ -96,6 +96,23 @@ TEST(salchat, validates_and_suppresses_duplicates)
   EXPECT_EQ(relay.insert(e,1000,error),cryptonote::salchat_result::duplicate);
 }
 
+TEST(salchat, requested_expiry_is_enforced_without_chain_progress)
+{
+  const auto envelope = valid_envelope(1000);
+  cryptonote::salchat_config config;
+  cryptonote::salchat_relay relay{config};
+  std::string error;
+  ASSERT_EQ(relay.insert(envelope, 1000, error), cryptonote::salchat_result::accepted);
+  EXPECT_FALSE(cryptonote::validate_salchat_envelope(
+    envelope, config, envelope.expires_at, envelope.created_height, error));
+  EXPECT_EQ(error, "envelope expired at requested time");
+  EXPECT_TRUE(relay.poll({envelope.recipient_tag}, 100,
+    envelope.expires_at, envelope.created_height).empty());
+  EXPECT_EQ(relay.statistics().cached_messages, 0u);
+  EXPECT_FALSE(relay.ack(envelope.message_id, valid_ack_token()));
+  EXPECT_EQ(relay.statistics().cached_bytes, 0u);
+}
+
 TEST(salchat, wire_format_is_deterministic_and_round_trips)
 {
   auto original=valid_envelope(1000);

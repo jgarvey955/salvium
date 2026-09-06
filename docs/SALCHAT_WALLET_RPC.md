@@ -67,7 +67,8 @@ Confirm high-value contacts out of band.
 ### Message methods
 
 - `salchat_send_message`: accepts `contact_id`, `message`, and optional `ttl`
-  (1 through 604,800 seconds, seven days).
+  (1 through 604,800 seconds, default seven days). Relay and local wallet copies
+  expire at this deadline or their signed block-height limit, whichever comes first.
 - `salchat_receive_messages`: accepts optional `limit` (1 through 1,000), polls
   bounded current/recent routing tags in batches of at most 100, durably stores
   each valid batch, then acknowledges its daemon envelopes with receiver-only
@@ -78,6 +79,13 @@ Confirm high-value contacts out of band.
 - `salchat_get_status`: reports identity, local counts, daemon availability,
   and `waiting_messages` matching this wallet. The wallet-RPC process also logs
   one non-secret alert when a previously unseen message is waiting.
+
+Loading SalChat state removes expired local messages and their pending receipts,
+then saves the cleaned wallet. This applies to incoming, outgoing and quarantined
+messages even without a daemon connection. Older saved messages without a requested
+expiry use seven days from their original creation time, or their saved block-height
+limit if reached first. Contacts and replay markers are preserved. Expired messages
+are omitted from lists and counts, and `salchat_get_message` returns `found: false`.
 
 Message state numeric values are:
 

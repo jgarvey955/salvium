@@ -67,18 +67,25 @@ namespace salchat
     std::uint64_t created_at = 0;
     std::uint64_t received_at = 0;
     std::uint64_t expires_height = 0;
+    // Older saved messages lack the requested TTL; zero uses the seven-day limit.
+    std::uint64_t expires_at = 0;
     crypto::public_key sender_signing_public_key{};
     crypto::public_key sender_encryption_public_key{};
     BEGIN_SERIALIZE_OBJECT()
-      VERSION_FIELD(3)
+      VERSION_FIELD(4)
+      if (version < 3 || version > 4) return false;
       FIELD(id) FIELD(contact_id) VARINT_FIELD(type) VARINT_FIELD(direction) VARINT_FIELD(state)
       FIELD(content) VARINT_FIELD(created_at) VARINT_FIELD(received_at) FIELD(sender_signing_public_key)
       FIELD(sender_salvium_address) FIELD(sender_encryption_public_key) VARINT_FIELD(expires_height)
+      if (version >= 4) { VARINT_FIELD(expires_at) }
+      else expires_at = 0;
     END_SERIALIZE()
   };
 
   namespace detail
   {
+    bool message_expired(const message& item, std::uint64_t now,
+      std::uint64_t current_height) noexcept;
     std::size_t erase_contact_messages(std::vector<message>& messages,
       const crypto::hash& contact_id);
     bool retired_message_key_active(std::uint64_t retired_at, std::uint64_t retired_height,

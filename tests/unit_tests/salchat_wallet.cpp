@@ -1,13 +1,18 @@
 #include <cstring>
+#include <ctime>
+#include <limits>
 
+#include <boost/filesystem.hpp>
 #include <gtest/gtest.h>
 
 #include "carrot_core/account_secrets.h"
 #include "cryptonote_protocol/salchat_relay.h"
 #include "ringct/rctOps.h"
+#include "serialization/binary_utils.h"
 #include "string_tools.h"
 #include "wallet/salchat_protocol.h"
 #include "wallet/salchat_service.h"
+#include "wallet/wallet2.h"
 
 namespace
 {
@@ -56,6 +61,175 @@ namespace
       cryptonote::get_salchat_signature_hash(envelope), sender.spend_public_key,
       sender.k_generate_image, sender.k_prove_spend, envelope.sender_signature));
   }
+
+  // Match the saved layout shipped before local message expiry was enforced.
+  struct legacy_message : salchat::message
+  {
+    BEGIN_SERIALIZE_OBJECT()
+      VERSION_FIELD(3)
+      FIELD(id) FIELD(contact_id) VARINT_FIELD(type) VARINT_FIELD(direction) VARINT_FIELD(state)
+      FIELD(content) VARINT_FIELD(created_at) VARINT_FIELD(received_at) FIELD(sender_signing_public_key)
+      FIELD(sender_salvium_address) FIELD(sender_encryption_public_key) VARINT_FIELD(expires_height)
+    END_SERIALIZE()
+  };
+
+  struct saved_receipt
+  {
+    crypto::hash message_id{}, contact_id{};
+    std::uint64_t created_at = 0;
+    BEGIN_SERIALIZE_OBJECT()
+      VERSION_FIELD(2)
+      FIELD(message_id) FIELD(contact_id) VARINT_FIELD(created_at)
+    END_SERIALIZE()
+  };
+
+  template<typename Message> struct saved_chat_state
+  {
+    std::vector<salchat::contact> contacts;
+    std::vector<Message> messages;
+    std::vector<crypto::hash> seen_message_ids, seen_ciphertext_hashes;
+    std::vector<saved_receipt> pending_receipts;
+    BEGIN_SERIALIZE_OBJECT()
+      VERSION_FIELD(3)
+      VARINT_FIELD(version) FIELD(contacts) FIELD(messages) FIELD(seen_message_ids)
+      FIELD(seen_ciphertext_hashes) FIELD(pending_receipts)
+    END_SERIALIZE()
+  };
+
+  struct wallet_directory
+  {
+    boost::filesystem::path directory = boost::filesystem::temp_directory_path() /
+      boost::filesystem::unique_path("salchat-history-%%%%-%%%%-%%%%");
+    wallet_directory() { boost::filesystem::create_directories(directory); }
+    ~wallet_directory()
+    {
+      boost::system::error_code error;
+      boost::filesystem::remove_all(directory, error);
+    }
+    std::string file() const { return (directory / "wallet").string(); }
+  };
+}
+
+TEST(salchat_wallet, local_expiry_uses_requested_time_or_height_with_legacy_fallback)
+{
+  salchat::message item;
+  item.created_at = 1000;
+  item.expires_at = 1060;
+  item.expires_height = 200;
+  EXPECT_FALSE(salchat::detail::message_expired(item, 1059, 199));
+  EXPECT_TRUE(salchat::detail::message_expired(item, 1060, 0));
+  EXPECT_TRUE(salchat::detail::message_expired(item, 1000, 200));
+  EXPECT_FALSE(salchat::detail::message_expired(item, 999, 0));
+
+  item.expires_at = 0;
+  item.received_at = item.created_at + cryptonote::SALCHAT_MAX_TTL_SECONDS;
+  EXPECT_FALSE(salchat::detail::message_expired(item, item.received_at - 1, 0));
+  EXPECT_TRUE(salchat::detail::message_expired(item, item.received_at, 0));
+  item.created_at = std::numeric_limits<std::uint64_t>::max() - 1;
+  EXPECT_FALSE(salchat::detail::message_expired(item, 1000, 0));
+  EXPECT_FALSE(salchat::detail::message_expired(item, item.created_at + 1, 0));
+}
+
+TEST(salchat_wallet, saved_messages_read_legacy_layout_and_preserve_requested_expiry)
+{
+  legacy_message legacy;
+  legacy.content = "older wallet";
+  legacy.created_at = 1000;
+  legacy.expires_height = 200;
+  std::string bytes;
+  ASSERT_TRUE(serialization::dump_binary(legacy, bytes));
+  salchat::message decoded;
+  decoded.expires_at = 9999;
+  ASSERT_TRUE(serialization::parse_binary(bytes, decoded));
+  EXPECT_EQ(decoded.content, legacy.content);
+  EXPECT_EQ(decoded.expires_height, legacy.expires_height);
+  EXPECT_EQ(decoded.expires_at, 0u);
+  decoded.expires_at = 1060;
+  ASSERT_TRUE(serialization::dump_binary(decoded, bytes));
+  salchat::message restored;
+  ASSERT_TRUE(serialization::parse_binary(bytes, restored));
+  EXPECT_EQ(restored.expires_at, 1060u);
+  EXPECT_EQ(restored.content, legacy.content);
+}
+
+TEST(salchat_wallet, older_wallet_history_is_pruned_offline_and_stays_pruned_after_reopen)
+{
+  const wallet_directory files;
+  const auto sender = make_identity();
+  auto contact = as_contact(sender, "Saved contact");
+  contact.salvium_address = cryptonote::get_account_address_as_str(cryptonote::MAINNET, false,
+    {sender.spend_public_key, sender.view_public_key, true});
+  const auto now = static_cast<std::uint64_t>(std::time(nullptr));
+  saved_chat_state<legacy_message> old;
+  old.contacts.push_back(contact);
+  for (unsigned char i = 1; i <= 5; ++i)
+  {
+    legacy_message item;
+    std::memset(&item.id, i, sizeof(item.id));
+    item.contact_id = contact.id;
+    item.content = i == 1 ? "current message" : "expired history";
+    item.sender_salvium_address = contact.salvium_address;
+    item.sender_signing_public_key = sender.spend_public_key;
+    item.sender_encryption_public_key = sender.encryption_public_key;
+    item.created_at = i == 1 || i == 5 ? now : now - cryptonote::SALCHAT_MAX_TTL_SECONDS - 1;
+    item.received_at = now;
+    item.expires_height = i == 5 ? 1 : 1000000;
+    if (i == 3)
+    {
+      item.direction = salchat::message_direction::outgoing;
+      item.state = salchat::message_state::delivered;
+    }
+    if (i == 4) item.state = salchat::message_state::quarantined;
+    old.messages.push_back(item);
+    old.seen_message_ids.push_back(item.id);
+    old.seen_ciphertext_hashes.push_back(item.id);
+    old.pending_receipts.push_back({item.id, contact.id, now});
+  }
+  old.pending_receipts.push_back({old.messages[0].id, contact.id,
+    now - cryptonote::SALCHAT_MAX_TTL_SECONDS - 1});
+  std::string bytes;
+  ASSERT_TRUE(serialization::dump_binary(old, bytes));
+  const auto original = epee::string_tools::buff_to_hex_nodelimer(bytes);
+  {
+    tools::wallet2 wallet;
+    wallet.generate(files.file(), "");
+    wallet.set_attribute("salchat.state.v4", original);
+    wallet.store();
+  }
+  {
+    tools::wallet2 wallet;
+    wallet.load(files.file(), "");
+    salchat::service service(wallet);
+    const auto messages = service.messages();
+    ASSERT_EQ(messages.size(), 1u);
+    EXPECT_EQ(messages[0].id, old.messages[0].id);
+    EXPECT_EQ(messages[0].content, "current message");
+    EXPECT_EQ(service.message_count(), 1u);
+    EXPECT_EQ(service.contacts().size(), 1u);
+    salchat::message result;
+    for (std::size_t i = 1; i < old.messages.size(); ++i)
+      EXPECT_FALSE(service.get_message(salchat::service::id_hex(old.messages[i].id), result));
+  }
+  {
+    // Read the saved attribute before calling the service, proving deletion
+    // was persisted rather than just hidden from a displayed message list.
+    tools::wallet2 wallet;
+    wallet.load(files.file(), "");
+    std::string encoded;
+    ASSERT_TRUE(wallet.get_attribute("salchat.state.v4", encoded));
+    EXPECT_NE(encoded, original);
+    ASSERT_TRUE(epee::string_tools::parse_hexstr_to_binbuff(encoded, bytes));
+    saved_chat_state<salchat::message> saved;
+    ASSERT_TRUE(serialization::parse_binary(bytes, saved));
+    ASSERT_EQ(saved.messages.size(), 1u);
+    EXPECT_EQ(saved.messages[0].id, old.messages[0].id);
+    ASSERT_EQ(saved.contacts.size(), 1u);
+    EXPECT_EQ(saved.contacts[0].label, contact.label);
+    EXPECT_EQ(saved.seen_message_ids, old.seen_message_ids);
+    EXPECT_EQ(saved.seen_ciphertext_hashes, old.seen_ciphertext_hashes);
+    ASSERT_EQ(saved.pending_receipts.size(), 1u);
+    EXPECT_EQ(saved.pending_receipts[0].message_id, old.messages[0].id);
+  }
 }
 
 TEST(salchat_wallet, address_contact_encrypts_authenticates_and_decrypts_text)
@@ -74,6 +248,7 @@ TEST(salchat_wallet, address_contact_encrypts_authenticates_and_decrypts_text)
     bob_contact, cryptonote::MAINNET, salchat::message_type::text,
     "SC address hello", 3600, 1000, envelope, error)) << error;
   EXPECT_EQ(envelope.protocol_version, 4);
+  EXPECT_EQ(envelope.expires_at - envelope.created_at, 3600u);
   EXPECT_EQ(envelope.expires_height-envelope.created_height,
     cryptonote::SALCHAT_MESSAGE_LIFETIME_BLOCKS);
   EXPECT_EQ(envelope.recipient_tag,
@@ -109,6 +284,11 @@ TEST(salchat_wallet, address_contact_encrypts_authenticates_and_decrypts_text)
     bob.view_public_key, cryptonote::MAINNET, envelope, expired, envelope.expires_at,
     envelope.expires_height, error));
   EXPECT_EQ(error, "envelope expired at block height");
+
+  EXPECT_FALSE(salchat::decrypt_payload(bob.message_secret_key, bob.spend_public_key,
+    bob.view_public_key, cryptonote::MAINNET, envelope, expired, envelope.expires_at,
+    envelope.created_height, error));
+  EXPECT_EQ(error, "envelope expired at requested time");
 }
 
 TEST(salchat_wallet, rejects_wrong_recipient_and_forged_ciphertext)

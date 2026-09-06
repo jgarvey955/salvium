@@ -267,6 +267,7 @@ namespace cryptonote
     else if (e.created_height > current_height && e.created_height - current_height > 10)
       error = "creation height is too far in future";
     else if (e.expires_height <= current_height) error = "envelope expired at block height";
+    else if (e.expires_at <= now) error = "envelope expired at requested time";
     else if (e.created_at > now && e.created_at - now > SALCHAT_MAX_FUTURE_SECONDS) error = "creation time is too far in future";
     else if (!e.hop_limit || e.hop_limit > SALCHAT_MAX_HOPS || e.hop_count > e.hop_limit) error = "invalid hop limit";
     else if (all_zero(e.ephemeral_public_key) || all_zero(e.nonce) || all_zero(e.sender_signing_public_key) || all_zero(e.sender_signature)) error = "malformed cryptographic field";
@@ -433,7 +434,8 @@ namespace cryptonote
     discard_stale_order(m_seen_hash_order, m_seen_hashes);
     for (auto it = m_entries.begin(); it != m_entries.end();)
     {
-      if (it->envelope.expires_height > current_height) { ++it; continue; }
+      if (it->envelope.expires_height > current_height && it->envelope.expires_at > now)
+      { ++it; continue; }
       remove_entry_accounting(*it);
       it = m_entries.erase(it); ++m_stats.evicted;
     }
