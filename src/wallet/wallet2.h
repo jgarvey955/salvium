@@ -748,6 +748,8 @@ private:
         >;
       tx_reconstruct_variant_t construction_data;
 
+      pending_tx() : construction_data(tx_construction_data()) {}
+
       BEGIN_SERIALIZE_OBJECT()
         VERSION_FIELD(2)
         FIELD(tx)
