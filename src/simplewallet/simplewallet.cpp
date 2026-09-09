@@ -230,7 +230,7 @@ namespace
   const char* USAGE_BURN("burn <amount> <asset_type>");
   const char* USAGE_CONVERT("convert <source_amount> <source_asset> <dest_asset> [<slippage_limit>]");
   const char* USAGE_STAKE("stake <amount>");
-  const char* USAGE_AUDIT("audit [index=<N1>[,<N2>,...] | index=all]");
+  const char* USAGE_AUDIT("audit");
   const char* USAGE_CREATE_TOKEN("create_token [index=<N1>[,<N2>,...]] <ticker> <supply> [name=<name>|metadata=<metadata>|file=<metadata_file>]");
   const char* USAGE_PRICE_INFO("price_info");
   const char* USAGE_SUPPLY_INFO("supply_info");
@@ -3402,7 +3402,7 @@ bool simple_wallet::help(const std::vector<std::string> &args/* = std::vector<st
     message_writer() << tr("\"burn <amount> <asset_type>\" - destroy coins forever.");
     message_writer() << tr("\"convert <amount> <source_asset> <dest_asset> [<slippage_limit>]\" - convert between coin types.");
     message_writer() << tr("\"stake <amount>\" - stake SAL1 for 30 days to earn yield.");
-    message_writer() << tr("\"audit\" - audit your wallet main address (or subaddress(es) if specified).");
+    message_writer() << tr("\"audit\" - audit SAL1, tokens and stakes across every account and subaddress in your wallet.");
     message_writer() << tr("\"create_token <ticker> <supply> [name=<name>|metadata=<metadata>|file=<metadata_file>]\" - Create new private token.");
     message_writer() << tr("\"price_info\" - Display current pricing information for supported assets.");
     message_writer() << tr("\"supply_info\" - Display circulating supply information.");
@@ -3602,7 +3602,7 @@ simple_wallet::simple_wallet()
   m_cmd_binder.set_handler("audit",
                            boost::bind(&simple_wallet::audit, this, _1),
                            tr(USAGE_AUDIT),
-                           tr("Sends your wallet balance (or a single address or subaddress(es)) to audit (only available during AUDIT hard forks)"));
+                           tr("Refreshes and audits SAL1, tokens and stakes across every account and subaddress; reports good, bad and unresolved funds. Takes no arguments."));
   m_cmd_binder.set_handler("create_token",
                            boost::bind(&simple_wallet::create_token, this, _1),
                            tr(USAGE_CREATE_TOKEN),
@@ -8900,33 +8900,41 @@ bool simple_wallet::convert(const std::vector<std::string> &args_)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::audit(const std::vector<std::string> &args_)
 {
-  // TODO: add locked versions
-  std::vector<std::string> local_args = args_;
-  if (args_.size() == 0)
-  {
-    local_args.push_back("index=0");
-  } else if (args_.size() > 1) {
-    PRINT_USAGE(USAGE_AUDIT);
-    return true;
-  }
-
-  if(m_wallet->get_multisig_status().multisig_is_active)
-  {
-     fail_msg_writer() << tr("This is a multisig wallet, staking is not currently supported");
-     return true;
-  }
-  
-  const std::map<uint8_t, std::pair<uint64_t, std::pair<std::string, std::string>>> audit_hard_forks = get_config(m_wallet->nettype()).AUDIT_HARD_FORKS;
-  const uint8_t hf_version = m_wallet->get_current_hard_fork();
-  if (audit_hard_forks.find(hf_version) != audit_hard_forks.end()) {
-
-    // Get the asset types
-    const std::pair<std::string, std::string> audit_asset_types = audit_hard_forks.at(hf_version).second;
-    transfer_main(Audit, audit_asset_types.first, audit_asset_types.first, local_args, false);
-    
-  } else {
-    fail_msg_writer() << tr("Audit command is not available at this time.");
-  }
+  if (!args_.empty()) { PRINT_USAGE(USAGE_AUDIT); return true; }
+  if (!try_connect_to_daemon()) return true;
+  SCOPED_WALLET_UNLOCK();
+  try {
+    m_wallet->refresh(m_wallet->is_trusted_daemon());
+    const auto result = m_wallet->audit();
+    const bool closed = result.closing_height && result.candidate_height >= result.closing_height;
+    message_writer() << "SAL1 and token wallet audit: " << result.state;
+    message_writer() << "Scope: every account and subaddress in this wallet";
+    if (result.closing_height)
+      message_writer() << "Enrollment " << (result.candidate_height < result.closing_height ? "closes" : "closed")
+          << " at block " << result.closing_height << ". Each cleared output releases ten blocks after clearance, subject to normal locks.";
+    for (const auto& balance : result.balances) {
+      message_writer() << balance.asset_type << ": good " << print_money(balance.good)
+          << " (" << balance.good_count << " outputs), bad " << print_money(balance.bad)
+          << " (" << balance.bad_count << " outputs), unresolved " << print_money(balance.unresolved)
+          << " (" << balance.unresolved_count << " outputs)";
+      message_writer() << "Immature or awaiting audit release: " << print_money(balance.immature) << " " << balance.asset_type;
+      message_writer() << "Spent history (excluded from balances): " << print_money(balance.spent) << " " << balance.asset_type;
+    }
+    message_writer() << "Locked stake principal: good " << print_money(result.stake_good)
+        << ", bad " << print_money(result.stake_bad) << ", unresolved " << print_money(result.stake_unresolved) << " SAL1";
+    if (result.pending_batches) message_writer() << result.pending_batches << " audit batches awaiting confirmation; saved in wallet for retry on refresh.";
+    if (result.stake_unresolved_count || std::any_of(result.balances.begin(), result.balances.end(),
+        [](const tools::audit_asset_balance& balance) { return balance.unresolved_count != 0; }))
+      message_writer() << (closed ? "Unresolved funds remain permanently frozen because enrollment has closed." :
+          "Unresolved funds stay locked until their actual funding ancestry is proven. Earlier owners must supply evidence before the deadline.");
+    if (std::any_of(result.outputs.begin(), result.outputs.end(), [](const tools::wallet2::audit_output& row) {
+          return row.state == "KEY_IMAGE_UNAVAILABLE" || row.state == "MISSING_RETURN_CONTEXT";
+        }))
+      message_writer() << (closed ? "Some outputs lack key images or stake return context. Closed enrollment cannot accept late evidence." :
+          "Some outputs need complete key images or stake return context. They remain unresolved; restore the signing wallet's history and run audit again before the deadline.");
+    if (!closed) message_writer() << "Saved enrollment progresses automatically on refresh. Keep the wallet online until its batches confirm before the deadline.";
+    message_writer() << "Good stakes still require normal maturity. Bad or unresolved funds remain frozen after enrollment closes.";
+  } catch (const std::exception& e) { fail_msg_writer() << "Wallet audit failed: " << e.what(); }
   return true;
 }
 //----------------------------------------------------------------------------------------------------
