@@ -92,7 +92,7 @@ if(DEVICE_TREZOR_READY)
             common
             ${SODIUM_LIBRARY}
             ${Boost_CHRONO_LIBRARY}
-            ${Protobuf_LIBRARY}
+            ${TREZOR_PROTOBUF_LIBRARIES}
             ${TREZOR_LIBUSB_LIBRARIES}
             PRIVATE
             ${EXTRA_LIBRARIES})

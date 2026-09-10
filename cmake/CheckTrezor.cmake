@@ -72,21 +72,28 @@ endmacro()
 
 # Use Trezor master switch
 if (USE_DEVICE_TREZOR)
-    # Protobuf is required to build protobuf messages for Trezor
-    include(FindProtobuf OPTIONAL)
+    # The upstream package exports Abseil and utf8_range dependencies needed
+    # by modern Protobuf. Keep the module fallback for older installations.
+    set(protobuf_MODULE_COMPATIBLE TRUE)
+    find_package(Protobuf CONFIG QUIET)
+    if(NOT Protobuf_FOUND)
+        find_package(Protobuf MODULE QUIET)
+    endif()
 
     # PkgConfig works better with new Protobuf
     find_package(PkgConfig QUIET)
     pkg_check_modules(PROTOBUF protobuf)
 
-    if (NOT Protobuf_FOUND)
-        FIND_PACKAGE(Protobuf CONFIG)
-    endif()
-    if (NOT Protobuf_FOUND)
-        FIND_PACKAGE(Protobuf)
+    if(NOT Protobuf_INCLUDE_DIR AND Protobuf_INCLUDE_DIRS)
+        list(GET Protobuf_INCLUDE_DIRS 0 Protobuf_INCLUDE_DIR)
     endif()
 
     _trezor_protobuf_fix_vars()
+
+    set(TREZOR_PROTOBUF_LIBRARIES ${Protobuf_LIBRARY})
+    if(TARGET protobuf::libprotobuf)
+        set(TREZOR_PROTOBUF_LIBRARIES protobuf::libprotobuf)
+    endif()
 
     # Early fail for optional Trezor support
     if(NOT Protobuf_FOUND AND NOT Protobuf_LIBRARY AND NOT Protobuf_PROTOC_EXECUTABLE AND NOT Protobuf_INCLUDE_DIR)
@@ -156,12 +163,6 @@ if(Protobuf_FOUND AND USE_DEVICE_TREZOR AND TREZOR_PYTHON)
     endif()
 
     if(USE_DEVICE_TREZOR_PROTOBUF_TEST)
-        if(PROTOBUF_LDFLAGS)
-            set(PROTOBUF_TRYCOMPILE_LINKER "${PROTOBUF_LDFLAGS}")
-        else()
-            set(PROTOBUF_TRYCOMPILE_LINKER "${Protobuf_LIBRARY}")
-        endif()
-        
         try_compile(Protobuf_COMPILE_TEST_PASSED
             "${CMAKE_BINARY_DIR}"
             SOURCES
@@ -171,7 +172,7 @@ if(Protobuf_FOUND AND USE_DEVICE_TREZOR AND TREZOR_PYTHON)
             CMAKE_EXE_LINKER_FLAGS ${CMAKE_TRY_COMPILE_LINKER_FLAGS}
             "-DINCLUDE_DIRECTORIES=${Protobuf_INCLUDE_DIR};${CMAKE_BINARY_DIR}"
             "-DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}"
-            LINK_LIBRARIES "${PROTOBUF_TRYCOMPILE_LINKER}" ${CMAKE_TRY_COMPILE_LINK_LIBRARIES}
+            LINK_LIBRARIES ${TREZOR_PROTOBUF_LIBRARIES} ${CMAKE_TRY_COMPILE_LINK_LIBRARIES}
             OUTPUT_VARIABLE OUTPUT
         )
         if(NOT Protobuf_COMPILE_TEST_PASSED)
@@ -211,7 +212,8 @@ if(Protobuf_FOUND AND USE_DEVICE_TREZOR AND TREZOR_PYTHON)
     endif()
 
     if (Protobuf_INCLUDE_DIR)
-        include_directories(${Protobuf_INCLUDE_DIR})
+        # Core object libraries also include generated Protobuf headers.
+        include_directories(${Protobuf_INCLUDE_DIR} ${PROTOBUF_INCLUDE_DIRS})
     endif()
 
     # LibUSB support, check for particular version
@@ -240,7 +242,7 @@ if(Protobuf_FOUND AND USE_DEVICE_TREZOR AND TREZOR_PYTHON)
         set(TREZOR_DEP_LINKER "")
 
         if (Protobuf_LIBRARY)
-            list(APPEND TREZOR_DEP_LIBS ${Protobuf_LIBRARY})
+            list(APPEND TREZOR_DEP_LIBS ${TREZOR_PROTOBUF_LIBRARIES})
             string(APPEND TREZOR_DEP_LINKER " -lprotobuf")
         endif()
 
