@@ -756,7 +756,9 @@ private:
           tx_construction_data,
           carrot::CarrotTransactionProposalV1
         >;
-      tx_reconstruct_variant_t construction_data;
+      // GCC 13 evaluates the nested alternative's default-construction trait
+      // before wallet2 is complete. Construct it explicitly, keeping index 0.
+      tx_reconstruct_variant_t construction_data = tx_construction_data{};
 
       BEGIN_SERIALIZE_OBJECT()
         VERSION_FIELD(3)

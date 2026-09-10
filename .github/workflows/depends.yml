@@ -89,11 +89,12 @@ jobs:
           depends-${{ matrix.toolchain.host }}-
 # Static cache
     - name: OSX SDK cache
+      if: ${{ contains(matrix.toolchain.host, 'apple-darwin') }}
       uses: actions/cache@v4
       with:
         path: contrib/depends/sdk-sources
-        key: sdk-${{ matrix.toolchain.host }}-${{ matrix.toolchain.osx_sdk }}
-        restore-keys: sdk-${{ matrix.toolchain.host }}-${{ matrix.toolchain.osx_sdk }}
+        key: sdk-${{ matrix.toolchain.host }}-${{ hashFiles('contrib/depends/hosts/darwin.mk') }}
+        restore-keys: sdk-${{ matrix.toolchain.host }}-
     - name: set apt conf
       run: ${{env.APT_SET_CONF}}
     - name: install dependencies
