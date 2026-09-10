@@ -7260,6 +7260,8 @@ void wallet2::load_wallet_cache(const bool use_fs, const std::string& cache_buf)
             catch (...)
             {
               LOG_PRINT_L0("Failed to open portable binary, trying unportable");
+              THROW_WALLET_EXCEPTION_IF(!tools::has_native_binary_archive_signature(cache_data),
+                error::wallet_internal_error, "invalid native cache archive signature");
               //if (use_fs) boost::filesystem::copy_file(m_wallet_file, m_wallet_file + ".unportable", boost::filesystem::copy_option::overwrite_if_exists);
               if (use_fs) tools::copy_file(m_wallet_file, m_wallet_file + ".unportable");
               std::stringstream iss;
@@ -7283,6 +7285,8 @@ void wallet2::load_wallet_cache(const bool use_fs, const std::string& cache_buf)
         catch (...)
         {
           LOG_PRINT_L0("Failed to open portable binary, trying unportable");
+          THROW_WALLET_EXCEPTION_IF(!tools::has_native_binary_archive_signature(cache_file_buf),
+            error::wallet_internal_error, "invalid native cache archive signature");
           //if (use_fs) boost::filesystem::copy_file(m_wallet_file, m_wallet_file + ".unportable", boost::filesystem::copy_option::overwrite_if_exists);
           if (use_fs) tools::copy_file(m_wallet_file, m_wallet_file + ".unportable");
           std::stringstream iss;

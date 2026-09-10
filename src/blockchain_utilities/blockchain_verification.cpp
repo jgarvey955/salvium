@@ -31,6 +31,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include <boost/multiprecision/cpp_int.hpp>
+
 #include "blockchain_db/blockchain_db.h"
 #include "blockchain_db/lmdb/db_lmdb.h"
 #include "common/command_line.h"
@@ -51,6 +53,8 @@ using namespace cryptonote;
 
 namespace
 {
+  using boost::multiprecision::uint128_t;
+
   // ----------------------------
   // Helpers
   // ----------------------------
@@ -83,17 +87,9 @@ namespace
     return epee::string_tools::pod_to_hex(pod);
   }
 
-  std::string uint128_to_string(unsigned __int128 value)
+  std::string uint128_to_string(const uint128_t &value)
   {
-    if (value == 0) return "0";
-    std::string out;
-    while (value != 0)
-    {
-      out.push_back(static_cast<char>('0' + value % 10));
-      value /= 10;
-    }
-    std::reverse(out.begin(), out.end());
-    return out;
+    return value.str();
   }
 
   static std::optional<std::string> get_created_token_asset_type(const cryptonote::transaction& tx)
@@ -566,8 +562,8 @@ int main(int argc, const char* argv[])
     uint64_t duplicate_key_images = 0, cleartext_txs = 0, arithmetic_overflows = 0;
     uint64_t generated_supply_decreases = 0, generated_supply_exceeds_cap = 0;
     uint64_t previous_generated_supply = 0, final_generated_supply = 0;
-    unsigned __int128 generated_supply_deltas = 0, transparent_miner_outputs = 0;
-    unsigned __int128 transparent_protocol_outputs = 0, ordinary_fees = 0, ordinary_burns = 0;
+    uint128_t generated_supply_deltas = 0, transparent_miner_outputs = 0;
+    uint128_t transparent_protocol_outputs = 0, ordinary_fees = 0, ordinary_burns = 0;
     std::unordered_set<std::string> observed_key_images;
     std::unordered_set<std::string> observed_transaction_hashes;
     std::unordered_set<std::string> poison_linked_transaction_hashes;
@@ -589,10 +585,10 @@ int main(int argc, const char* argv[])
       if (height > 0 && generated_supply < previous_generated_supply) ++generated_supply_decreases;
       if (generated_supply > MONEY_SUPPLY) ++generated_supply_exceeds_cap;
       if (generated_supply >= previous_generated_supply)
-        generated_supply_deltas += static_cast<unsigned __int128>(generated_supply - previous_generated_supply);
+        generated_supply_deltas += uint128_t(generated_supply - previous_generated_supply);
       previous_generated_supply = generated_supply;
       final_generated_supply = generated_supply;
-      unsigned __int128 block_miner_outputs = 0, block_protocol_outputs = 0;
+      uint128_t block_miner_outputs = 0, block_protocol_outputs = 0;
       for (const tx_out &out : blk.miner_tx.vout) { transparent_miner_outputs += out.amount; block_miner_outputs += out.amount; }
       for (const tx_out &out : blk.protocol_tx.vout) { transparent_protocol_outputs += out.amount; block_protocol_outputs += out.amount; }
       if (forensic_verbose)
@@ -740,7 +736,7 @@ int main(int argc, const char* argv[])
                 chain_commitment_equal = parent.rct_signatures.outPk[rec.local_vout_index].mask == rec.od.commitment;
               }
             }
-            const unsigned __int128 required = static_cast<unsigned __int128>(tx.amount_burnt) + tx.rct_signatures.txnFee;
+            const uint128_t required = uint128_t(tx.amount_burnt) + tx.rct_signatures.txnFee;
             const bool known_insufficient = parent_type == static_cast<int>(MINER) && parent_amount < required;
             std::cout << "FORENSIC_MEMBER tx=" << pod_to_hex_string(blk.tx_hashes[tx_pos])
                       << " input=" << input_index << " member=" << member

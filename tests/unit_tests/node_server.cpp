@@ -280,10 +280,9 @@ TEST(ban, subnet)
     Server::init_options(opts);
     cryptonote::core::init_options(opts);
 
-    char** args = nullptr;
     boost::program_options::variables_map vm;
     boost::program_options::store(
-      boost::program_options::parse_command_line(0, args, opts), vm
+      boost::program_options::command_line_parser(std::vector<std::string>{}).options(opts).run(), vm
     );
     vm.find(cryptonote::arg_offline.name)->second = boost::program_options::variable_value(true, false);
     vm.find(cryptonote::arg_data_dir.name)->second = boost::program_options::variable_value(data_dir.string(), false);

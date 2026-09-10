@@ -45,6 +45,8 @@
 #include "serialization/containers.h"
 #include "serialization/binary_utils.h"
 #include "wallet/wallet2.h"
+#include "common/boost_serialization_helper.h"
+#include <boost/archive/binary_oarchive.hpp>
 #include "gtest/gtest.h"
 #include "unit_tests_utils.h"
 #include "device/device.hpp"
@@ -685,6 +687,28 @@ TEST(Serialization, serializes_ringct_types)
   ASSERT_TRUE(clsag0.c1 == clsag1.c1);
   // I is not serialized, they are meant to be reconstructed
   ASSERT_TRUE(clsag0.D == clsag1.D);
+}
+
+TEST(Serialization, native_archive_signature_rejects_malformed_lengths)
+{
+  std::ostringstream stream;
+  {
+    boost::archive::binary_oarchive archive(stream);
+    archive << uint64_t{42};
+  }
+  const std::string data = stream.str();
+  ASSERT_TRUE(tools::has_native_binary_archive_signature(data));
+
+  const size_t signature_end = sizeof(size_t) + std::strlen(boost::archive::BOOST_ARCHIVE_SIGNATURE());
+  for (size_t size = 0; size < signature_end; ++size)
+    EXPECT_FALSE(tools::has_native_binary_archive_signature(std::string_view(data.data(), size)));
+
+  std::string malformed = data;
+  std::fill_n(malformed.begin(), sizeof(size_t), '\xff');
+  EXPECT_FALSE(tools::has_native_binary_archive_signature(malformed));
+  malformed = data;
+  malformed[sizeof(size_t)] ^= 1;
+  EXPECT_FALSE(tools::has_native_binary_archive_signature(malformed));
 }
 
 TEST(Serialization, portability_wallet_rejects_incompatible_cache_safely)
