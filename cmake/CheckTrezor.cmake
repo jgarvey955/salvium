@@ -74,7 +74,9 @@ endmacro()
 if (USE_DEVICE_TREZOR)
     # The upstream package exports Abseil and utf8_range dependencies needed
     # by modern Protobuf. Keep the module fallback for older installations.
-    set(protobuf_MODULE_COMPATIBLE TRUE)
+    # Protobuf declares this with option(). A cache entry also works when the
+    # parent project uses the pre-CMP0077 policy and clears normal variables.
+    set(protobuf_MODULE_COMPATIBLE TRUE CACHE BOOL "Enable FindProtobuf compatibility" FORCE)
     find_package(Protobuf CONFIG QUIET)
     if(NOT Protobuf_FOUND)
         find_package(Protobuf MODULE QUIET)
