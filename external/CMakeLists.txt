@@ -67,6 +67,8 @@ else()
   endif()
 endif()
 
+set(UNBOUND_LIBRARIES "${UNBOUND_LIBRARIES}" PARENT_SCOPE)
+
 add_subdirectory(db_drivers)
 add_subdirectory(easylogging++)
 add_subdirectory(qrcodegen)
