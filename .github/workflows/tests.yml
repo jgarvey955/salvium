@@ -13,7 +13,7 @@ env:
 
 jobs:
   unit-and-tools:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,7 +32,7 @@ jobs:
             build-essential cmake pkg-config libssl-dev libzmq3-dev libunbound-dev \
             libsodium-dev libunwind-dev liblzma-dev libreadline-dev libexpat1-dev \
             libpgm-dev libhidapi-dev libusb-1.0-0-dev libprotobuf-dev \
-            protobuf-compiler libudev-dev libboost-all-dev python3 ccache gperf \
+            protobuf-compiler libudev-dev libboost-all-dev python3 python3-requests python3-psutil python3-monotonic python3-zmq ccache gperf \
             libtool autotools-dev automake bsdmainutils git ca-certificates
 
       - name: configure debug tests
@@ -56,7 +56,7 @@ jobs:
         run: python3 tests/functional_tests/wallet_rpc_lifecycle.py "$PWD/build/ci-debug/bin/salvium-wallet-rpc"
 
   asan-unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,7 +69,7 @@ jobs:
             build-essential cmake pkg-config libssl-dev libzmq3-dev libunbound-dev \
             libsodium-dev libunwind-dev liblzma-dev libreadline-dev libexpat1-dev \
             libpgm-dev libhidapi-dev libusb-1.0-0-dev libprotobuf-dev \
-            protobuf-compiler libudev-dev libboost-all-dev python3 gperf \
+            protobuf-compiler libudev-dev libboost-all-dev python3 python3-requests python3-psutil python3-monotonic python3-zmq gperf \
             libtool autotools-dev automake bsdmainutils git ca-certificates
 
       - name: configure asan tests
@@ -87,7 +87,7 @@ jobs:
         run: ctest --test-dir build/ci-asan --output-on-failure -R unit_tests
 
   salchat-fuzz:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -101,7 +101,7 @@ jobs:
             build-essential clang cmake pkg-config libssl-dev libzmq3-dev libunbound-dev \
             libsodium-dev libunwind-dev liblzma-dev libreadline-dev libexpat1-dev \
             libpgm-dev libhidapi-dev libusb-1.0-0-dev libprotobuf-dev \
-            protobuf-compiler libudev-dev libboost-all-dev python3 gperf \
+            protobuf-compiler libudev-dev libboost-all-dev python3 python3-requests python3-psutil python3-monotonic python3-zmq gperf \
             libtool autotools-dev automake bsdmainutils git ca-certificates
 
       - name: build instrumented SalChat fuzzers
