@@ -215,12 +215,14 @@ TEST(test_epee_connection, test_lifetime)
   server.run_server(2, false);
   server.get_config_shared()->set_handler(new command_handler_t, &command_handler_t::destroy);
 
-  boost::asio::post(io_context, [&io_context, &work, &endpoint, &server]{
+  std::weak_ptr<shared_state_t> client_state;
+  boost::asio::post(io_context, [&io_context, &work, &endpoint, &server, &client_state]{
     auto scope_exit_handler = epee::misc_utils::create_scope_leave_handler([&work]{
       work.reset();
     });
 
     shared_state_ptr shared_state(std::make_shared<shared_state_t>());
+    client_state = shared_state;
     shared_state->set_handler(new command_handler_t, &command_handler_t::destroy);
 
     auto create_connection = [&io_context, &endpoint, &shared_state] {
@@ -323,8 +325,11 @@ TEST(test_epee_connection, test_lifetime)
 
     while (shared_state->sock_count);
     shared_conn_ptr shared_conn(std::make_shared<shared_conn_t>());
+    // The state owns this handler, so its callback must not own the state.
     shared_state->set_handler(new command_handler_t(ZERO_DELAY,
-        [shared_state, shared_conn]{
+        [weak_state = std::weak_ptr<shared_state_t>(shared_state), shared_conn]{
+          const auto state = weak_state.lock();
+          ASSERT_TRUE(state);
           {
             connection_ptr conn;
             {
@@ -335,7 +340,7 @@ TEST(test_epee_connection, test_lifetime)
             if (conn)
               conn->cancel();
           }
-          const auto success = shared_state->foreach_connection([](context_t&){
+          const auto success = state->foreach_connection([](context_t&){
             return true;
           });
           ASSERT_TRUE(success);
@@ -470,6 +475,7 @@ TEST(test_epee_connection, test_lifetime)
   for (auto& w: workers) {
     w.join();
   }
+  EXPECT_TRUE(client_state.expired());
   server.send_stop_signal();
   server.timed_wait_server_stop(5 * 1000);
   server.deinit_server();
