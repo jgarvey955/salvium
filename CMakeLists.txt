@@ -705,7 +705,7 @@ endif()
 ExternalProject_Add(generate_translations_header
   SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/translations"
   BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/translations"
-  STAMP_DIR ${LRELEASE_PATH}
+  STAMP_DIR "${CMAKE_CURRENT_BINARY_DIR}/translations/stamp"
   CMAKE_ARGS -DLRELEASE_PATH=${LRELEASE_PATH} ${TRANSLATIONS_HOST_TOOLCHAIN_ARGS}
   INSTALL_COMMAND ${CMAKE_COMMAND} -E echo "")
 include_directories("${CMAKE_CURRENT_BINARY_DIR}/translations")
