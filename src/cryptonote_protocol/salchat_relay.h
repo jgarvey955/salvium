@@ -68,9 +68,10 @@ namespace cryptonote
     std::vector<salchat_p2p_envelope> poll(const std::vector<crypto::hash>& tags,
       std::size_t limit, std::uint64_t now) { return poll(tags, limit, now, 0); }
     bool ack(const crypto::hash& message_id, const crypto::hash& ack_token);
-    bool allow_peer_packet(const std::string& peer, std::size_t bytes);
-    bool allow_peer_bytes(const std::string& peer, std::size_t bytes);
-    bool allow_global_bytes(std::size_t bytes);
+    // A zero timestamp uses the steady clock; tests can supply a fixed time.
+    bool allow_peer_packet(const std::string& peer, std::size_t bytes, std::uint64_t now_milliseconds = 0);
+    bool allow_peer_bytes(const std::string& peer, std::size_t bytes, std::uint64_t now_milliseconds = 0);
+    bool allow_global_bytes(std::size_t bytes, std::uint64_t now_milliseconds = 0);
     salchat_statistics statistics() const;
     const salchat_config& config() const noexcept { return m_config; }
 
@@ -93,7 +94,8 @@ namespace cryptonote
                        const std::string& value, std::uint64_t expires_at);
     static bool consume(token_bucket& bucket, std::uint64_t amount, std::uint64_t rate,
                         std::uint64_t burst, std::uint64_t now_milliseconds);
-    bool allow_peer_transfer(const std::string& peer, std::size_t bytes, bool count_packet);
+    bool allow_peer_transfer(const std::string& peer, std::size_t bytes, bool count_packet,
+                             std::uint64_t now_milliseconds);
     static std::uint64_t monotonic_milliseconds();
     static std::string key(const crypto::hash& value);
     static std::string sender_recipient_key(const salchat_p2p_envelope& envelope);

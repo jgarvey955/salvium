@@ -338,52 +338,64 @@ TEST(salchat, backlogs_are_drained_in_rpc_sized_batches)
 
 TEST(salchat, enforces_peer_byte_and_packet_buckets)
 {
+  constexpr std::uint64_t now=1000;
   cryptonote::salchat_config config;
   config.enabled=true;
   config.max_peer_kbps=1;
   config.max_global_kbps=1024;
   cryptonote::salchat_relay relay{config};
 
-  EXPECT_TRUE(relay.allow_peer_packet("byte-limited-peer",1024));
-  EXPECT_TRUE(relay.allow_peer_packet("byte-limited-peer",1024));
-  EXPECT_FALSE(relay.allow_peer_packet("byte-limited-peer",1));
+  EXPECT_TRUE(relay.allow_peer_packet("byte-limited-peer",1024,now));
+  EXPECT_TRUE(relay.allow_peer_packet("byte-limited-peer",1024,now));
+  EXPECT_FALSE(relay.allow_peer_packet("byte-limited-peer",1,now));
 
   for (unsigned int i=0;i<64;++i)
-    EXPECT_TRUE(relay.allow_peer_packet("packet-limited-peer",1));
-  EXPECT_FALSE(relay.allow_peer_packet("packet-limited-peer",1));
+    EXPECT_TRUE(relay.allow_peer_packet("packet-limited-peer",1,now));
+  EXPECT_FALSE(relay.allow_peer_packet("packet-limited-peer",1,now));
   // A reconnect from the same host must not reset this bucket.
-  EXPECT_FALSE(relay.allow_peer_packet("packet-limited-peer",1));
+  EXPECT_FALSE(relay.allow_peer_packet("packet-limited-peer",1,now));
 
   // Response bytes share the peer byte budget without pretending each chunk
   // is a separate inbound packet.
-  EXPECT_TRUE(relay.allow_peer_bytes("response-limited-peer",1024));
-  EXPECT_TRUE(relay.allow_peer_bytes("response-limited-peer",1024));
-  EXPECT_FALSE(relay.allow_peer_bytes("response-limited-peer",1));
+  EXPECT_TRUE(relay.allow_peer_bytes("response-limited-peer",1024,now));
+  EXPECT_TRUE(relay.allow_peer_bytes("response-limited-peer",1024,now));
+  EXPECT_FALSE(relay.allow_peer_bytes("response-limited-peer",1,now));
+
+  EXPECT_TRUE(relay.allow_peer_packet("packet-limited-peer",1,now+32));
+  EXPECT_FALSE(relay.allow_peer_packet("packet-limited-peer",1,now+32));
+  EXPECT_FALSE(relay.allow_peer_bytes("response-limited-peer",1024,now+500));
+  EXPECT_TRUE(relay.allow_peer_bytes("response-limited-peer",1024,now+1000));
+  EXPECT_FALSE(relay.allow_peer_bytes("response-limited-peer",1,now+1000));
 }
 
 TEST(salchat, enforces_global_outbound_bucket)
 {
+  constexpr std::uint64_t now=1000;
   cryptonote::salchat_config config;
   config.enabled=true;
   config.max_peer_kbps=1;
   config.max_global_kbps=1;
   cryptonote::salchat_relay relay{config};
 
-  EXPECT_TRUE(relay.allow_global_bytes(1024));
-  EXPECT_TRUE(relay.allow_global_bytes(1024));
-  EXPECT_FALSE(relay.allow_global_bytes(1));
-  EXPECT_FALSE(relay.allow_global_bytes(2049));
+  EXPECT_TRUE(relay.allow_global_bytes(1024,now));
+  EXPECT_TRUE(relay.allow_global_bytes(1024,now));
+  EXPECT_FALSE(relay.allow_global_bytes(1,now));
+  EXPECT_FALSE(relay.allow_global_bytes(2049,now));
+  EXPECT_FALSE(relay.allow_global_bytes(1024,now+500));
+  EXPECT_TRUE(relay.allow_global_bytes(1024,now+1000));
+  EXPECT_FALSE(relay.allow_global_bytes(1,now+1000));
 }
 
 TEST(salchat, aggregate_packet_bucket_bounds_many_source_cpu_work)
 {
+  constexpr std::uint64_t now=1000;
   cryptonote::salchat_config config;
   config.enabled=true;
   cryptonote::salchat_relay relay{config};
 
   for (unsigned int i=0;i<512;++i)
-    EXPECT_TRUE(relay.allow_peer_packet("source-"+std::to_string(i),1));
-  EXPECT_FALSE(relay.allow_peer_packet("source-overflow",1));
+    EXPECT_TRUE(relay.allow_peer_packet("source-"+std::to_string(i),1,now));
+  EXPECT_FALSE(relay.allow_peer_packet("source-overflow",1,now));
 }
 
 TEST(salchat, bounded_replay_history_does_not_lock_the_relay)

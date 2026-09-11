@@ -338,18 +338,20 @@ namespace cryptonote
     return true;
   }
 
-  bool salchat_relay::allow_peer_packet(const std::string& peer, const std::size_t bytes)
+  bool salchat_relay::allow_peer_packet(const std::string& peer, const std::size_t bytes,
+                                      const std::uint64_t now_milliseconds)
   {
-    return allow_peer_transfer(peer, bytes, true);
+    return allow_peer_transfer(peer, bytes, true, now_milliseconds);
   }
 
-  bool salchat_relay::allow_peer_bytes(const std::string& peer, const std::size_t bytes)
+  bool salchat_relay::allow_peer_bytes(const std::string& peer, const std::size_t bytes,
+                                     const std::uint64_t now_milliseconds)
   {
-    return allow_peer_transfer(peer, bytes, false);
+    return allow_peer_transfer(peer, bytes, false, now_milliseconds);
   }
 
   bool salchat_relay::allow_peer_transfer(const std::string& peer, const std::size_t bytes,
-                                          const bool count_packet)
+                                          const bool count_packet, const std::uint64_t now_milliseconds)
   {
     static constexpr std::uint64_t packet_rate = 32;
     static constexpr std::uint64_t packet_burst = 64;
@@ -361,7 +363,7 @@ namespace cryptonote
     const std::uint64_t global_burst = global_rate * 2;
     if (peer_rate == 0 || global_rate == 0 || bytes > peer_burst || bytes > global_burst)
       return false;
-    const std::uint64_t now = monotonic_milliseconds();
+    const std::uint64_t now = now_milliseconds ? now_milliseconds : monotonic_milliseconds();
     std::lock_guard<std::mutex> lock(m_rate_mutex);
     auto found = m_peer_rates.find(peer);
     bool inserted = false;
@@ -404,12 +406,13 @@ namespace cryptonote
     return true;
   }
 
-  bool salchat_relay::allow_global_bytes(const std::size_t bytes)
+  bool salchat_relay::allow_global_bytes(const std::size_t bytes, const std::uint64_t now_milliseconds)
   {
     const std::uint64_t rate = m_config.max_global_kbps * 1024;
     const std::uint64_t burst = rate * 2;
     std::lock_guard<std::mutex> lock(m_rate_mutex);
-    return consume(m_global_bytes, bytes, rate, burst, monotonic_milliseconds());
+    return consume(m_global_bytes, bytes, rate, burst,
+      now_milliseconds ? now_milliseconds : monotonic_milliseconds());
   }
 
   void salchat_relay::prune(std::uint64_t now, const std::uint64_t current_height)
