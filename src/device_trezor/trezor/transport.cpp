@@ -376,7 +376,7 @@ namespace trezor{
     }
 
     for(rapidjson::Value::ConstValueIterator itr = bridge_res.Begin(); itr != bridge_res.End(); ++itr){
-      auto element = itr->GetObject();
+      const auto &element = *itr;
       auto t = std::make_shared<BridgeTransport>(boost::make_optional(json_get_string(element["path"])));
 
       auto itr_vendor = element.FindMember("vendor");
@@ -1289,4 +1289,3 @@ namespace trezor{
 
 }
 }
-
