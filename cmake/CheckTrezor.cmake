@@ -82,6 +82,12 @@ if (USE_DEVICE_TREZOR)
         find_package(Protobuf MODULE QUIET)
     endif()
 
+    # Some cross-built Abseil packages omit this Windows system dependency
+    # from their exports. Keep it after symbolize's archive at final link.
+    if(MINGW AND TARGET absl::symbolize)
+        set_property(TARGET absl::symbolize APPEND PROPERTY INTERFACE_LINK_LIBRARIES dbghelp)
+    endif()
+
     # PkgConfig works better with new Protobuf
     find_package(PkgConfig QUIET)
     pkg_check_modules(PROTOBUF protobuf)
