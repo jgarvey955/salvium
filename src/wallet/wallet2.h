@@ -1230,7 +1230,10 @@ private:
       const std::string &proxy = "");
     bool set_proxy(const std::string &address);
 
-    void stop() { m_run.store(false, std::memory_order_relaxed); m_message_store.stop(); }
+    void stop() { m_run.store(false, std::memory_order_release); m_message_store.stop(); }
+    void suspend_refresh() { m_refresh_suspended.store(true, std::memory_order_release); stop(); }
+    void resume_refresh() { m_refresh_suspended.store(false, std::memory_order_release); }
+    bool refresh_with_status(bool trusted_daemon);
 
     i_wallet2_callback* callback() const { return m_callback; }
     void callback(i_wallet2_callback* callback) { m_callback = callback; }
@@ -2285,7 +2288,15 @@ private:
     const std::vector<std::vector<rct::key>> *m_multisig_rescan_k;
     serializable_unordered_map<crypto::public_key, crypto::key_image> m_cold_key_images;
 
+    bool refresh_running() const
+    {
+      return m_run.load(std::memory_order_acquire) && !m_refresh_suspended.load(std::memory_order_acquire);
+    }
+    bool refresh_internal(bool trusted_daemon, uint64_t start_height, uint64_t &blocks_fetched,
+        bool &received_money, bool check_pool, bool try_incremental, uint64_t max_blocks);
+
     std::atomic<bool> m_run;
+    std::atomic<bool> m_refresh_suspended{false};
 
     boost::recursive_mutex m_daemon_rpc_mutex;
 

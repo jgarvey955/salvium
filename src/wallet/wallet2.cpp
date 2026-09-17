@@ -4390,7 +4390,7 @@ void wallet2::fast_refresh(uint64_t stop_height, uint64_t &blocks_start_height, 
   }
 
   size_t current_index = m_blockchain.size();
-  while(m_run.load(std::memory_order_relaxed) && current_index < stop_height)
+  while(refresh_running() && current_index < stop_height)
   {
     pull_hashes(0, blocks_start_height, short_chain_history, hashes);
     if (hashes.size() <= 3)
@@ -4561,11 +4561,27 @@ void wallet2::rebuild_transfer_maps()
 //----------------------------------------------------------------------------------------------------
 void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blocks_fetched, bool& received_money, bool check_pool, bool try_incremental, uint64_t max_blocks)
 {
+  refresh_internal(trusted_daemon, start_height, blocks_fetched, received_money, check_pool, try_incremental, max_blocks);
+}
+//----------------------------------------------------------------------------------------------------
+bool wallet2::refresh_with_status(bool trusted_daemon)
+{
+  uint64_t blocks_fetched = 0;
+  bool received_money = false;
+  return refresh_internal(trusted_daemon, 0, blocks_fetched, received_money, true, true, std::numeric_limits<uint64_t>::max());
+}
+//----------------------------------------------------------------------------------------------------
+bool wallet2::refresh_internal(bool trusted_daemon, uint64_t start_height, uint64_t & blocks_fetched, bool& received_money, bool check_pool, bool try_incremental, uint64_t max_blocks)
+{
+  blocks_fetched = 0;
+  received_money = false;
+  if (m_refresh_suspended.load(std::memory_order_acquire))
+    return false;
   if (m_offline)
   {
     blocks_fetched = 0;
     received_money = 0;
-    return;
+    return true;
   }
 
   received_money = false;
@@ -4603,8 +4619,9 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
   }
 
   // If stop() is called during fast refresh we don't need to continue
-  if(!m_run.load(std::memory_order_relaxed))
-    return;
+  if (!refresh_running())
+    return !m_refresh_suspended.load(std::memory_order_acquire);
+  bool refresh_interrupted = false;
   // always reset start_height to 0 to force short_chain_ history to be used on
   // subsequent pulls in this refresh.
   start_height = 0;
@@ -4627,8 +4644,18 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
   // infer when we get an incoming output
 
   bool first = true, last = false;
-  while(m_run.load(std::memory_order_relaxed) && blocks_fetched < max_blocks)
+  while(blocks_fetched < max_blocks)
   {
+    if (!first && blocks.empty())
+    {
+      m_node_rpc_proxy.set_height(m_blockchain.size());
+      break;
+    }
+    if (!refresh_running())
+    {
+      refresh_interrupted = m_refresh_suspended.load(std::memory_order_acquire);
+      break;
+    }
     uint64_t next_blocks_start_height;
     std::vector<cryptonote::block_complete_entry> next_blocks;
     std::vector<parsed_block> next_parsed_blocks;
@@ -4642,11 +4669,6 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
       next_blocks.clear();
       next_parsed_blocks.clear();
       added_blocks = 0;
-      if (!first && blocks.empty())
-      {
-        m_node_rpc_proxy.set_height(m_blockchain.size());
-        break;
-      }
       if (!last)
         tpool.submit(&waiter, [&]{pull_and_parse_next_blocks(first, try_incremental, start_height, next_blocks_start_height, short_chain_history, blocks, parsed_blocks, next_blocks, next_parsed_blocks, process_pool_txs, last, error, exception);});
 
@@ -4761,8 +4783,18 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
   try
   {
     // If stop() is called we don't need to check pending transactions
-    if (check_pool && m_run.load(std::memory_order_relaxed) && !process_pool_txs.empty())
-      process_pool_state(process_pool_txs);
+    if (check_pool && !process_pool_txs.empty())
+    {
+      if (refresh_running())
+        process_pool_state(process_pool_txs);
+      else if (m_refresh_suspended.load(std::memory_order_acquire))
+      {
+        // Fetching advances the incremental pool cursor. If this batch cannot
+        // be applied, request a full snapshot on the next refresh.
+        m_pool_info_query_time = 0;
+        refresh_interrupted = true;
+      }
+    }
   }
   catch (...)
   {
@@ -4773,18 +4805,20 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
   if (m_background_syncing || m_is_background_wallet)
     m_background_sync_data.first_refresh_done = true;
 
+  if (refresh_interrupted)
+    return false;
+
   LOG_PRINT_L1("Refresh done, blocks received: " << blocks_fetched << ", balance (all accounts): ");
   for(const auto& asset: m_transfers_indices)
     LOG_PRINT_L1(asset.first << " : balance " << print_money(balance_all(false, asset.first)) << ", unlocked: " << print_money(unlocked_balance_all(false, asset.first)));
-
+  return true;
 }
 //----------------------------------------------------------------------------------------------------
 bool wallet2::refresh(bool trusted_daemon, uint64_t & blocks_fetched, bool& received_money, bool& ok)
 {
   try
   {
-    refresh(trusted_daemon, 0, blocks_fetched, received_money);
-    ok = true;
+    ok = refresh_internal(trusted_daemon, 0, blocks_fetched, received_money, true, true, std::numeric_limits<uint64_t>::max());
   }
   catch (...)
   {
@@ -10534,6 +10568,9 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
         chunk_req.outputs.push_back(req.outputs[offset + i]);
 
       const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
+      // Ring selection can outlive a remote node's HTTP keep-alive window.
+      if (offset == 0)
+        m_http_client->disconnect();
       uint64_t pre_call_credits = m_rpc_payment_state.credits;
       chunk_req.client = get_client_signature();
       bool r = epee::net_utils::invoke_http_bin("/get_outs.bin", chunk_req, chunk_daemon_resp, *m_http_client, rpc_timeout);
@@ -11266,11 +11303,8 @@ void wallet2::transfer_selected_rct(std::vector<cryptonote::tx_destination_entry
   pre_carrot_construction_data.extra = tx.extra;
   pre_carrot_construction_data.unlock_time = 0;
   pre_carrot_construction_data.use_rct = true;
-  pre_carrot_construction_data.rct_config = rct_config; /*{
-    rct::RangeProofPaddedBulletproof,
-    use_fork_rules(HF_VERSION_BULLETPROOF_PLUS, -10) ? 4 : 3
-  };*/
-  pre_carrot_construction_data.use_view_tags = use_fork_rules(get_view_tag_fork(), 0);
+  pre_carrot_construction_data.rct_config = rct_config;
+  pre_carrot_construction_data.use_view_tags = use_view_tags;
   pre_carrot_construction_data.dests = dsts;
   // record which subaddress indices are being used as inputs
   pre_carrot_construction_data.subaddr_account = subaddr_account;

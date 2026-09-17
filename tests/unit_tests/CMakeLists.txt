@@ -93,6 +93,7 @@ set(unit_tests_sources
   rolling_median.cpp
   scaling_2021.cpp
   serialization.cpp
+  transaction_limits.cpp
   sha256.cpp
   slow_memmem.cpp
   subaddress.cpp
@@ -116,6 +117,7 @@ set(unit_tests_sources
   ringdb.cpp
   wallet_scanning.cpp
   wallet_storage.cpp
+  wallet_refresh.cpp
   wallet_yield.cpp
   wallet_tx_builder.cpp
   wipeable_string.cpp

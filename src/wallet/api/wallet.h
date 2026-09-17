@@ -40,6 +40,8 @@
 #include <boost/thread/condition_variable.hpp>
 
 
+class WalletApiAccessorTest;
+
 namespace Monero {
 class TransactionHistoryImpl;
 class YieldInfoImpl;
@@ -280,20 +282,56 @@ public:
     virtual std::vector<std::string> getAssetTypes() override;
 
 private:
+    enum class refresh_result
+    {
+        success,
+        failure,
+        deferred
+    };
+
+    class RefreshLock
+    {
+    public:
+        explicit RefreshLock(WalletImpl &wallet, bool interrupt_refresh = true);
+        ~RefreshLock();
+
+        RefreshLock(const RefreshLock &) = delete;
+        RefreshLock &operator=(const RefreshLock &) = delete;
+        static bool heldByCurrentThread();
+        static bool heldByCurrentThread(const WalletImpl &wallet);
+
+    private:
+        void release();
+
+        WalletImpl &m_wallet;
+        RefreshLock *m_previous;
+        boost::mutex::scoped_lock m_refreshLock;
+        boost::mutex::scoped_lock m_refreshLock2;
+        static thread_local RefreshLock *s_current;
+    };
+
+    PendingTransaction *createTransactionMultDestInternal(const Monero::transaction_type &tx_type, const std::vector<std::string> &dst_addr, const std::string &payment_id, optional<std::vector<uint64_t>> amount, uint32_t mixin_count, const std::string &asset_type, const bool is_return, PendingTransaction::Priority priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices);
+
     void clearStatus() const;
     void setStatusError(const std::string& message) const;
     void setStatusCritical(const std::string& message) const;
     void setStatus(int status, const std::string& message) const;
     void refreshThreadFunc();
-    void doRefresh();
+    void requestRefresh();
+    refresh_result doRefresh(bool clear_status = false);
     bool daemonSynced() const;
     void stopRefresh();
     bool isNewWallet() const;
     void pendingTxPostProcess(PendingTransactionImpl * pending);
     bool doInit(const std::string &daemon_address, const std::string &proxy_address, uint64_t upper_transaction_size_limit = 0, bool ssl = false);
     bool checkBackgroundSync(const std::string &message) const;
+    bool refreshCallbackOnCurrentThread() const;
+    bool refreshingOnCurrentThread() const;
+    bool refreshLockHeldOnCurrentThread() const;
+    bool refreshLockedOnCurrentThread() const;
 
 private:
+    friend class ::WalletApiAccessorTest;
     friend class YieldInfoImpl;
     friend class PendingTransactionImpl;
     friend class UnsignedTransactionImpl;    
@@ -321,8 +359,13 @@ private:
     // multi-threaded refresh stuff
     std::atomic<bool> m_refreshEnabled;
     std::atomic<bool> m_refreshThreadDone;
+    bool              m_refreshRequested{false};
     std::atomic<int>  m_refreshIntervalMillis;
     std::atomic<bool> m_refreshShouldRescan;
+    std::atomic<unsigned> m_refreshLockRequests{0};
+    boost::mutex        m_refreshLockStateMutex;
+    bool                m_refreshLockRestart{false};
+    boost::mutex        m_refreshRequestMutex;
     // synchronizing  refresh loop;
     boost::mutex        m_refreshMutex;
 
