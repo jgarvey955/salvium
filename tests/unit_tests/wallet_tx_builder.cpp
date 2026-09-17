@@ -250,6 +250,95 @@ TEST(wallet_balance, confirmed_stake_keeps_change_through_unlock_and_payout)
     }
 }
 
+TEST(wallet_balance, existing_stake_change_is_counted_once_across_wallet_reloads)
+{
+    const auto directory = boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("salvium-stake-balance-%%%%-%%%%-%%%%");
+    boost::filesystem::create_directory(directory);
+    auto cleanup = epee::misc_utils::create_scope_leave_handler([&] {
+        boost::system::error_code error;
+        boost::filesystem::remove_all(directory, error);
+    });
+    const auto filename = (directory / "wallet").string();
+
+    // Upgrading also restores unspent change from older active stakes. The
+    // old display omitted this change, so its total is not a valid baseline
+    // for checking that a newly submitted stake deducts only its fee.
+    auto first_stake = balance_output(73387041);
+    auto second_stake = balance_output(65016408);
+    for (auto *stake : {&first_stake, &second_stake})
+    {
+        stake->m_tx.type = cryptonote::transaction_type::STAKE;
+        stake->m_tx.amount_burnt = 259266 * COIN;
+    }
+    auto input = balance_output(22511770091014ULL);
+    const auto remainder = balance_output(989850);
+    const auto tx = balance_stake(input, 225117 * COIN);
+    const uint64_t total_before = 74365109484313ULL;
+    const uint64_t fee = 9639900;
+    const uint64_t total_after = 74365099844413ULL;
+
+    {
+        tools::wallet2 wallet;
+        wallet.set_offline();
+        wallet_accessor_test::initialize(wallet, {first_stake, second_stake, input, remainder});
+        wallet_accessor_test::rebuild_transfers(wallet);
+        wallet_accessor_test::set_height(wallet, 100);
+        ASSERT_EQ(total_before, wallet.balance(0, "SAL1", false));
+        ASSERT_EQ(22511909484313ULL, wallet.unlocked_balance(0, "SAL1", false));
+        wallet_accessor_test::add_pending(wallet, tx, 60451114, 0);
+        wallet_accessor_test::spend(wallet, 2);
+        ASSERT_EQ(total_before - fee, wallet.balance(0, "SAL1", false));
+        ASSERT_EQ(total_after, wallet.balance(0, "SAL1", false));
+        wallet.store_to(filename, "");
+    }
+
+    // Exercise the real cache loading path while the stake is pending.
+    for (unsigned reload = 0; reload < 2; ++reload)
+    {
+        tools::wallet2 wallet;
+        wallet.set_offline();
+        wallet.load(filename, "");
+        ASSERT_FALSE(wallet.force_rescan());
+        ASSERT_EQ(total_after, wallet.balance(0, "SAL1", false));
+        ASSERT_EQ(total_before, wallet.balance(0, "SAL1", true));
+        ASSERT_EQ(139393299u, wallet.unlocked_balance(0, "SAL1", false));
+        wallet.store();
+    }
+
+    {
+        tools::wallet2 wallet;
+        wallet.set_offline();
+        wallet.load(filename, "");
+        wallet_accessor_test::confirm(wallet, tx, 100);
+        input.m_spent = true;
+        input.m_spent_height = 100;
+        auto change = balance_output(60451114);
+        change.m_tx = tx;
+        change.m_block_height = 100;
+        wallet_accessor_test::initialize(wallet, {first_stake, second_stake, input, remainder, change}, false);
+        wallet_accessor_test::rebuild_transfers(wallet);
+        wallet_accessor_test::set_height(wallet, 100 + CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE);
+        wallet.store();
+    }
+
+    // Confirmation replaces the pending principal with a yield lock. Neither
+    // that principal nor any of the three change outputs may accumulate on load.
+    for (unsigned reload = 0; reload < 2; ++reload)
+    {
+        tools::wallet2 wallet;
+        wallet.set_offline();
+        wallet.load(filename, "");
+        ASSERT_FALSE(wallet.force_rescan());
+        EXPECT_EQ(total_after, wallet.balance(0, "SAL1", false));
+        EXPECT_EQ(total_after, wallet.balance(0, "SAL1", true));
+        EXPECT_EQ(total_after, wallet.balance_all(false, "SAL1"));
+        EXPECT_EQ(199844413u, wallet.unlocked_balance(0, "SAL1", false));
+        EXPECT_EQ(199844413u, wallet.balance_per_subaddress(0, "SAL1", false).at(0));
+        wallet.store();
+    }
+}
+
 TEST(wallet_balance, pending_principal_is_counted_once_for_its_account_and_asset)
 {
     tools::wallet2 wallet;
