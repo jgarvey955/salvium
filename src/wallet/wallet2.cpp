@@ -2069,23 +2069,6 @@ void wallet2::set_unspent(size_t idx)
   td.m_spent_height = 0;
 }
 //----------------------------------------------------------------------------------------------------
-bool wallet2::is_locked_yield_marker(const transfer_details &td) const
-{
-  if (td.m_tx.type != cryptonote::transaction_type::STAKE &&
-      td.m_tx.type != cryptonote::transaction_type::AUDIT)
-    return false;
-
-  const auto locked_it = m_locked_coins.find(td.get_public_key());
-  if (locked_it == m_locked_coins.end())
-    return false;
-
-  const locked_yield_details &locked = locked_it->second;
-  return locked.m_amount == td.m_tx.amount_burnt &&
-         locked.m_asset_type == td.m_tx.source_asset_type &&
-         locked.m_asset_type == td.asset_type &&
-         locked.m_index_major == td.m_subaddr_index.major;
-}
-//----------------------------------------------------------------------------------------------------
 bool wallet2::is_spent(const transfer_details &td, bool strict) const
 {
   if (strict)
@@ -7676,10 +7659,26 @@ uint64_t wallet2::balance(uint32_t index_major, const std::string& asset_type, b
   for (const auto& i : balance_per_subaddress(index_major, asset_type, strict))
     amount += i.second;
 
-  // Iterate over the locked coins, adding them to the _locked_ balance
+  // Confirmed STAKE/AUDIT principal is separate from its change outputs.
   for (const auto& i : m_locked_coins) {
     if (index_major == i.second.m_index_major && asset_type == i.second.m_asset_type) {
       amount += i.second.m_amount;
+    }
+  }
+
+  // A submitted stake already spends its inputs, but its principal is only
+  // recorded in m_locked_coins once confirmed. Keep that principal in the
+  // total while pending. Strict balances still include the original inputs.
+  if (!strict)
+  {
+    for (const auto& entry : m_unconfirmed_txs)
+    {
+      const auto& tx = entry.second;
+      if (tx.m_state != unconfirmed_transfer_details::failed &&
+          tx.m_subaddr_account == index_major && tx.m_tx.source_asset_type == asset_type &&
+          (tx.m_tx.type == cryptonote::transaction_type::STAKE ||
+           tx.m_tx.type == cryptonote::transaction_type::AUDIT))
+        amount += tx.m_tx.amount_burnt;
     }
   }
   return amount;
@@ -7710,7 +7709,9 @@ std::map<uint32_t, uint64_t> wallet2::balance_per_subaddress(uint32_t index_majo
     for (const auto& idx: m_transfers_indices.at(asset_type))
     {
       const transfer_details& td = m_transfers[idx];
-      if (td.m_subaddr_index.major == index_major && !is_spent(td, strict) && !td.m_frozen && !is_locked_yield_marker(td))
+      // STAKE/AUDIT outputs contain ordinary change. Their principal is
+      // tracked separately in m_locked_coins and added by balance().
+      if (td.m_subaddr_index.major == index_major && !is_spent(td, strict) && !td.m_frozen)
       {
         auto found = amount_per_subaddr.find(td.m_subaddr_index.minor);
         if (found == amount_per_subaddr.end())
@@ -7735,6 +7736,13 @@ std::map<uint32_t, uint64_t> wallet2::balance_per_subaddress(uint32_t index_majo
         amount_per_subaddr[0] = utx.second.m_change;
       else
         found->second += utx.second.m_change;
+
+      // STAKE/AUDIT destinations describe locked principal, not outputs.
+      // balance() accounts for that principal separately, even if legacy
+      // destination metadata happens to name one of our own addresses.
+      if (utx.second.m_tx.type == cryptonote::transaction_type::STAKE ||
+          utx.second.m_tx.type == cryptonote::transaction_type::AUDIT)
+        continue;
 
       // add transfers to same wallet
       for (const auto &dest: utx.second.m_dests) {
@@ -7773,7 +7781,7 @@ std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> wallet2::
   for(const auto& idx: m_transfers_indices[asset_type])
   {
     transfer_details& td = m_transfers[idx];
-    if(td.m_subaddr_index.major == index_major && !is_spent(td, strict) && !td.m_frozen && !is_locked_yield_marker(td))
+    if(td.m_subaddr_index.major == index_major && !is_spent(td, strict) && !td.m_frozen)
     {
       uint64_t amount = 0, blocks_to_unlock = 0, time_to_unlock = 0;
       if (is_transfer_unlocked(td))

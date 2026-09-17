@@ -29,6 +29,8 @@
 #include "unit_tests_utils.h"
 #include "gtest/gtest.h"
 
+#include <chrono>
+
 #include "carrot_core/config.h"
 #include "carrot_mock_helpers.h"
 #include "common/container_helpers.h"
@@ -48,6 +50,33 @@ public:
     {
         return wallet.get_tx_entries(txids);
     }
+
+    static void set_height(tools::wallet2 &wallet, uint64_t height)
+    {
+        while (wallet.m_blockchain.size() < height)
+            wallet.m_blockchain.push_back(crypto::null_hash);
+    }
+
+    static void rebuild_transfers(tools::wallet2 &wallet)
+    { wallet.rebuild_transfer_maps(); }
+
+    static void spend(tools::wallet2 &wallet, size_t index, uint64_t height = 0)
+    { wallet.set_spent(index, height); }
+
+    static void add_pending(tools::wallet2 &wallet, const cryptonote::transaction &tx,
+        uint64_t change, uint32_t account, const std::vector<cryptonote::tx_destination_entry> &dests = {})
+    { wallet.add_unconfirmed_tx(tx, 0, dests, crypto::null_hash, change, account, {0}); }
+
+    static void update_pending(tools::wallet2 &wallet, const cryptonote::transaction &tx, bool in_pool)
+    {
+        const auto txid = cryptonote::get_transaction_hash(tx);
+        auto &pending = wallet.m_unconfirmed_txs.at(txid);
+        const auto now = std::chrono::system_clock::from_time_t(pending.m_sent_time) + std::chrono::hours{1};
+        wallet.process_unconfirmed_transfer(false, txid, pending, in_pool, now, true);
+    }
+
+    static void confirm(tools::wallet2 &wallet, const cryptonote::transaction &tx, uint64_t height)
+    { wallet.process_unconfirmed(cryptonote::get_transaction_hash(tx), tx, height); }
 
     static void initialize(tools::wallet2 &wallet, const tools::wallet2::transfer_container &transfers, bool generate = true)
     {
@@ -98,6 +127,166 @@ static tools::wallet2::transfer_details gen_transfer_details()
         .m_uses = {},
         .asset_type = "salTEST",
     };
+}
+
+namespace
+{
+tools::wallet2::transfer_details balance_output(uint64_t amount, const std::string &asset = "SAL1",
+    uint32_t account = 0, uint32_t address = 0)
+{
+    auto output = gen_transfer_details();
+    output.m_block_height = 1;
+    output.m_amount = amount;
+    output.asset_type = asset;
+    output.m_subaddr_index = {account, address};
+    output.m_tx.type = cryptonote::transaction_type::TRANSFER;
+    output.m_tx.source_asset_type = output.m_tx.destination_asset_type = asset;
+    auto &target = boost::get<cryptonote::txout_to_carrot_v1>(output.m_tx.vout.front().target);
+    target.key = rct::rct2pk(rct::pkGen());
+    target.asset_type = asset;
+    return output;
+}
+
+cryptonote::transaction balance_stake(const tools::wallet2::transfer_details &input,
+    uint64_t principal, cryptonote::transaction_type type = cryptonote::transaction_type::STAKE)
+{
+    cryptonote::transaction tx;
+    tx.version = 2;
+    tx.type = type;
+    tx.source_asset_type = tx.destination_asset_type = input.asset_type;
+    tx.amount_burnt = principal;
+    tx.vin.push_back(cryptonote::txin_to_key{.asset_type = input.asset_type,
+        .key_offsets = {1}, .k_image = input.m_key_image});
+    tx.vout = balance_output(0, input.asset_type).m_tx.vout;
+    return tx;
+}
+}
+
+TEST(wallet_balance, pending_stake_preserves_principal_and_failed_stake_restores_inputs)
+{
+    for (const auto type : {cryptonote::transaction_type::STAKE, cryptonote::transaction_type::AUDIT})
+    {
+        SCOPED_TRACE(unsigned(type));
+        tools::wallet2 wallet;
+        wallet.set_offline();
+        auto old_stake = balance_output(0);
+        old_stake.m_tx.type = type;
+        old_stake.m_tx.amount_burnt = 518532 * COIN;
+        const auto input = balance_output(22511770091014ULL);
+        const auto remainder = balance_output(989850);
+        wallet_accessor_test::initialize(wallet, {old_stake, input, remainder});
+        wallet_accessor_test::rebuild_transfers(wallet);
+        wallet_accessor_test::set_height(wallet, 100);
+        ASSERT_EQ(74364971080864ULL, wallet.balance(0, "SAL1", false));
+        ASSERT_EQ(22511771080864ULL, wallet.unlocked_balance(0, "SAL1", false));
+
+        const auto tx = balance_stake(input, 225117 * COIN, type);
+        // Carrot staking has no payment destinations; the sole output is change.
+        wallet_accessor_test::add_pending(wallet, tx, 60451114, 0);
+        wallet_accessor_test::spend(wallet, 1);
+        for (bool in_pool : {false, true})
+        {
+            if (in_pool) wallet_accessor_test::update_pending(wallet, tx, true);
+            EXPECT_EQ(74364961440964ULL, wallet.balance(0, "SAL1", false));
+            EXPECT_EQ(74364961440964ULL, wallet.balance_all(false, "SAL1"));
+            EXPECT_EQ(74364961440964ULL, wallet.balance_all(false).at("SAL1"));
+            EXPECT_EQ(989850u, wallet.unlocked_balance(0, "SAL1", false));
+            EXPECT_EQ(61440964u, wallet.balance_per_subaddress(0, "SAL1", false).at(0));
+            // Strict balances ignore all unconfirmed spending and change.
+            EXPECT_EQ(74364971080864ULL, wallet.balance(0, "SAL1", true));
+        }
+        wallet_accessor_test::update_pending(wallet, tx, false);
+        EXPECT_EQ(74364971080864ULL, wallet.balance(0, "SAL1", false));
+        EXPECT_EQ(22511771080864ULL, wallet.unlocked_balance(0, "SAL1", false));
+    }
+}
+
+TEST(wallet_balance, confirmed_stake_keeps_change_through_unlock_and_payout)
+{
+    for (const auto type : {cryptonote::transaction_type::STAKE, cryptonote::transaction_type::AUDIT})
+    {
+        SCOPED_TRACE(unsigned(type));
+        tools::wallet2 wallet;
+        wallet.set_offline();
+        auto input = balance_output(20 * COIN, "SAL1", 1, 2);
+        wallet_accessor_test::initialize(wallet, {input});
+        wallet_accessor_test::set_height(wallet, 100);
+        const auto tx = balance_stake(input, 15 * COIN, type);
+        const uint64_t fee = COIN / 100, change_amount = 5 * COIN - fee;
+        wallet_accessor_test::add_pending(wallet, tx, change_amount, 1);
+        wallet_accessor_test::spend(wallet, 0);
+        EXPECT_EQ(20 * COIN - fee, wallet.balance(1, "SAL1", false));
+        wallet_accessor_test::confirm(wallet, tx, 100);
+
+        input.m_spent = true;
+        input.m_spent_height = 100;
+        auto change = balance_output(change_amount, "SAL1", 1);
+        change.m_tx = tx;
+        change.m_block_height = 100;
+        // The confirmed stake output holds change, not the staked principal.
+        wallet_accessor_test::initialize(wallet, {input, change}, false);
+        wallet_accessor_test::rebuild_transfers(wallet);
+        for (bool strict : {false, true})
+        {
+            EXPECT_EQ(20 * COIN - fee, wallet.balance(1, "SAL1", strict));
+            auto balances = wallet.balance_per_subaddress(1, "SAL1", strict);
+            EXPECT_EQ(change_amount, balances[0]);
+            EXPECT_EQ(0u, wallet.unlocked_balance(1, "SAL1", strict));
+        }
+        wallet_accessor_test::set_height(wallet, 100 + CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE);
+        EXPECT_EQ(change_amount, wallet.unlocked_balance(1, "SAL1", false));
+
+        auto payout = balance_output(16 * COIN, "SAL1", 1);
+        payout.m_tx.type = cryptonote::transaction_type::PROTOCOL;
+        payout.m_td_origin_idx = 1;
+        payout.m_block_height = 200;
+        wallet_accessor_test::initialize(wallet, {input, change, payout}, false);
+        wallet_accessor_test::rebuild_transfers(wallet);
+        wallet_accessor_test::set_height(wallet, 200);
+        EXPECT_EQ(21 * COIN - fee, wallet.balance(1, "SAL1", false));
+        EXPECT_EQ(change_amount, wallet.unlocked_balance(1, "SAL1", false));
+        wallet_accessor_test::set_height(wallet, 200 + CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW);
+        EXPECT_EQ(21 * COIN - fee, wallet.unlocked_balance(1, "SAL1", false));
+    }
+}
+
+TEST(wallet_balance, pending_principal_is_counted_once_for_its_account_and_asset)
+{
+    tools::wallet2 wallet;
+    wallet.set_offline();
+    const auto input = balance_output(20 * COIN, "SAL1", 1);
+    const auto other_asset = balance_output(7 * COIN, "SAL", 1);
+    const auto other_account = balance_output(3 * COIN);
+    wallet_accessor_test::initialize(wallet, {input, other_asset, other_account});
+    wallet_accessor_test::set_height(wallet, 100);
+    const auto tx = balance_stake(input, 19 * COIN);
+    // Legacy destination metadata can name our address even though staking
+    // burns that destination and creates only the change output.
+    cryptonote::tx_destination_entry dest(19 * COIN,
+        wallet.get_subaddress({1, 0}), true);
+    dest.asset_type = "SAL1";
+    wallet_accessor_test::add_pending(wallet, tx, 0, 1, {dest});
+    wallet_accessor_test::spend(wallet, 0);
+    EXPECT_EQ(19 * COIN, wallet.balance(1, "SAL1", false));
+    EXPECT_EQ(0u, wallet.balance_per_subaddress(1, "SAL1", false).at(0));
+    EXPECT_EQ(0u, wallet.unlocked_balance(1, "SAL1", false));
+    EXPECT_EQ(7 * COIN, wallet.balance(1, "SAL", false));
+    EXPECT_EQ(3 * COIN, wallet.balance(0, "SAL1", false));
+    EXPECT_EQ(22 * COIN, wallet.balance_all(false, "SAL1"));
+    EXPECT_EQ(23 * COIN, wallet.balance_all(true, "SAL1"));
+}
+
+TEST(wallet_balance, pending_burn_does_not_preserve_principal)
+{
+    tools::wallet2 wallet;
+    wallet.set_offline();
+    const auto input = balance_output(20 * COIN);
+    wallet_accessor_test::initialize(wallet, {input});
+    const auto tx = balance_stake(input, 15 * COIN, cryptonote::transaction_type::BURN);
+    wallet_accessor_test::add_pending(wallet, tx, 4 * COIN, 0);
+    wallet_accessor_test::spend(wallet, 0);
+    EXPECT_EQ(4 * COIN, wallet.balance(0, "SAL1", false));
+    EXPECT_EQ(20 * COIN, wallet.balance(0, "SAL1", true));
 }
 
 static bool compare_transfer_to_selected_input(const tools::wallet2::transfer_details &td,
@@ -1271,6 +1460,36 @@ TEST(pending_validation, carrot_burn_stake_token_and_rollup_payloads)
             EXPECT_THROW(fixture.wallet.validate_pending_tx(changed), std::exception);
         }
     }
+}
+
+TEST(wallet_balance, scanned_carrot_stake_output_is_change)
+{
+    pending_validation_fixture fixture;
+    fixture.wallet.set_offline();
+    fixture.proposal.tx_type = cryptonote::transaction_type::STAKE;
+    fixture.proposal.amount_burnt = fixture.proposal.normal_payment_proposals.front().amount;
+    fixture.proposal.normal_payment_proposals.clear();
+    fixture.proposal.selfsend_payment_proposals.front().proposal.enote_ephemeral_pubkey =
+        carrot::get_enote_ephemeral_pubkey(carrot::gen_carrot_payment_proposal_v1(false, false, 1),
+            carrot::make_carrot_input_context(fixture.proposal.key_images_sorted.front()));
+    const auto pending = fixture.build();
+    const auto scanned = tools::wallet::view_incoming_scan_transaction(pending.tx, fixture.wallet.get_account());
+    ASSERT_EQ(1u, scanned.size());
+    ASSERT_TRUE(scanned.front());
+    ASSERT_EQ(pending.change_dts.amount, scanned.front()->amount);
+    ASSERT_GT(scanned.front()->amount, 0u);
+
+    auto input = fixture.transfers.front();
+    input.m_spent = true;
+    input.m_spent_height = 1;
+    auto change = balance_output(scanned.front()->amount, scanned.front()->asset_type);
+    change.m_tx = pending.tx;
+    wallet_accessor_test::initialize(fixture.wallet, {input, change}, false);
+    wallet_accessor_test::rebuild_transfers(fixture.wallet);
+    wallet_accessor_test::set_height(fixture.wallet, 100);
+    // This fixture uses salTEST outputs; token fees are paid separately in SAL1.
+    EXPECT_EQ(input.amount(), fixture.wallet.balance(0, input.asset_type, false));
+    EXPECT_EQ(pending.change_dts.amount, fixture.wallet.unlocked_balance(0, input.asset_type, false));
 }
 
 TEST(wallet_tx_builder, change_masks_follow_positions_for_repeated_addresses)
