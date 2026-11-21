@@ -65,6 +65,10 @@ int main() {
     crypto::public_key authority, other; crypto::secret_key secret, other_secret;
     crypto::generate_keys(authority, secret); crypto::generate_keys(other, other_secret);
     audit_clearance_registry registry; registry.configure(FAKECHAIN, 100, authority);
+    db.candidate = 99;
+    block historical; historical.miner_tx.extra = {0xff}; std::string historical_reason;
+    check(registry.validate_block(db, historical, historical_reason), "Audit changed pre-activation extra rules");
+    db.candidate = 101;
     audit_clearance_certificate c;
     c.network = FAKECHAIN; c.genesis = db.get_block_hash_from_height(0);
     c.activation_height = 100; c.snapshot_height = 100; c.snapshot_hash = db.get_block_hash_from_height(100);
