@@ -247,7 +247,7 @@ public:
         good.outputs.back().key_image.empty(), "Review-only token was not reported privately and separately from SAL1");
     rpc_candidate_height = 101;
     wallet.update_lineage_audit_status();
-    check(wallet.is_transfer_unlocked(wallet.m_transfers.back()), "Daemon status re-enabled lineage isolation");
+    check(!wallet.is_transfer_unlocked(wallet.m_transfers.back()), "Unverified daemon height bypassed the token gate");
     rpc_candidate_height = 100;
     std::cout << "WALLET_TOKEN_REVIEW_PASS: token scope, separate units, private review and no signing gate\n";
   }
