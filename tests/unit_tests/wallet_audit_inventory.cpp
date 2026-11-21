@@ -16,6 +16,7 @@ uint64_t rpc_candidate_height = 100;
 uint64_t rpc_opening_height = 0;
 uint64_t rpc_activation_height = 10;
 size_t rpc_key_image_queries = 0;
+std::string rpc_nettype = "fakechain";
 void check(bool condition, const char* message)
 {
   if (!condition) throw std::runtime_error(message);
@@ -43,7 +44,7 @@ public:
     std::string result;
     if (method == "get_info") {
       cryptonote::COMMAND_RPC_GET_INFO::response info{};
-      info.status = "OK"; info.nettype = "fakechain"; info.height = rpc_candidate_height;
+      info.status = "OK"; info.nettype = rpc_nettype; info.height = rpc_candidate_height;
       result = epee::serialization::store_t_to_json(info);
     } else if (method == "get_lineage_audit_status") {
       cryptonote::COMMAND_RPC_LINEAGE_AUDIT_STATUS::response status{};
@@ -313,6 +314,14 @@ int main()
     wallet_accessor_test::conversion_review(wallet);
     wallet_accessor_test::token_inventory(wallet);
     check(rpc_key_image_queries == 0, "Wallet sent deterministic key images to the daemon");
+    wallet.set_lineage_regtest_height(10);
+    rpc_nettype = "mainnet";
+    bool rejected_test_authority = false;
+    try { wallet.import_audit_review("{}", ""); }
+    catch (const std::exception& e) {
+      rejected_test_authority = std::string(e.what()).find("Ephemeral audit test keys require an isolated fakechain daemon") != std::string::npos;
+    }
+    check(rejected_test_authority, "Regtest flag bypassed main developer authority on a mainnet daemon");
     std::cout << "WALLET_AUDIT_REVIEW_PASS: local inventory, direct-origin distinction, no proofs, no key-image queries, no lineage signing gate\n";
     return 0;
   } catch (const std::exception& e) {

@@ -8932,7 +8932,7 @@ bool simple_wallet::audit(const std::vector<std::string> &args_)
       const auto evidence = m_wallet->export_audit_review(height);
       cryptonote::write_private_audit_file(args_[1], evidence);
       message_writer() << "Private audit evidence saved to " << args_[1]
-          << ". It contains amounts and spend-linking evidence. Share only with the chosen reviewer.";
+          << ". This owner-initiated request contains amounts and spend links. Share privately with the main developer for processing.";
       return true;
     }
     if (!args_.empty() && args_[0] == "import")
