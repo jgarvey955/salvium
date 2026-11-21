@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from audit_gate_regtest import AuditChain, COIN
@@ -119,6 +120,20 @@ def main():
         case = json.loads((complete / "case.json").read_text())
         assert all(r["state"] == "CLEARED" for r in case["outputs"]), case
         assert any(r["stake"] for r in case["outputs"])
+        custody = {json.loads(path.read_text())["outputs"][0]["package_id"]
+            for path in owned_receipts(complete, chain.wallets[1])}
+        reserve = sum({(r["transaction"], r["output_index"], r["stake"]): r["amount"]
+            for r in case["outputs"] if r["package_id"] in custody and not r["spent"]}.values())
+        ledger = {field: case[field] for field in ("network", "genesis", "snapshot_height", "snapshot_hash")}
+        ledger.update(version=1, scope_complete=True, assets_in_scope=["SAL1"],
+            custody_package_ids=sorted(custody), events=[], balances=[dict(account="test-exchange",
+                asset="SAL1", opening_atomic=str(reserve), closing_atomic=str(reserve))])
+        ledger_path = root / "synthetic-exchange-ledger.json"
+        ledger_path.write_text(json.dumps(ledger))
+        subprocess.run([sys.executable, str(Path(__file__).resolve().parents[2] / "utils/reconcile_nonkyc_audit.py"),
+            "--case", str(complete / "case.json"), "--ledger", str(ledger_path), "--verifier", tool,
+            "--developer-public-key", public, "--output", str(root / "reconciliation.json")], check=True)
+        assert json.loads((root / "reconciliation.json").read_text())["status"] == "RECONCILED_FOR_HUMAN_REVIEW"
         newer = root / "newer"
         command("--report", complete / "case.json", "--revision", "3", "--sign-key", secret, "--outdir", newer)
         for wallet in chain.wallets:
@@ -131,12 +146,12 @@ def main():
         must_fail(lambda: chain.wallets[0].call("audit", {"review_result": receipts(pending)[0].read_text(), "developer_public_key": public}))
         # Persisted results are consumed by the real CLI entry point.
         bob.call("close_wallet")
-        result = subprocess.run([str(bins / "salvium-wallet-cli"), "--config-file", str(root / "isolated.conf"),
+        cli_arguments = [str(bins / "salvium-wallet-cli"), "--config-file", str(root / "isolated.conf"),
             "--wallet-file", str(root / "bob/wallet"), "--password", "",
             "--shared-ringdb-dir", str(root / "bob/ringdb"), "--daemon-address", chain.daemon.url,
             "--daemon-ssl", "disabled", "--trusted-daemon", "--allow-mismatched-daemon-version",
-            "--regtest-lineage-audit-height", str(chain.activation), "--log-file", str(root / "cli.log"),
-            "--command", "audit"], input="", capture_output=True, text=True, timeout=180)
+            "--regtest-lineage-audit-height", str(chain.activation), "--log-file", str(root / "cli.log")]
+        result = subprocess.run(cli_arguments + ["--command", "audit"], input="", capture_output=True, text=True, timeout=180)
         (root / "cli-output.txt").write_text(result.stdout + result.stderr)
         assert result.returncode == 0 and "CLEARED" in result.stdout, result.stderr + result.stdout
         bob.call("open_wallet", {"filename": "wallet", "password": ""})
@@ -150,10 +165,24 @@ def main():
         assert all(r["state"] == "REVIEW" for r in revoked["outputs"]), revoked
         for path in owned_receipts(newer, bob):
             must_fail(lambda: bob.call("audit", {"review_result": path.read_text(), "developer_public_key": public}))
+        bob.call("close_wallet")
+        cli_export = root / "cli-request.json"
+        result = subprocess.run(cli_arguments + ["--command", "audit", "export", str(cli_export), str(chain.tip())],
+            input="", capture_output=True, text=True, timeout=180)
+        (root / "cli-export-output.txt").write_text(result.stdout + result.stderr)
+        assert result.returncode == 0 and cli_export.is_file(), result.stdout + result.stderr
+        assert cli_export.stat().st_mode & 0o077 == 0
+        cli_case = run_case("cli-owner-request", [cli_export], secret, public_work_limit=50000)
+        for path in receipts(cli_case):
+            result = subprocess.run(cli_arguments + ["--command", "audit", "import", str(path), public],
+                input="", capture_output=True, text=True, timeout=180)
+            (root / "cli-import-output.txt").write_text(result.stdout + result.stderr)
+            assert result.returncode == 0 and "CLEARED" in result.stdout, result.stdout + result.stderr
         summary = dict(status="PRIVATE_AUDIT_WALLET_PASS", snapshot=snapshot,
             checks=["native_rpc_private_exports", "cross_wallet_all_funding_clearance", "missing_owner_review",
                 "immature_stake_review", "signed_developer_clearance", "forgery_rejection", "stale_revision_rejection",
-                "recipient_isolation", "wallet_reopen_and_native_cli", "reorg_revokes_all_decisions"],
+                "recipient_isolation", "wallet_reopen_and_native_cli", "reorg_revokes_all_decisions",
+                "native_nonkyc_signature_reconciliation", "native_cli_owner_export_and_signed_import"],
             note="1000 unused NonKYC subaddresses exercise scope discovery; this is not a 1000-funded-output capacity test")
         (root / "result.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(json.dumps(summary), flush=True)
