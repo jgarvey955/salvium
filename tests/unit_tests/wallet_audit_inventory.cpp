@@ -67,7 +67,7 @@ public:
       cryptonote::COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS::response page{};
       page.status = "OK"; page.activation_height = rpc_private_activation_height;
       page.candidate_height = rpc_candidate_height; page.tip_hash = rpc_tip_hash;
-      page.asset_type = request["params"]["asset_type"].GetString();
+      page.asset_type = request["params"].HasMember("asset_type") ? request["params"]["asset_type"].GetString() : "SAL1";
       check(!request["params"].HasMember("key_images"), "Public population request exposed key images");
       if (rpc_public_eligible) for (uint64_t i = 0; i < 4; ++i) page.outputs.push_back({i, 1});
       result = epee::serialization::store_t_to_json(page);
