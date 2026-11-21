@@ -107,7 +107,7 @@ void audit_clearance_registry::configure(network_type net, uint64_t activation, 
 }
 void audit_clearance_registry::reset()
 {
-  entries_.clear(); finalized_.clear(); eligible_.clear(); catalog_references_.clear(); due_.clear(); automatic_due_.clear();
+  entries_.clear(); finalized_.clear(); eligible_.clear(); due_.clear(); automatic_due_.clear();
   next_height_ = activation_; tip_ = crypto::null_hash;
 }
 const audit_clearance_registry::entry* audit_clearance_registry::find(
@@ -177,15 +177,6 @@ void audit_clearance_registry::apply(const BlockchainDB& db, const audit_clearan
 {
   for (const auto& c : batch.certificates) {
     const auto id = certificate_identity(c);
-    const auto references = catalog_references_.find(id);
-    if (references != catalog_references_.end()) {
-      for (const auto& reference : references->second) {
-        auto& catalog = eligible_[reference.first];
-        const auto found = catalog.find(reference.second);
-        if (found != catalog.end() && found->second.authorization == id) catalog.erase(found);
-      }
-      catalog_references_.erase(references);
-    }
     entries_[id] = {c, height};
     if (c.decision == 1) finalized_.insert(id);
     const auto tx = canonical_tx(db, c.transaction);
@@ -198,16 +189,6 @@ void audit_clearance_registry::apply(const BlockchainDB& db, const audit_clearan
       release = std::max(release, origin + term + CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW);
     } else {
       release = std::max(release, normal_release(tx, c.output_index, origin));
-      // A direct denial overrides an earlier inherited stake authorization.
-      if (c.decision == 2) {
-        uint64_t tx_id = 0;
-        require(db.tx_exists(c.transaction, tx_id), "Missing certified transaction");
-        const auto indices = db.get_tx_amount_output_indices(tx_id);
-        std::string asset;
-        require(indices.size() == 1 && c.output_index < indices[0].size() &&
-            get_output_asset_type(tx.vout[c.output_index], asset), "Missing certified output index");
-        eligible_[asset].erase(indices[0][c.output_index].second);
-      }
     }
     if (c.decision == 1) {
       due_[release].push_back({id, c.revision});
@@ -238,9 +219,8 @@ void audit_clearance_registry::update_eligible(const BlockchainDB& db, const ide
     const auto canonical = db.get_output_tx_and_index_from_global(db.get_output_id_by_asset_index(asset, asset_index));
     require(canonical.first == tx_hash && canonical.second == index, "Noncanonical eligible output index");
     finalized_.insert({epee::string_tools::pod_to_hex(tx_hash), index, false});
-    eligible_[asset][asset_index] = {{asset_index, authorization.confirmed_height, origin, tx_hash, index}, id,
+    eligible_[asset][asset_index] = {{asset_index, authorization.confirmed_height, origin, tx_hash, index},
         std::max(authorization.confirmed_height + 1, normal_release(tx, index, origin))};
-    catalog_references_[id].push_back({asset, asset_index});
   };
   const auto source = canonical_tx(db, c.transaction);
   if (!c.stake) { add(source, c.transaction, c.output_index); return; }
@@ -297,10 +277,8 @@ void audit_clearance_registry::add_automatic(const BlockchainDB& db, const crypt
       get_output_asset_type(tx.vout[index], asset), "Missing inherited output index");
   if (!is_lineage_audit_asset(asset)) return;
   const auto asset_index = indices[0][index].second;
-  const identity id{epee::string_tools::pod_to_hex(hash), index, false};
-  eligible_[asset][asset_index] = {{asset_index, origin, origin, hash, index}, id,
+  eligible_[asset][asset_index] = {{asset_index, origin, origin, hash, index},
       normal_release(tx, index, origin)};
-  catalog_references_[id].push_back({asset, asset_index});
 }
 void audit_clearance_registry::inherit_block(const BlockchainDB& db, const block& b, uint64_t height)
 {
