@@ -209,7 +209,12 @@ void audit_clearance_registry::apply(const BlockchainDB& db, const audit_clearan
         eligible_[asset].erase(indices[0][c.output_index].second);
       }
     }
-    if (c.decision == 1) due_[release].push_back({id, c.revision});
+    if (c.decision == 1) {
+      due_[release].push_back({id, c.revision});
+      // A payout that already exists becomes finally authorized with its
+      // principal, even while its ordinary maturity is still pending.
+      if (c.stake) update_eligible(db, id, release);
+    }
   }
 }
 void audit_clearance_registry::update_eligible(const BlockchainDB& db, const identity& id, uint64_t height)
@@ -232,6 +237,7 @@ void audit_clearance_registry::update_eligible(const BlockchainDB& db, const ide
     const uint64_t asset_index = indices[0][index].second;
     const auto canonical = db.get_output_tx_and_index_from_global(db.get_output_id_by_asset_index(asset, asset_index));
     require(canonical.first == tx_hash && canonical.second == index, "Noncanonical eligible output index");
+    finalized_.insert({epee::string_tools::pod_to_hex(tx_hash), index, false});
     eligible_[asset][asset_index] = {{asset_index, authorization.confirmed_height, origin, tx_hash, index}, id,
         std::max(authorization.confirmed_height + 1, normal_release(tx, index, origin))};
     catalog_references_[id].push_back({asset, asset_index});
@@ -422,8 +428,10 @@ std::vector<audit_clearance_registry::eligible_output> audit_clearance_registry:
   std::vector<eligible_output> result;
   auto item = found->second.lower_bound(from);
   while (item != found->second.end() && result.size() < limit) {
-    result.push_back(item->second.output); ++item;
+    if (item->second.spendable_height <= db.height()) result.push_back(item->second.output);
+    ++item;
   }
+  while (item != found->second.end() && item->second.spendable_height > db.height()) ++item;
   more = item != found->second.end();
   return result;
 }
