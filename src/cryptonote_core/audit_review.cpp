@@ -157,6 +157,8 @@ bool verify_audit_review_report(const audit_review_report& r, const crypto::publ
       !authorized_audit_review_signer(static_cast<network_type>(r.network), trusted) ||
       !crypto::check_key(trusted) || rct::pk2rct(trusted) == rct::identity() ||
       !epee::string_tools::hex_to_pod(r.signature, signature)) return false;
+  static_assert(sizeof(crypto::signature) == 2 * sizeof(crypto::ec_scalar) + 1, "Unexpected audit signature layout");
+  if (reinterpret_cast<const unsigned char*>(&signature)[sizeof(crypto::signature) - 1] != 0) return false;
   return crypto::check_signature(audit_review_report_hash(r), trusted, signature);
 }
 void write_private_audit_file(const std::string& path, const std::string& contents)

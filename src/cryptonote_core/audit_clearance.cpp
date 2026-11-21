@@ -110,11 +110,17 @@ void sign_audit_clearance(audit_clearance_certificate& c, const crypto::secret_k
   require(valid_fields(c) && crypto::secret_key_to_public_key(secret, key) &&
       authorized_audit_review_signer(static_cast<network_type>(c.network), key),
       "Invalid certificate or undesignated audit authority");
+  c.signature = {};
   crypto::generate_signature(audit_clearance_message(c), key, secret, c.signature);
 }
 bool verify_audit_clearance(const audit_clearance_certificate& c, const crypto::public_key& authority)
 {
+  // Salvium's signature blob has a transaction-proof sign-mask byte that
+  // ordinary Schnorr verification does not consume. Audit signatures use
+  // only the scalar pair and require that extra byte to be zero.
+  static_assert(sizeof(crypto::signature) == 2 * sizeof(crypto::ec_scalar) + 1, "Unexpected audit signature layout");
   return valid_fields(c) && crypto::check_key(authority) &&
+      reinterpret_cast<const unsigned char*>(&c.signature)[sizeof(crypto::signature) - 1] == 0 &&
       !(rct::pk2rct(authority) == rct::identity()) && rct::isInMainSubgroup(rct::pk2rct(authority)) &&
       crypto::check_signature(audit_clearance_message(c), authority, c.signature);
 }
