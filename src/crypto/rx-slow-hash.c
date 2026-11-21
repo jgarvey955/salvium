@@ -189,7 +189,7 @@ void rx_seedheights(const uint64_t height, uint64_t *seedheight, uint64_t *nexth
   *nextheight = rx_seedheight(height + get_seedhash_epoch_lag());
 }
 
-static void rx_alloc_dataset(randomx_flags flags, randomx_dataset** dataset)
+static void rx_alloc_dataset(randomx_flags flags, randomx_dataset** dataset, int ignore_env)
 {
   if (*dataset) {
     return;
@@ -361,7 +361,7 @@ static void rx_set_main_seedhash_impl(thread_info* info) {
   minfo(RX_LOGCAT, "RandomX new main seed hash is %s", buf);
 
   const randomx_flags flags = enabled_flags() & ~disabled_flags();
-  rx_alloc_dataset(flags, &main_dataset);
+  rx_alloc_dataset(flags, &main_dataset, 0);
   rx_alloc_cache(flags, &main_cache);
 
   randomx_init_cache(main_cache, info->seedhash, HASH_SIZE);
@@ -497,7 +497,7 @@ void rx_set_miner_thread(uint32_t value, size_t max_dataset_init_threads) {
   }
 
   const randomx_flags flags = enabled_flags() & ~disabled_flags();
-  rx_alloc_dataset(flags, &main_dataset);
+  rx_alloc_dataset(flags, &main_dataset, 1);
   rx_init_dataset(max_dataset_init_threads);
 
   CTHR_RWLOCK_UNLOCK_WRITE(main_dataset_lock);

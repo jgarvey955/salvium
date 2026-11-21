@@ -27,6 +27,7 @@
 # THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 set(cryptonote_core_sources
+  audit_review.cpp
   lineage_audit.cpp
   ../wallet/scanning_tools.cpp
   blockchain.cpp
@@ -75,6 +76,8 @@ target_link_libraries(cryptonote_core
 
 option(SALVIUM_BUILD_LINEAGE_TESTS "Build isolated lineage state regression executable" OFF)
 if(SALVIUM_BUILD_LINEAGE_TESTS)
+  monero_add_minimal_executable(audit_review_tests ../../tests/unit_tests/audit_review.cpp)
+  target_link_libraries(audit_review_tests PRIVATE cryptonote_core ${CMAKE_THREAD_LIBS_INIT} ${EXTRA_LIBRARIES})
   monero_add_minimal_executable(lineage_audit_tests ../../tests/unit_tests/lineage_audit.cpp)
   target_link_libraries(lineage_audit_tests PRIVATE cryptonote_core ${CMAKE_THREAD_LIBS_INIT} ${EXTRA_LIBRARIES})
 endif()

@@ -74,6 +74,7 @@
 
 #include "wallet_errors.h"
 #include "audit_balance.h"
+#include "cryptonote_core/audit_review.h"
 #include "common/password.h"
 #include "node_rpc_proxy.h"
 #include "message_store.h"
@@ -1351,11 +1352,17 @@ private:
     void update_lineage_audit_status();
     struct audit_output {
       std::string transaction, key_image, state, asset_type;
+      std::string recommendation, reason, decision_reason;
+      uint32_t output_index = 0;
       uint64_t amount = 0, completed_height = 0, release_height = 0;
       uint32_t account = 0, subaddress = 0;
       bool spent = false, stake = false, immature = false;
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(transaction)
+        KV_SERIALIZE(output_index)
+        KV_SERIALIZE(recommendation)
+        KV_SERIALIZE(reason)
+        KV_SERIALIZE(decision_reason)
         KV_SERIALIZE(key_image)
         KV_SERIALIZE(state)
         KV_SERIALIZE(asset_type)
@@ -1409,7 +1416,10 @@ private:
       END_KV_SERIALIZE_MAP()
     };
     audit_result audit(bool submit = true, bool all_accounts = true, uint32_t account = 0,
-        const std::set<uint32_t>& subaddresses = {}, bool prepare_only = false);
+        const std::set<uint32_t>& subaddresses = {}, bool prepare_only = false,
+        const cryptonote::audit_review_package* private_evidence = nullptr);
+    std::string export_audit_review(uint64_t snapshot_height = UINT64_MAX);
+    void import_audit_review(const std::string& report, const std::string& trusted_public_key);
     uint64_t resume_audit();
     bool is_transfer_unlocked(uint64_t unlock_time, uint64_t block_height);
 

@@ -7872,7 +7872,8 @@ uint64_t wallet2::resume_audit()
 }
 
 wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t account,
-    const std::set<uint32_t>& subaddresses, bool prepare_only)
+    const std::set<uint32_t>& subaddresses, bool prepare_only,
+    const cryptonote::audit_review_package* private_evidence)
 {
   CHECK_AND_ASSERT_THROW_MES(!m_background_syncing, "Audit is unavailable during background synchronization");
   CHECK_AND_ASSERT_THROW_MES(all_accounts || account < get_num_subaddress_accounts(), "Invalid audit account");
@@ -7883,7 +7884,7 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
     // Review stays local.  Do not construct, save, query by, or relay the v2
     // public proofs even if an older API caller asks for submission.
     submit = false;
-    prepare_only = false;
+    prepare_only = private_evidence != nullptr;
   }
   cryptonote::COMMAND_RPC_LINEAGE_AUDIT_STATUS::request request;
   cryptonote::COMMAND_RPC_LINEAGE_AUDIT_STATUS::response status;
@@ -7918,9 +7919,14 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
   }
   CHECK_AND_ASSERT_THROW_MES(get_blockchain_current_height() == status.candidate_height,
       "Refresh wallet to the daemon tip before auditing");
+  if (private_evidence) {
+    CHECK_AND_ASSERT_THROW_MES(private_evidence->snapshot_height < get_blockchain_current_height() &&
+        private_evidence->snapshot_hash == epee::string_tools::pod_to_hex(m_blockchain[private_evidence->snapshot_height]),
+        "Audit export snapshot changed; refresh and retry");
+  }
   // Once enrollment closes the same bare command reports the final inventory;
   // it never constructs or relays late proofs.
-  if (status.closing_height && status.candidate_height >= status.closing_height) {
+  if (!private_evidence && status.closing_height && status.candidate_height >= status.closing_height) {
     submit = false;
     prepare_only = false;
   }
@@ -7960,9 +7966,16 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
   }
   const auto flush = [&]() {
     if (batch.outputs.empty()) return;
-    const auto hex = epee::string_tools::buff_to_hex_nodelimer(cryptonote::t_serializable_object_to_blob(batch));
-    result.proofs.push_back(hex);
-    if (submit) saved += hex + "\n";
+    if (private_evidence) {
+      auto package = *private_evidence;
+      for (const auto& proof : batch.outputs)
+        package.proofs.push_back(epee::string_tools::buff_to_hex_nodelimer(cryptonote::t_serializable_object_to_blob(proof)));
+      result.proofs.push_back(epee::serialization::store_t_to_json(package));
+    } else {
+      const auto hex = epee::string_tools::buff_to_hex_nodelimer(cryptonote::t_serializable_object_to_blob(batch));
+      result.proofs.push_back(hex);
+      if (submit) saved += hex + "\n";
+    }
     batch.outputs.clear();
     batch_images.clear();
     batch_transactions.clear();
@@ -8036,6 +8049,7 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
     }
     audit_output row;
     row.transaction = epee::string_tools::pod_to_hex(td.m_txid);
+    row.output_index = stake ? 0 : td.m_internal_output_index;
     row.key_image = epee::string_tools::pod_to_hex(image);
     row.amount = amount;
     row.asset_type = td.asset_type;
@@ -8065,20 +8079,24 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
       // prove a RingCT cleartext-amount defect. Leave that to the full-chain
       // forensic pass and classify uncertain wallet evidence as REVIEW.
       bool bad_origin = false;
-      if (inspect_origin) {
-        for (const auto& output : td.m_tx.vout) {
-          std::string output_asset;
-          bad_origin |= !cryptonote::get_output_asset_type(output, output_asset) ||
-              output_asset != td.m_tx.source_asset_type;
-        }
+      if (inspect_origin && !stake) {
+        std::string output_asset;
+        bad_origin = !cryptonote::get_output_asset_type(td.m_tx.vout.at(td.m_internal_output_index), output_asset) ||
+            output_asset != td.m_tx.source_asset_type;
+      } else if (inspect_origin && stake) {
+        bad_origin = td.m_tx.source_asset_type != "SAL1";
       }
       row.state = bad_origin ? "BAD" : "REVIEW";
+      row.recommendation = "DENY";
+      row.reason = bad_origin ? "CONFIRMED_MALFORMED_ORIGIN" :
+          !return_context ? "MISSING_RETURN_CONTEXT" : !known_image ? "KEY_IMAGE_UNAVAILABLE" : "FUNDING_NOT_YET_VERIFIED";
       // The wallet may use the image internally to determine spent state, but
       // the audit result must not export or pre-publish it.
       row.key_image.clear();
     }
     result.outputs.push_back(row);
-    if (!row.state.empty()) return;
+    if (!row.state.empty() && !private_evidence) return;
+    if (private_evidence && (!known_image || !return_context)) return;
     const auto identity = std::make_tuple(row.transaction, stake ? uint32_t(0) : uint32_t(td.m_internal_output_index), stake);
     if (!(submit || prepare_only) || cached.count(identity)) return;
     std::vector<const transfer_details*> funding{&td};
@@ -8116,10 +8134,13 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
     proof.offset_mask = mask == rct::zero() ? 1 : 0;
     const auto offset_mask = proof.offset_mask ? rct::identity() : rct::zero();
     const rct::ctkeyV ring{{rct::pk2rct(key), rct::commit(amount, mask)}};
-    proof.signature = rct::proveRctTCLSAGSimple(rct::hash2rct(cryptonote::lineage_proof_message(batch, proof)), ring,
+    const auto proof_message = private_evidence ? cryptonote::audit_review_proof_message(*private_evidence, proof) :
+        cryptonote::lineage_proof_message(batch, proof);
+    proof.signature = rct::proveRctTCLSAGSimple(rct::hash2rct(proof_message), ring,
         rct::sk2rct(x), rct::sk2rct(y), mask, offset_mask, rct::commit(amount, offset_mask), 0, m_account.get_device());
     CHECK_AND_ASSERT_THROW_MES(proof.signature.I == rct::ki2rct(image) &&
-        cryptonote::verify_lineage_output_proof(batch, proof, key, ring.front().mask), "Wallet audit proof self-check failed");
+        (private_evidence ? cryptonote::verify_audit_review_proof(*private_evidence, proof, key, ring.front().mask) :
+         cryptonote::verify_lineage_output_proof(batch, proof, key, ring.front().mask)), "Wallet audit proof self-check failed");
     batch.outputs.push_back(std::move(proof));
     batch_images.insert(image);
     for (const auto* source : funding)
@@ -8129,6 +8150,7 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
     if (batch.outputs.size() == cryptonote::lineage_limits::max_outputs) flush();
   };
   for (const auto& td : m_transfers) {
+    if (private_evidence && td.m_block_height > private_evidence->snapshot_height) continue;
     if (!cryptonote::is_lineage_audit_asset(td.asset_type) || (!all_accounts &&
         (td.m_subaddr_index.major != account || (!subaddresses.empty() && !subaddresses.count(td.m_subaddr_index.minor))))) continue;
     // Opening funds still need ownership evidence. Spends completed before the
@@ -8147,6 +8169,31 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
     store(); // Commit retry evidence to the encrypted wallet before any relay.
   }
   if (submit) result.pending_batches = resume_audit();
+  std::map<std::tuple<std::string, uint32_t, bool>, cryptonote::audit_review_item> reviewed;
+  if (private_review && !private_evidence) {
+    std::string exports, trusted_text;
+    cryptonote::audit_review_request exported;
+    crypto::public_key trusted;
+    if (get_attribute("audit-review-exports-v3", exports) &&
+        get_attribute("audit-review-trusted-v3", trusted_text) &&
+        epee::string_tools::hex_to_pod(trusted_text, trusted) &&
+        epee::serialization::load_t_from_json(exported, exports)) {
+      for (const auto& package : exported.packages) {
+        const auto id = cryptonote::audit_review_package_id(package);
+        std::string saved_result;
+        cryptonote::audit_review_report report;
+        if (!get_attribute("audit-review-result-v3-" + id, saved_result) ||
+            !epee::serialization::load_t_from_json(report, saved_result) ||
+            !cryptonote::verify_audit_review_report(report, trusted) ||
+            report.network != uint8_t(m_lineage_regtest_height ? cryptonote::FAKECHAIN : m_nettype) ||
+            report.genesis != epee::string_tools::pod_to_hex(m_blockchain.genesis()) ||
+            report.snapshot_height >= m_blockchain.size() ||
+            report.snapshot_hash != epee::string_tools::pod_to_hex(m_blockchain[report.snapshot_height])) continue;
+        for (const auto& item : report.outputs) if (item.package_id == id)
+          reviewed[{item.transaction, item.output_index, item.stake}] = item;
+      }
+    }
+  }
   const auto add = [](uint64_t& total, uint64_t amount) {
     CHECK_AND_ASSERT_THROW_MES(amount <= std::numeric_limits<uint64_t>::max() - total, "Asset audit total overflow");
     total += amount;
@@ -8167,13 +8214,21 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
     }
     for (size_t i = 0; i < end - offset; ++i) {
       auto& row = result.outputs[offset + i];
+      const auto decision = reviewed.find({row.transaction, row.output_index, row.stake});
+      if (decision != reviewed.end() && decision->second.amount == row.amount && decision->second.asset_type == row.asset_type) {
+        const auto& item = decision->second;
+        row.state = item.decision == "CLEAR" ? "CLEARED_BY_DEVELOPER" :
+            item.decision == "DENY" ? "DENIED_BY_DEVELOPER" : item.state;
+        row.reason = item.reason; row.recommendation = item.recommendation; row.decision_reason = item.decision_reason;
+      }
       if (cryptonote::lineage_policy::public_enrollment && row.state.empty()) {
         row.state = status.entries[i].state;
         row.completed_height = status.entries[i].completed_height;
         row.release_height = status.entries[i].release_height;
       }
-      const bool good = row.state == "MATURING" || row.state == "AUDIT_PASSED";
-      const bool bad = row.state == "BAD";
+      const bool good = row.state == "MATURING" || row.state == "AUDIT_PASSED" ||
+          row.state == "CLEARED" || row.state == "CLEARED_BY_DEVELOPER";
+      const bool bad = row.state == "BAD" || row.state == "DENIED_BY_DEVELOPER";
       if (row.stake) {
         if (!row.spent) {
           add(good ? result.stake_good : bad ? result.stake_bad : result.stake_unresolved, row.amount);
@@ -8209,7 +8264,93 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
   }
   result.state = bad ? "BAD_ORIGIN_FOUND" : unresolved ? "REVIEW_REQUIRED" :
       result.outputs.empty() ? "EMPTY" : immature ? "MATURING" : "AUDIT_PASSED";
+  if (std::any_of(result.outputs.begin(), result.outputs.end(), [](const audit_output& output) {
+      return !output.spent && output.state == "DENIED_BY_DEVELOPER"; })) result.state = "DENIED_BY_DEVELOPER";
   return result;
+}
+
+std::string wallet2::export_audit_review(uint64_t snapshot_height)
+{
+  CHECK_AND_ASSERT_THROW_MES(get_blockchain_current_height() > 1, "Synchronize wallet before exporting audit evidence");
+  cryptonote::audit_review_package context;
+  context.network = uint8_t(m_lineage_regtest_height ? cryptonote::FAKECHAIN : m_nettype);
+  context.genesis = epee::string_tools::pod_to_hex(m_blockchain.genesis());
+  context.snapshot_height = snapshot_height == UINT64_MAX ? get_blockchain_current_height() - 1 : snapshot_height;
+  CHECK_AND_ASSERT_THROW_MES(context.snapshot_height < get_blockchain_current_height(), "Requested audit snapshot is not in this wallet");
+  context.snapshot_hash = epee::string_tools::pod_to_hex(m_blockchain[context.snapshot_height]);
+  context.nonce = epee::string_tools::pod_to_hex(crypto::rand<crypto::hash>());
+  const auto inventory = audit(false, true, 0, {}, false, &context);
+  cryptonote::audit_review_request request;
+  for (const auto& text : inventory.proofs) {
+    cryptonote::audit_review_package package;
+    CHECK_AND_ASSERT_THROW_MES(epee::serialization::load_t_from_json(package, text), "Invalid locally generated audit package");
+    request.packages.push_back(std::move(package));
+  }
+  CHECK_AND_ASSERT_THROW_MES(!request.packages.empty(), "No outputs with complete signing context are available; inspect audit reasons");
+  const auto text = epee::serialization::store_t_to_json(request);
+  set_attribute("audit-review-exports-v3", text);
+  store();
+  return text;
+}
+
+void wallet2::import_audit_review(const std::string& text, const std::string& trusted_text)
+{
+  crypto::public_key trusted;
+  cryptonote::audit_review_report report;
+  CHECK_AND_ASSERT_THROW_MES(epee::string_tools::hex_to_pod(trusted_text, trusted) &&
+      epee::serialization::load_t_from_json(report, text) && cryptonote::verify_audit_review_report(report, trusted),
+      "Invalid audit result or developer signature");
+  std::string pinned;
+  const auto canonical_trusted = epee::string_tools::pod_to_hex(trusted);
+  CHECK_AND_ASSERT_THROW_MES(!get_attribute("audit-review-trusted-v3", pinned) || pinned == canonical_trusted,
+      "Audit signing key differs from the independently pinned developer key");
+  CHECK_AND_ASSERT_THROW_MES(report.network == uint8_t(m_lineage_regtest_height ? cryptonote::FAKECHAIN : m_nettype) &&
+      report.genesis == epee::string_tools::pod_to_hex(m_blockchain.genesis()) &&
+      report.snapshot_height < m_blockchain.size() &&
+      report.snapshot_hash == epee::string_tools::pod_to_hex(m_blockchain[report.snapshot_height]),
+      "Audit result belongs to another network or orphaned snapshot");
+  CHECK_AND_ASSERT_THROW_MES(m_lineage_regtest_height || m_nettype != cryptonote::MAINNET ||
+      report.opening_height == cryptonote::lineage_policy::mainnet_opening_height,
+      "Audit result changes the accepted mainnet opening policy");
+  std::string saved;
+  cryptonote::audit_review_request request;
+  CHECK_AND_ASSERT_THROW_MES(get_attribute("audit-review-exports-v3", saved) &&
+      epee::serialization::load_t_from_json(request, saved), "Export this wallet's audit evidence before importing results");
+  std::map<std::string, const cryptonote::audit_review_package*> own;
+  for (const auto& package : request.packages) own[cryptonote::audit_review_package_id(package)] = &package;
+  std::set<std::string> matched;
+  std::set<std::tuple<std::string, std::string, uint32_t, bool>> seen;
+  for (const auto& item : report.outputs) {
+    const auto package = own.find(item.package_id);
+    CHECK_AND_ASSERT_THROW_MES(package != own.end(), "Result contains another wallet's evidence; request a recipient-specific result");
+    CHECK_AND_ASSERT_THROW_MES(package->second->snapshot_height == report.snapshot_height &&
+        package->second->snapshot_hash == report.snapshot_hash, "Result snapshot differs from exported evidence");
+    bool found = false;
+    for (const auto& raw : package->second->proofs) {
+      std::string binary;
+      cryptonote::lineage_output_proof proof;
+      if (epee::string_tools::parse_hexstr_to_binbuff(raw, binary) && ::serialization::parse_binary(binary, proof) &&
+          epee::string_tools::pod_to_hex(proof.transaction) == item.transaction && proof.output_index == item.output_index &&
+          proof.stake_return == item.stake && proof.amount == item.amount) { found = true; break; }
+    }
+    CHECK_AND_ASSERT_THROW_MES(found && seen.emplace(item.package_id, item.transaction, item.output_index, item.stake).second,
+        "Audit decision is duplicated or not covered by this wallet's exported proof");
+    matched.insert(item.package_id);
+  }
+  CHECK_AND_ASSERT_THROW_MES(!matched.empty(), "Audit result contains no decisions for this wallet");
+  for (const auto& id : matched) {
+    std::string previous;
+    cryptonote::audit_review_report old;
+    if (get_attribute("audit-review-result-v3-" + id, previous) &&
+        epee::serialization::load_t_from_json(old, previous)) {
+      CHECK_AND_ASSERT_THROW_MES(report.revision > old.revision ||
+          (report.revision == old.revision && cryptonote::audit_review_report_hash(report) == cryptonote::audit_review_report_hash(old)),
+          "Audit decision is stale or conflicts with an existing result at the same revision");
+    }
+  }
+  for (const auto& id : matched) set_attribute("audit-review-result-v3-" + id, text);
+  set_attribute("audit-review-trusted-v3", canonical_trusted);
+  store();
 }
 
 void wallet2::update_lineage_audit_status()

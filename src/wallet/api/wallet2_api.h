@@ -972,6 +972,11 @@ struct Wallet
     // With no arguments, refreshes and audits every account and subaddress.
     // Returns JSON with atomic SAL1 totals and per-output/stake status.
     // An empty string means failure; inspect errorString().
+#define SALVIUM_WALLET_AUDIT_REVIEW_VERSION 3
+    virtual std::string exportAuditReview(uint64_t snapshot_height = UINT64_MAX) = 0;
+    virtual bool importAuditReview(const std::string& result, const std::string& developer_public_key) = 0;
+    virtual bool exportAuditReviewToFile(const std::string& path, uint64_t snapshot_height = UINT64_MAX) = 0;
+    virtual bool importAuditReviewFromFile(const std::string& path, const std::string& developer_public_key) = 0;
     virtual std::string audit(bool status_only = false, bool all_accounts = true,
         uint32_t account = 0, const std::set<uint32_t>& subaddresses = {}) = 0;
 

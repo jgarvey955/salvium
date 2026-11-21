@@ -230,7 +230,7 @@ namespace
   const char* USAGE_BURN("burn <amount> <asset_type>");
   const char* USAGE_CONVERT("convert <source_amount> <source_asset> <dest_asset> [<slippage_limit>]");
   const char* USAGE_STAKE("stake <amount>");
-  const char* USAGE_AUDIT("audit");
+  const char* USAGE_AUDIT("audit | audit export <new-file> [snapshot-height] | audit import <result-file> <developer-public-key>");
   const char* USAGE_CREATE_TOKEN("create_token [index=<N1>[,<N2>,...]] <ticker> <supply> [name=<name>|metadata=<metadata>|file=<metadata_file>]");
   const char* USAGE_PRICE_INFO("price_info");
   const char* USAGE_SUPPLY_INFO("supply_info");
@@ -8900,11 +8900,22 @@ bool simple_wallet::convert(const std::vector<std::string> &args_)
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::audit(const std::vector<std::string> &args_)
 {
-  if (!args_.empty()) { PRINT_USAGE(USAGE_AUDIT); return true; }
+  if (!args_.empty() && !((args_[0] == "export" && (args_.size() == 2 || args_.size() == 3)) ||
+      (args_[0] == "import" && args_.size() == 3))) { PRINT_USAGE(USAGE_AUDIT); return true; }
   if (!try_connect_to_daemon()) return true;
   SCOPED_WALLET_UNLOCK();
   try {
     m_wallet->refresh(m_wallet->is_trusted_daemon());
+    if (!args_.empty() && args_[0] == "export") {
+      const uint64_t height = args_.size() == 3 ? boost::lexical_cast<uint64_t>(args_[2]) : UINT64_MAX;
+      const auto evidence = m_wallet->export_audit_review(height);
+      cryptonote::write_private_audit_file(args_[1], evidence);
+      message_writer() << "Private audit evidence saved to " << args_[1]
+          << ". It contains amounts and spend-linking evidence. Share only with the chosen reviewer.";
+      return true;
+    }
+    if (!args_.empty() && args_[0] == "import")
+      m_wallet->import_audit_review(cryptonote::read_audit_file(args_[1]), args_[2]);
     const auto result = m_wallet->audit();
     message_writer() << "SAL1 and token provenance review: " << result.state;
     message_writer() << "Scope: every account and subaddress in this wallet";
@@ -8923,6 +8934,13 @@ bool simple_wallet::audit(const std::vector<std::string> &args_)
         [](const tools::audit_asset_balance& balance) { return balance.unresolved_count != 0; }))
       message_writer() << "Provenance findings require human review. They do not lock outputs, propagate a bad label, or delay stake payouts.";
     message_writer() << "Confirmed malformed origins remain distinct from descendant or exchange exposure; descendants are review-only.";
+    size_t shown = 0, unspent = 0;
+    for (const auto& row : result.outputs) if (!row.spent) ++unspent;
+    for (const auto& row : result.outputs) if (!row.spent && shown++ < 20)
+      message_writer() << row.transaction << ":" << row.output_index << (row.stake ? ":stake " : " ")
+          << row.state << " recommendation=" << row.recommendation << " reason=" << row.reason
+          << (row.decision_reason.empty() ? "" : " developer: " + row.decision_reason);
+    if (unspent > 20) message_writer() << "Showing 20 of " << unspent << " checked unspent outputs; wallet RPC provides paginated details.";
   } catch (const std::exception& e) { fail_msg_writer() << "Wallet audit failed: " << e.what(); }
   return true;
 }
