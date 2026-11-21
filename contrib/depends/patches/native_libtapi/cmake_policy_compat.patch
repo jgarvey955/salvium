@@ -1,0 +1,11 @@
+--- a/build.sh
++++ b/build.sh
+@@ -12,7 +12,7 @@ mkdir build
+ 
+ pushd build &>/dev/null
+ 
+-CMAKE_EXTRA_ARGS=""
++CMAKE_EXTRA_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5 "
+ 
+ if [ $OPERATING_SYSTEM == "Android" ]; then
+   export CC="$CC -D__ANDROID_API__=26"
