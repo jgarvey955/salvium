@@ -109,6 +109,20 @@ TEST(cryptonote_protocol_handler, private_audit_does_not_decode_public_enrollmen
   EXPECT_FALSE(handled);
 }
 
+TEST(cryptonote_protocol_handler, private_clearance_bounds_carrier_before_decode)
+{
+  test_core core;
+  cryptonote::t_cryptonote_protocol_handler<test_core> protocol(core, nullptr);
+  cryptonote::cryptonote_connection_context context;
+  context.m_state = cryptonote::cryptonote_connection_context::state_normal;
+  const std::vector<uint8_t> oversized(cryptonote::lineage_limits::max_bytes + 1025, 0);
+  epee::byte_stream output;
+  bool handled = false;
+  EXPECT_EQ(1, protocol.handle_invoke_map(true, cryptonote::NOTIFY_AUDIT_CLEARANCE::ID,
+      epee::span<const uint8_t>{oversized.data(), oversized.size()}, output, context, handled));
+  EXPECT_TRUE(handled);
+}
+
 typedef nodetool::node_server<cryptonote::t_cryptonote_protocol_handler<test_core>> Server;
 
 static bool is_blocked(Server &server, const epee::net_utils::network_address &address, time_t *t = NULL)
