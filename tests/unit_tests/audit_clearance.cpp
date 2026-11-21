@@ -88,6 +88,10 @@ int main() {
     check(registry.validate_batch(db, batch, 101, reason), "Valid certificate rejected");
     auto forged = batch; forged.certificates[0].decision = 2;
     check(!registry.validate_batch(db, forged, 101, reason), "Altered decision accepted");
+    auto noncanonical = batch;
+    reinterpret_cast<unsigned char*>(&noncanonical.certificates[0].signature)[sizeof(crypto::signature) - 1] = 1;
+    check(!verify_audit_clearance(noncanonical.certificates[0], authority) &&
+        !registry.validate_batch(db, noncanonical, 101, reason), "Noncanonical signature extension accepted");
     auto duplicate = batch; duplicate.certificates.push_back(c);
     check(!registry.validate_batch(db, duplicate, 101, reason), "Duplicate certificate accepted");
     auto excessive = batch; excessive.certificates.resize(lineage_limits::max_outputs + 1, c);
