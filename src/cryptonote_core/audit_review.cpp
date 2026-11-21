@@ -319,14 +319,14 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
         "Mixed network, snapshot or orphaned audit evidence");
     const auto package_id = audit_review_package_id(p);
     if (!package_ids.insert(package_id).second) continue;
-    std::set<std::tuple<crypto::hash, uint32_t, bool>> package_outputs;
+    std::set<std::tuple<std::string, uint32_t, bool>> package_outputs;
     for (const auto& raw : p.proofs) {
       std::string binary;
       lineage_output_proof proof;
       require(raw.size() < 4096 && epee::string_tools::parse_hexstr_to_binbuff(raw, binary) &&
           serialization::parse_binary(binary, proof) && t_serializable_object_to_blob(proof) == binary,
           "Invalid or noncanonical private ownership proof");
-      require(package_outputs.emplace(proof.transaction, proof.output_index, proof.stake_return).second,
+      require(package_outputs.emplace(hex(proof.transaction), proof.output_index, proof.stake_return).second,
           "Duplicate output in private audit evidence package");
       auto node = inspect_output(proof, &p);
       auto& item = node.item;

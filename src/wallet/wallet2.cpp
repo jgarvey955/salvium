@@ -8724,6 +8724,10 @@ void wallet2::import_audit_review(const std::string& text, const std::string& tr
   cryptonote::audit_review_report report;
   CHECK_AND_ASSERT_THROW_MES(epee::string_tools::hex_to_pod(trusted_text, trusted) &&
       cryptonote::load_audit_json(report, text), "Invalid audit result or developer public key");
+  CHECK_AND_ASSERT_THROW_MES(!report.outputs.empty() && report.outputs.size() <= 512 &&
+      std::all_of(report.outputs.begin(), report.outputs.end(), [&](const cryptonote::audit_review_item& item) {
+        return item.package_id == report.outputs.front().package_id;
+      }), "Import one recipient package receipt at a time, rather than a complete case report");
   CHECK_AND_ASSERT_THROW_MES(cryptonote::authorized_audit_review_signer(static_cast<cryptonote::network_type>(report.network), trusted),
       "No matching designated main developer authority in this build; the main developer supplies it during private release review");
   CHECK_AND_ASSERT_THROW_MES(cryptonote::verify_audit_review_report(report, trusted), "Invalid main developer audit signature");
