@@ -21,6 +21,10 @@ public:
     tx.vin.push_back(txin_to_key{});
     crypto::public_key key; crypto::secret_key secret; crypto::generate_keys(key, secret);
     tx.vout.push_back({1, txout_to_key{key, "SAL1", 10}});
+    if (height >= 100) {
+      tx.vout[0].amount = 0;
+      auto& input = boost::get<txin_to_key>(tx.vin[0]); input.asset_type = "SAL1"; input.key_offsets = {0};
+    }
     return add_transaction(tx, height);
   }
   crypto::hash add_transaction(const transaction& tx, uint64_t height) {

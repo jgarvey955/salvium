@@ -69,6 +69,28 @@ uint64_t normal_release(const transaction& tx, uint32_t index, uint64_t height)
   require(age < CRYPTONOTE_MAX_BLOCK_NUMBER && height <= UINT64_MAX - age, "Invalid output maturity");
   return height + age;
 }
+void validate_spend_at(const audit_clearance_registry& registry, const BlockchainDB& db,
+    const transaction& tx, uint64_t height)
+{
+  require(!tx.vin.empty(), "Private audit requires spending inputs");
+  for (const auto& output : tx.vout) {
+    std::string asset;
+    require(get_output_asset_type(output, asset) && asset == tx.source_asset_type && output.amount == 0,
+        "Invalid cross-asset or cleartext issuance in ordinary transaction");
+  }
+  for (const auto& input : tx.vin) {
+    const auto* key = boost::get<txin_to_key>(&input);
+    require(key && key->asset_type == tx.source_asset_type && is_lineage_audit_asset(key->asset_type) &&
+        !key->key_offsets.empty(), "Private audit requires matching supported key inputs");
+    uint64_t index = 0;
+    for (const auto offset : key->key_offsets) {
+      require(offset <= UINT64_MAX - index, "Audit ring index overflow");
+      index += offset;
+      require(registry.output_spendable(db, db.get_output_id_by_asset_index(key->asset_type, index), height),
+          "Spend ring contains an output without confirmed audit clearance or normal maturity");
+    }
+  }
+}
 }
 
 crypto::hash audit_clearance_message(const audit_clearance_certificate& c)
@@ -297,6 +319,7 @@ void audit_clearance_registry::inherit_block(const BlockchainDB& db, const block
   // passed the gate. Subsequent owners need not audit the same funds again.
   for (const auto& hash : b.tx_hashes) {
     const auto tx = canonical_tx(db, hash);
+    validate_spend_at(*this, db, tx, height);
     for (uint32_t i = 0; i < tx.vout.size(); ++i) schedule(tx, i);
   }
   // Protocol payouts can originate in a pre-activation obligation. Inherit
@@ -377,24 +400,7 @@ bool audit_clearance_registry::check_spend(const BlockchainDB& db, const transac
   if (!active(db.height())) return true;
   try {
     sync(db);
-    require(!tx.vin.empty(), "Private audit requires spending inputs");
-    for (const auto& output : tx.vout) {
-      std::string asset;
-      require(get_output_asset_type(output, asset) && asset == tx.source_asset_type && output.amount == 0,
-          "Invalid cross-asset or cleartext issuance in ordinary transaction");
-    }
-    for (const auto& input : tx.vin) {
-      const auto* key = boost::get<txin_to_key>(&input);
-      require(key && is_lineage_audit_asset(key->asset_type) && !key->key_offsets.empty(),
-          "Private audit requires supported key inputs");
-      uint64_t index = 0;
-      for (const auto offset : key->key_offsets) {
-        require(offset <= UINT64_MAX - index, "Audit ring index overflow");
-        index += offset;
-        require(output_spendable(db, db.get_output_id_by_asset_index(key->asset_type, index), db.height()),
-            "Spend ring contains an output without confirmed audit clearance or normal maturity");
-      }
-    }
+    validate_spend_at(*this, db, tx, db.height());
     return true;
   } catch (const std::exception& e) { reason = e.what(); return false; }
 }
