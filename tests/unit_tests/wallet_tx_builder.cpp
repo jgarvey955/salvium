@@ -93,6 +93,15 @@ public:
             wallet.m_transfers_indices[td.asset_type].insert(i);
         }
     }
+
+    static void initialize_mature(tools::wallet2 &wallet, const tools::wallet2::transfer_container &transfers)
+    {
+        initialize(wallet, transfers);
+        uint64_t height = 0;
+        for (const auto &td : transfers)
+            height = std::max(height, td.m_block_height + CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE + 1);
+        set_height(wallet, height);
+    }
 };
 
 static tools::wallet2::transfer_details gen_transfer_details()
@@ -105,7 +114,8 @@ static tools::wallet2::transfer_details gen_transfer_details()
     carrot_tx.vout.push_back(cryptonote::tx_out{.target = cryptonote::txout_to_carrot_v1{.asset_type = "salTEST"}});
 
     return tools::wallet2::transfer_details{
-        .m_block_height = crypto::rand_idx<uint64_t>(CRYPTONOTE_MAX_BLOCK_NUMBER),
+        // Keep the synthetic chain small enough to represent its mature tip.
+        .m_block_height = crypto::rand_range<uint64_t>(1, 1000),
         .m_tx = carrot_tx,
         .m_txid = crypto::rand<crypto::hash>(),
         .m_internal_output_index = 0,
@@ -502,7 +512,7 @@ TEST(wallet_tx_builder, make_carrot_transaction_proposals_wallet2_transfer_1)
         + CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE;
 
     tools::wallet2 w;
-    wallet_accessor_test::initialize(w, transfers);
+    wallet_accessor_test::initialize_mature(w, transfers);
     const std::vector<carrot::CarrotTransactionProposalV1> tx_proposals = tools::wallet::make_carrot_transaction_proposals_wallet2_transfer(
         w,
         dsts,
@@ -570,7 +580,7 @@ TEST(wallet_tx_builder, make_carrot_transaction_proposals_wallet2_transfer_2)
     dsts.front().asset_type = "salTEST";
 
     tools::wallet2 w;
-    wallet_accessor_test::initialize(w, transfers);
+    wallet_accessor_test::initialize_mature(w, transfers);
     const std::vector<carrot::CarrotTransactionProposalV1> tx_proposals = tools::wallet::make_carrot_transaction_proposals_wallet2_transfer(
         w,
         dsts,
@@ -641,7 +651,7 @@ TEST(wallet_tx_builder, make_carrot_transaction_proposals_wallet2_sweep_1)
     const tools::wallet2::transfer_container transfers{gen_transfer_details()};
 
     tools::wallet2 w;
-    wallet_accessor_test::initialize(w, transfers);
+    wallet_accessor_test::initialize_mature(w, transfers);
     const std::vector<carrot::CarrotTransactionProposalV1> tx_proposals = tools::wallet::make_carrot_transaction_proposals_wallet2_sweep(
         // transfers,
         // {{alice.get_keys().m_account_address.m_spend_public_key, {}}},
@@ -680,7 +690,7 @@ TEST(wallet_tx_builder, make_carrot_transaction_proposals_wallet2_sweep_2)
 
     const tools::wallet2::transfer_container transfers{gen_transfer_details()};
     tools::wallet2 w;
-    wallet_accessor_test::initialize(w, transfers);
+    wallet_accessor_test::initialize_mature(w, transfers);
     const std::vector<carrot::CarrotTransactionProposalV1> tx_proposals = tools::wallet::make_carrot_transaction_proposals_wallet2_sweep(
         // transfers,
         // {{alice.get_keys().m_account_address.m_spend_public_key, {}}},
@@ -727,7 +737,7 @@ TEST(wallet_tx_builder, make_carrot_transaction_proposals_wallet2_sweep_3)
 
     const tools::wallet2::transfer_container transfers{gen_transfer_details()};
     tools::wallet2 w;
-    wallet_accessor_test::initialize(w, transfers);
+    wallet_accessor_test::initialize_mature(w, transfers);
     const std::vector<carrot::CarrotTransactionProposalV1> tx_proposals = tools::wallet::make_carrot_transaction_proposals_wallet2_sweep(
         // transfers,
         // {{alice.get_keys().m_account_address.m_spend_public_key, {}}},
@@ -808,7 +818,7 @@ TEST(wallet_tx_builder, make_carrot_transaction_proposals_wallet2_sweep_4)
 
     // make tx proposals
     tools::wallet2 w;
-    wallet_accessor_test::initialize(w, transfers);
+    wallet_accessor_test::initialize_mature(w, transfers);
     const std::vector<carrot::CarrotTransactionProposalV1> tx_proposals = tools::wallet::make_carrot_transaction_proposals_wallet2_sweep(
         // transfers,
         // {{alice.get_keys().m_account_address.m_spend_public_key, {}}},
@@ -895,7 +905,7 @@ TEST(wallet_tx_builder, make_carrot_transaction_proposals_wallet2_sweep_5)
 
     // make tx proposals
     tools::wallet2 w;
-    wallet_accessor_test::initialize(w, transfers);
+    wallet_accessor_test::initialize_mature(w, transfers);
     const std::vector<carrot::CarrotTransactionProposalV1> tx_proposals = tools::wallet::make_carrot_transaction_proposals_wallet2_sweep(
         // transfers,
         // {{alice.get_keys().m_account_address.m_spend_public_key, {}}},
@@ -985,7 +995,7 @@ TEST(wallet_tx_builder, make_carrot_transaction_proposals_wallet2_sweep_6)
 
     // make tx proposals
     tools::wallet2 w;
-    wallet_accessor_test::initialize(w, transfers);
+    wallet_accessor_test::initialize_mature(w, transfers);
     const std::vector<carrot::CarrotTransactionProposalV1> tx_proposals = tools::wallet::make_carrot_transaction_proposals_wallet2_sweep(
         // transfers,
         // {{alice.get_keys().m_account_address.m_spend_public_key, {}}},
@@ -1441,7 +1451,7 @@ struct pending_validation_fixture
 
     explicit pending_validation_fixture(bool repeated_destinations = false)
     {
-        wallet_accessor_test::initialize(wallet, transfers);
+        wallet_accessor_test::initialize_mature(wallet, transfers);
         carrot::carrot_and_legacy_account receiver;
         receiver.generate();
         cryptonote::tx_destination_entry destination(transfers.front().m_amount / 2,
