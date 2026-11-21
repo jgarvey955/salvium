@@ -203,6 +203,29 @@ int main(int argc, char** argv) {
         "Publicly provable funding unnecessarily required the earlier owner");
     const auto bounded = audit_review_verifier::verify(db, FAKECHAIN, {alone}, 2, 0);
     check(bounded.outputs.front().state == "REVIEW_REQUIRED", "Work limit approved unchecked ancestry");
+    auto locked_decoy = accepted;
+    boost::get<txout_to_carrot_v1>(locked_decoy.vout[0].target).key = rct::rct2pk(rct::pkGen());
+    // A valid accepted root can still be an immature candidate in a later ring.
+    // Carrot has no per-output lock field, so put this accepted root near the spend.
+    locked_decoy.invalidate_hashes();
+    db.txs[get_transaction_hash(locked_decoy)] = {locked_decoy, 150};
+    db.indices.emplace_back(get_transaction_hash(locked_decoy), 0);
+    db.txs.erase(get_transaction_hash(public_child.tx));
+    const auto mixed_maturity = transfer(db, independent, 160, {6, 8}, 0);
+    auto maturity_request = context(db);
+    append(maturity_request, prove(maturity_request, mixed_maturity.tx, 0,
+        mixed_maturity.secret, mixed_maturity.mask, mixed_maturity.amount));
+    // Opening 150 accepts both roots; only the exact real source establishes maturity.
+    const auto maturity_public = audit_review_verifier::verify(db, FAKECHAIN, {maturity_request}, 150);
+    check(maturity_public.outputs[0].state == "REVIEW_REQUIRED",
+        "A public ring with an immature possible source cleared without an exact funding proof");
+    auto maturity_parent = context(db);
+    append(maturity_parent, prove(maturity_parent, accepted, 0, accepted_secret, rct::identity(), 100, true));
+    const auto maturity_exact = audit_review_verifier::verify(db, FAKECHAIN, {maturity_request, maturity_parent}, 150);
+    check(maturity_exact.outputs[0].state == "CLEARED",
+        "An immature decoy prevented clearance of an exact mature real source");
+    db.txs.erase(get_transaction_hash(mixed_maturity.tx));
+    db.txs[get_transaction_hash(public_child.tx)] = {public_child.tx, 160};
     const auto opening_root = audit_review_verifier::verify(db, FAKECHAIN, {alone}, 170, 0);
     check(opening_root.outputs.front().state == "CLEARED" &&
         opening_root.outputs.front().reason == "ACCEPTED_OPENING",

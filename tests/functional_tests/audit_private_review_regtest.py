@@ -91,8 +91,11 @@ def main():
         automatic = run_case("public-ancestry", evidence[2:], secret, public_work_limit=50000)
         public_case = json.loads((automatic / "case.json").read_text())
         assert public_case["public_outputs_checked"] > 0
-        assert all(r["state"] == "CLEARED" for r in public_case["outputs"]), public_case
-        assert any(r["reason"] == "ALL_RING_CANDIDATES_VERIFIED" for r in public_case["outputs"])
+        # Recent locked decoys can make public provenance insufficient to prove
+        # actual funding maturity. Exact owner proofs below resolve that ambiguity.
+        assert all(r["state"] in ("CLEARED", "REVIEW_REQUIRED") for r in public_case["outputs"]), public_case
+        assert all(r["reason"] in ("ALL_RING_CANDIDATES_VERIFIED", "MISSING_FUNDING_EVIDENCE")
+            for r in public_case["outputs"]), public_case
         pending = run_case("bob-alone", evidence[2:], secret)
         case = json.loads((pending / "case.json").read_text())
         assert case["outputs"] and all(r["state"] == "REVIEW_REQUIRED" for r in case["outputs"])
@@ -173,8 +176,19 @@ def main():
         (root / "cli-export-output.txt").write_text(result.stdout + result.stderr)
         assert result.returncode == 0 and cli_export.is_file(), result.stdout + result.stderr
         assert cli_export.stat().st_mode & 0o077 == 0
-        cli_case = run_case("cli-owner-request", [cli_export], secret, public_work_limit=50000)
-        for path in receipts(cli_case):
+        current_parent_evidence = []
+        for number, wallet in enumerate(chain.wallets[:2]):
+            result = wallet.call("audit", {"export_evidence": True, "snapshot_height": chain.tip()})
+            path = root / f"current-parent-{number}.json"
+            path.write_text(result["private_evidence"])
+            current_parent_evidence.append(path)
+        cli_case = run_case("cli-owner-request", [cli_export, *current_parent_evidence], secret)
+        bob_identities = {(r["transaction"], r["output_index"], r["stake"]) for r in revoked["outputs"]}
+        cli_package_ids = {r["package_id"] for r in json.loads((cli_case / "case.json").read_text())["outputs"]
+            if (r["transaction"], r["output_index"], r["stake"]) in bob_identities}
+        cli_receipts = [path for path in receipts(cli_case) if path.stem in cli_package_ids]
+        assert cli_receipts
+        for path in cli_receipts:
             result = subprocess.run(cli_arguments + ["--command", "audit", "import", str(path), public],
                 input="", capture_output=True, text=True, timeout=180)
             (root / "cli-import-output.txt").write_text(result.stdout + result.stderr)
