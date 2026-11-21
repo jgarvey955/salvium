@@ -124,6 +124,26 @@ def main():
         case = json.loads((complete / "case.json").read_text())
         assert all(r["state"] == "CLEARED" for r in case["outputs"]), case
         assert any(r["stake"] for r in case["outputs"])
+        for name, mutate in (
+                ("unsigned-case", lambda r: r.update(signer="", signature="")),
+                ("altered-case", lambda r: r["outputs"][0].update(amount=r["outputs"][0]["amount"] + 1)),
+                ("invalid-recipient", lambda r: r["outputs"][0].update(package_id="invalid-package-identity"))):
+            invalid = copy.deepcopy(case)
+            mutate(invalid)
+            invalid_path = root / (name + ".json")
+            invalid_path.write_text(json.dumps(invalid))
+            rejected_output = root / (name + "-rejected")
+            rejected = subprocess.run([tool, "--report", str(invalid_path), "--sign-key", str(secret),
+                "--outdir", str(rejected_output)], capture_output=True, text=True, timeout=30)
+            assert rejected.returncode != 0 and not rejected_output.exists(), name
+        repeated = json.loads(evidence[0].read_text())
+        repeated["packages"][0]["proofs"].append(repeated["packages"][0]["proofs"][0])
+        repeated_path = root / "repeated-evidence.json"
+        repeated_path.write_text(json.dumps(repeated))
+        rejected = subprocess.run([tool, "--data-dir", str(root / "chain/fake"), "--network", "fakechain",
+            "--opening", "0", "--input", str(repeated_path), "--sign-key", str(secret),
+            "--outdir", str(root / "repeated-evidence-rejected")], capture_output=True, text=True, timeout=30)
+        assert rejected.returncode != 0 and not (root / "repeated-evidence-rejected").exists()
         custody = {json.loads(path.read_text())["outputs"][0]["package_id"]
             for path in owned_receipts(complete, chain.wallets[1])}
         reserve = sum({(r["transaction"], r["output_index"], r["stake"]): r["amount"]
@@ -197,7 +217,8 @@ def main():
             checks=["native_rpc_private_exports", "cross_wallet_all_funding_clearance", "missing_owner_review",
                 "immature_stake_review", "signed_developer_clearance", "forgery_rejection", "stale_revision_rejection",
                 "recipient_isolation", "wallet_reopen_and_native_cli", "reorg_revokes_all_decisions",
-                "native_nonkyc_signature_reconciliation", "native_cli_owner_export_and_signed_import"],
+                "native_nonkyc_signature_reconciliation", "native_cli_owner_export_and_signed_import",
+                "authenticated_case_revision", "invalid_recipient_and_duplicate_evidence_rejection"],
             note="1000 unused NonKYC subaddresses exercise scope discovery; this is not a 1000-funded-output capacity test")
         (root / "result.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(json.dumps(summary), flush=True)

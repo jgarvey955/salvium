@@ -40,6 +40,11 @@ build/audit/release/bin/salvium-audit-review \
 The new private directory contains `case.json`, `review-queue.json` and one
 result per package. Return only the relevant package files to each wallet.
 Unsigned reports cannot clear wallet inventory through import.
+Existing cases must have an authentic developer signature before they can be
+revised or signed again. To sign an earlier unsigned analysis, rerun the original
+`--input` evidence against the canonical database with `--sign-key`. Recipient
+identities, report fields and JSON allocation are checked before processing;
+private output files never replace an existing file.
 
 Review the queue, retain only decisions being made, choose `CLEAR` or `DENY`,
 and supply a nonempty `reason`. The original `report_hash` must match:

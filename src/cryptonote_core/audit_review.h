@@ -4,9 +4,17 @@
 #include <vector>
 #include "lineage_audit.h"
 #include "serialization/keyvalue_serialization.h"
+#include "storages/portable_storage_template_helper.h"
 
 namespace cryptonote
 {
+constexpr size_t max_audit_file_bytes = 256 * 1024 * 1024;
+template<class T> bool load_audit_json(T& value, const std::string& text)
+{
+  if (text.size() > max_audit_file_bytes) return false;
+  const epee::serialization::portable_storage::limits_t limits{1000000, 6000000, 4000000};
+  return epee::serialization::load_t_from_json(value, text, &limits);
+}
 // Private, off-chain evidence. This domain must never be accepted as enrollment.
 struct audit_review_package
 {
@@ -99,11 +107,12 @@ bool verify_audit_review_proof(const audit_review_package&, const lineage_output
     const crypto::public_key&, const rct::key&);
 std::string audit_review_package_id(const audit_review_package&);
 crypto::hash audit_review_report_hash(const audit_review_report&);
+void validate_audit_review_report(const audit_review_report&);
 bool authorized_audit_review_signer(network_type, const crypto::public_key&);
 void sign_audit_review_report(audit_review_report&, const crypto::secret_key&);
 bool verify_audit_review_report(const audit_review_report&, const crypto::public_key&);
 void write_private_audit_file(const std::string& path, const std::string& contents);
-std::string read_audit_file(const std::string& path);
+std::string read_audit_file(const std::string& path, size_t max_bytes = max_audit_file_bytes);
 
 // Runs on a read-only canonical database. No miner, P2P, spend gate or payout is changed.
 class audit_review_verifier

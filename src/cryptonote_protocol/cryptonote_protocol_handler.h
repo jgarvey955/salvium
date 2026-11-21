@@ -49,6 +49,7 @@
 #include "common/perf_timer.h"
 #include "common/verification_work_limiter.h"
 #include "cryptonote_basic/connection_context.h"
+#include "cryptonote_core/lineage_audit_policy.h"
 #include "crypto/random.h"
 #include "net/levin_base.h"
 #include "p2p/net_node_common.h"
@@ -94,7 +95,9 @@ namespace cryptonote
 
     BEGIN_INVOKE_MAP2(cryptonote_protocol_handler)
       HANDLE_NOTIFY_T2(NOTIFY_NEW_BLOCK, &cryptonote_protocol_handler::handle_notify_new_block)
-      HANDLE_NOTIFY_T2(NOTIFY_WALLET_AUDIT, &cryptonote_protocol_handler::handle_notify_wallet_audit)
+      if constexpr (lineage_policy::public_enrollment) {
+        HANDLE_NOTIFY_T2(NOTIFY_WALLET_AUDIT, &cryptonote_protocol_handler::handle_notify_wallet_audit)
+      }
       HANDLE_NOTIFY_T2(NOTIFY_NEW_TRANSACTIONS, &cryptonote_protocol_handler::handle_notify_new_transactions)
       HANDLE_NOTIFY_T2(NOTIFY_REQUEST_GET_OBJECTS, &cryptonote_protocol_handler::handle_request_get_objects)
       HANDLE_NOTIFY_T2(NOTIFY_RESPONSE_GET_OBJECTS, &cryptonote_protocol_handler::handle_response_get_objects)

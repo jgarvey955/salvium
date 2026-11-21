@@ -171,8 +171,24 @@ class LocalChain:
         assert len(result.get("blocks", [])) == count, result
         if refresh:
             for wallet in self.wallets:
-                wallet.call("refresh")
+                self.refresh_wallet(wallet)
         return result
+
+    def refresh_wallet(self, wallet):
+        """RPC refresh is bounded; explicitly catch up before asserting balances."""
+        target = self.daemon.call("get_info")["height"]
+        previous = None
+        for _ in range(target // 1000 + 8):
+            wallet.call("refresh")
+            current = wallet.call("get_height")["height"]
+            # A wallet can retain its old tip until a replacement block arrives
+            # during a reorg; the caller must not treat that as sync starvation.
+            if current >= target:
+                return
+            if current == previous:
+                raise RuntimeError(f"Test wallet made no sync progress: {current} / {target}")
+            previous = current
+        raise RuntimeError(f"Test wallet did not reach canonical height {target}")
 
     def tip(self):
         return self.daemon.call("get_info")["height"] - 1
@@ -212,7 +228,7 @@ class LocalChain:
             "viewkey": view, "spendkey": "", "restore_height": 0,
             "autosave_current": False})
         self.observer.call("auto_refresh", {"enable": False})
-        self.observer.call("refresh")
+        self.refresh_wallet(self.observer)
         params = {"transfer_type": "all", "account_index": 0, "subaddr_indices": [0]}
         observed = self.observer.call("incoming_transfers", params).get("transfers", [])
         if key_owner is not None and key_owner != index:
@@ -370,7 +386,7 @@ def test_stake_release(chain, txid, principal):
     # ordinary miner outputs that matured meanwhile are not mistaken for an
     # early-unlocked stake payout.
     for wallet in chain.wallets:
-        wallet.call("refresh")
+        chain.refresh_wallet(wallet)
     before = chain.balance(0)["unlocked_balance"]
     chain.mine(1)
     protocol = chain.block(payout_height)["protocol_tx"]
@@ -383,7 +399,7 @@ def test_stake_release(chain, txid, principal):
     popped = chain.daemon.request("/pop_blocks", {"nblocks": 1})
     assert popped["status"] == "OK" and chain.tip() == payout_height - 1
     for wallet in chain.wallets:
-        wallet.call("refresh")
+        chain.refresh_wallet(wallet)
     chain.mine(1)
     replayed = chain.block(payout_height)["protocol_tx"]
     assert len(replayed["vout"]) == 1 and replayed["vout"][0]["amount"] == payout

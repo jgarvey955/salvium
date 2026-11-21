@@ -104,6 +104,18 @@ public:
   void stop() {}
 };
 
+TEST(cryptonote_protocol_handler, private_audit_does_not_decode_public_enrollment)
+{
+  test_core core;
+  cryptonote::t_cryptonote_protocol_handler<test_core> protocol(core, nullptr);
+  cryptonote::cryptonote_connection_context context;
+  epee::byte_stream output;
+  bool handled = false;
+  protocol.handle_invoke_map(true, cryptonote::NOTIFY_WALLET_AUDIT::ID,
+      epee::span<const uint8_t>{}, output, context, handled);
+  EXPECT_FALSE(handled);
+}
+
 TEST(cryptonote_protocol_handler, p2p_transaction_work_budget_is_global_and_refills)
 {
   using limiter = cryptonote::detail::p2p_tx_verification_limiter;

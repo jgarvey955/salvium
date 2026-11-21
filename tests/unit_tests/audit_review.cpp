@@ -272,6 +272,8 @@ int main(int argc, char** argv) {
     crypto::public_key developer, other; crypto::secret_key signing, other_secret;
     crypto::generate_keys(developer, signing); crypto::generate_keys(other, other_secret);
     check(!authorized_audit_review_signer(MAINNET, developer), "Owner substituted a mainnet audit signing authority");
+    check(!authorized_audit_review_signer(FAKECHAIN, rct::rct2pk(rct::identity())),
+        "Invalid audit authority accepted in test mode");
     auto unauthorized = result; unauthorized.network = uint8_t(MAINNET);
     rejected([&] { sign_audit_review_report(unauthorized, signing); });
     sign_audit_review_report(result, signing);
@@ -284,8 +286,16 @@ int main(int argc, char** argv) {
     changed = result; changed.outputs[0].decision = "CLEAR"; changed.outputs[0].decision_reason = "Verified innocent exchange purchase";
     sign_audit_review_report(changed, signing);
     check(verify_audit_review_report(changed, developer), "Explicit developer decision was lost");
-    changed.outputs[0].decision_reason.clear(); sign_audit_review_report(changed, signing);
+    changed.outputs[0].decision_reason.clear();
+    rejected([&] { sign_audit_review_report(changed, signing); });
     check(!verify_audit_review_report(changed, developer), "Unexplained developer override accepted");
+    changed = result; changed.outputs[0].package_id = "invalid-package-identity";
+    rejected([&] { sign_audit_review_report(changed, signing); });
+    check(!verify_audit_review_report(changed, developer), "Malformed recipient identity accepted");
+    changed = result; changed.outputs.push_back(changed.outputs.front());
+    rejected([&] { sign_audit_review_report(changed, signing); });
+    auto duplicate_proof = p; duplicate_proof.proofs.push_back(duplicate_proof.proofs.front());
+    rejected([&] { audit_review_verifier::verify(db, FAKECHAIN, {duplicate_proof}, 2); });
     const auto path = (boost::filesystem::temp_directory_path() / boost::filesystem::unique_path("salvium-review-%%%%-%%%%")).string();
     write_private_audit_file(path, "private test\n");
     check(read_audit_file(path) == "private test\n", "Private export did not persist");

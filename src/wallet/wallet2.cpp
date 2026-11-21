@@ -8595,13 +8595,13 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
     if (get_attribute("audit-review-exports-v3", exports) &&
         get_attribute("audit-review-trusted-v3", trusted_text) &&
         epee::string_tools::hex_to_pod(trusted_text, trusted) &&
-        epee::serialization::load_t_from_json(exported, exports)) {
+        cryptonote::load_audit_json(exported, exports)) {
       for (const auto& package : exported.packages) {
         const auto id = cryptonote::audit_review_package_id(package);
         std::string saved_result;
         cryptonote::audit_review_report report;
         if (!get_attribute("audit-review-result-v3-" + id, saved_result) ||
-            !epee::serialization::load_t_from_json(report, saved_result) ||
+            !cryptonote::load_audit_json(report, saved_result) ||
             !cryptonote::verify_audit_review_report(report, trusted) ||
             report.network != uint8_t(m_lineage_regtest_height ? cryptonote::FAKECHAIN : m_nettype) ||
             report.genesis != epee::string_tools::pod_to_hex(m_blockchain.genesis()) ||
@@ -8723,7 +8723,7 @@ void wallet2::import_audit_review(const std::string& text, const std::string& tr
   crypto::public_key trusted;
   cryptonote::audit_review_report report;
   CHECK_AND_ASSERT_THROW_MES(epee::string_tools::hex_to_pod(trusted_text, trusted) &&
-      epee::serialization::load_t_from_json(report, text), "Invalid audit result or developer public key");
+      cryptonote::load_audit_json(report, text), "Invalid audit result or developer public key");
   CHECK_AND_ASSERT_THROW_MES(cryptonote::authorized_audit_review_signer(static_cast<cryptonote::network_type>(report.network), trusted),
       "No matching designated main developer authority in this build; the main developer supplies it during private release review");
   CHECK_AND_ASSERT_THROW_MES(cryptonote::verify_audit_review_report(report, trusted), "Invalid main developer audit signature");
@@ -8742,7 +8742,7 @@ void wallet2::import_audit_review(const std::string& text, const std::string& tr
   std::string saved;
   cryptonote::audit_review_request request;
   CHECK_AND_ASSERT_THROW_MES(get_attribute("audit-review-exports-v3", saved) &&
-      epee::serialization::load_t_from_json(request, saved), "Export this wallet's audit evidence before importing results");
+      cryptonote::load_audit_json(request, saved), "Export this wallet's audit evidence before importing results");
   std::map<std::string, const cryptonote::audit_review_package*> own;
   for (const auto& package : request.packages) own[cryptonote::audit_review_package_id(package)] = &package;
   std::set<std::string> matched;
@@ -8769,7 +8769,7 @@ void wallet2::import_audit_review(const std::string& text, const std::string& tr
     std::string previous;
     cryptonote::audit_review_report old;
     if (get_attribute("audit-review-result-v3-" + id, previous) &&
-        epee::serialization::load_t_from_json(old, previous)) {
+        cryptonote::load_audit_json(old, previous)) {
       CHECK_AND_ASSERT_THROW_MES(report.revision > old.revision ||
           (report.revision == old.revision && cryptonote::audit_review_report_hash(report) == cryptonote::audit_review_report_hash(old)),
           "Audit decision is stale or conflicts with an existing result at the same revision");
