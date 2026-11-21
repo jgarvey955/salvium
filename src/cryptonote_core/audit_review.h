@@ -99,6 +99,7 @@ bool verify_audit_review_proof(const audit_review_package&, const lineage_output
     const crypto::public_key&, const rct::key&);
 std::string audit_review_package_id(const audit_review_package&);
 crypto::hash audit_review_report_hash(const audit_review_report&);
+bool authorized_audit_review_signer(network_type, const crypto::public_key&);
 void sign_audit_review_report(audit_review_report&, const crypto::secret_key&);
 bool verify_audit_review_report(const audit_review_report&, const crypto::public_key&);
 void write_private_audit_file(const std::string& path, const std::string& contents);

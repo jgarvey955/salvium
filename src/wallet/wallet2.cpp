@@ -8295,11 +8295,20 @@ std::string wallet2::export_audit_review(uint64_t snapshot_height)
 
 void wallet2::import_audit_review(const std::string& text, const std::string& trusted_text)
 {
+  if (m_lineage_regtest_height) {
+    cryptonote::COMMAND_RPC_GET_INFO::request req;
+    cryptonote::COMMAND_RPC_GET_INFO::response info;
+    CHECK_AND_ASSERT_THROW_MES(invoke_http_json_rpc("/json_rpc", "get_info", req, info) &&
+        info.status == CORE_RPC_STATUS_OK && info.nettype == "fakechain",
+        "Ephemeral audit test keys require an isolated fakechain daemon");
+  }
   crypto::public_key trusted;
   cryptonote::audit_review_report report;
   CHECK_AND_ASSERT_THROW_MES(epee::string_tools::hex_to_pod(trusted_text, trusted) &&
-      epee::serialization::load_t_from_json(report, text) && cryptonote::verify_audit_review_report(report, trusted),
-      "Invalid audit result or developer signature");
+      epee::serialization::load_t_from_json(report, text), "Invalid audit result or developer public key");
+  CHECK_AND_ASSERT_THROW_MES(cryptonote::authorized_audit_review_signer(static_cast<cryptonote::network_type>(report.network), trusted),
+      "No matching designated main developer authority in this build; the main developer supplies it during PR/release review");
+  CHECK_AND_ASSERT_THROW_MES(cryptonote::verify_audit_review_report(report, trusted), "Invalid main developer audit signature");
   std::string pinned;
   const auto canonical_trusted = epee::string_tools::pod_to_hex(trusted);
   CHECK_AND_ASSERT_THROW_MES(!get_attribute("audit-review-trusted-v3", pinned) || pinned == canonical_trusted,

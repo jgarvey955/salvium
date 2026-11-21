@@ -4,11 +4,25 @@ The native verifier clears conclusive funding paths and gives the main developer
 unresolved cases with reasons. NonKYC records establish economic attribution
 after pooled custody; pooling alone does not establish customer misconduct.
 
+The wallet owner initiates a request through an explicit private export. The
+daemon and background refresh never initiate, sign or submit that request.
+Only the main developer processes requests and signs results, including results
+that clear automatically after verification. The owner imports the result.
+
+The main developer must supply the public signing key in
+`src/cryptonote_core/audit_review_authority.h` during PR/release review. Keys are
+intentionally empty in this branch. Exports and unsigned analysis work, but
+production-network signing and result acceptance fail until an authority is
+designated. An arbitrary key supplied by an owner cannot authorize clearance.
+Ephemeral keys are limited to isolated fakechain tests; a regtest wallet flag
+alone cannot bypass authority on a production daemon.
+
 ## Reviewer workflow
 
 Choose a common canonical snapshot height and hash. Wallets may export against
 that height after synchronizing further. Create a dedicated signing key and
-distribute the public key independently:
+retain its secret privately, configure its public key in the release, and
+distribute that public key independently. This is a main developer command:
 
 ~~~sh
 build/audit/release/bin/salvium-audit-review --keygen /private/reviewer.key

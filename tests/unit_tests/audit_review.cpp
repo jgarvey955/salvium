@@ -214,6 +214,9 @@ int main(int argc, char** argv) {
     --db.epoch;
     crypto::public_key developer, other; crypto::secret_key signing, other_secret;
     crypto::generate_keys(developer, signing); crypto::generate_keys(other, other_secret);
+    check(!authorized_audit_review_signer(MAINNET, developer), "Owner substituted a mainnet audit signing authority");
+    auto unauthorized = result; unauthorized.network = uint8_t(MAINNET);
+    rejected([&] { sign_audit_review_report(unauthorized, signing); });
     sign_audit_review_report(result, signing);
     check(verify_audit_review_report(result, developer), "Developer result failed verification");
     check(!verify_audit_review_report(result, other), "Untrusted developer key accepted");

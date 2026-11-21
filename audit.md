@@ -9,6 +9,12 @@ and gives the main developer a private queue with CLEAR or DENY recommendations.
 It covers malformed origins such as salYAHU creating SAL1, cross-wallet transfers,
 exchange custody, token registration funding, and stake principal and payouts.
 
+The wallet owner initiates each request with an explicit export. The main
+developer processes it, runs automatic verification and signs the results.
+Background refresh and the daemon never initiate wallet requests. The developer
+will supply the public authority key during PR review; production-network
+results cannot be signed or accepted while it is unset.
+
 Clearance is an audit verdict. Ordinary transaction validation and maturity remain
 authoritative. Findings and decisions do not publish ownership links, freeze ring
 decoys, change stake payouts, or authorize invalid transactions. Public v2
@@ -27,7 +33,7 @@ audit
 ~~~
 
 Exported files contain confidential amounts and spend-linking evidence. Share
-them only with the chosen reviewer. Seeds, spend secrets, and reusable viewing
+them only with the main developer. Seeds, spend secrets, and reusable viewing
 secrets are never exported. A new export supersedes the previous export session.
 Obtain the developer public key independently; imports pin it and reject stale
 revisions or orphaned snapshots.

@@ -1,4 +1,5 @@
 #include "audit_review.h"
+#include "audit_review_authority.h"
 #include "blockchain_db/blockchain_db.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "cryptonote_basic/cryptonote_basic_impl.h"
@@ -84,10 +85,23 @@ crypto::hash audit_review_report_hash(const audit_review_report& r)
   field(s, r.signer);
   return crypto::cn_fast_hash(s.data(), s.size());
 }
+bool authorized_audit_review_signer(network_type net, const crypto::public_key& key)
+{
+  // Isolated fakechain fixtures use ephemeral test keys. Wallet callers must
+  // verify their daemon really is fakechain before enabling that test mode.
+  if (net == FAKECHAIN) return true;
+  const char* configured = net == MAINNET ? audit_review_authority::mainnet :
+      net == TESTNET ? audit_review_authority::testnet :
+      net == STAGENET ? audit_review_authority::stagenet : "";
+  crypto::public_key authority;
+  return epee::string_tools::hex_to_pod(configured, authority) && authority == key;
+}
 void sign_audit_review_report(audit_review_report& r, const crypto::secret_key& secret)
 {
   crypto::public_key key;
   require(crypto::secret_key_to_public_key(secret, key) && crypto::check_key(key), "Invalid audit signing key");
+  require(authorized_audit_review_signer(static_cast<network_type>(r.network), key),
+      "Only the designated main developer can sign results; configure the public authority during PR/release review");
   r.signer = hex(key);
   crypto::signature signature{};
   crypto::generate_signature(audit_review_report_hash(r), key, secret, signature);
@@ -97,6 +111,7 @@ bool verify_audit_review_report(const audit_review_report& r, const crypto::publ
 {
   crypto::signature signature;
   if (r.version != 3 || !r.revision || r.coverage != "SUBMITTED_OUTPUTS_ONLY" || r.signer != hex(trusted) ||
+      !authorized_audit_review_signer(static_cast<network_type>(r.network), trusted) ||
       !crypto::check_key(trusted) || rct::pk2rct(trusted) == rct::identity() ||
       !epee::string_tools::hex_to_pod(r.signature, signature)) return false;
   for (const auto& o : r.outputs)
