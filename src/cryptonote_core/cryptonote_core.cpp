@@ -57,6 +57,8 @@ using namespace epee;
 #include "hardforks/hardforks.h"
 #include "version.h"
 #include "lineage_audit_policy.h"
+#include "private_audit_policy.h"
+#include "audit_review_authority.h"
 
 #include <boost/filesystem.hpp>
 
@@ -102,6 +104,12 @@ namespace cryptonote
   };
   const command_line::arg_descriptor<uint64_t> arg_regtest_lineage_audit_duration = {
     "regtest-lineage-audit-duration", "Isolated regtest only: enrollment window in blocks (zero replays historical test policy)", lineage_policy::duration_blocks
+  };
+  const command_line::arg_descriptor<uint64_t> arg_regtest_private_audit_height = {
+    "regtest-private-audit-height", "Isolated regtest only: activate developer-signed output clearance", 0
+  };
+  const command_line::arg_descriptor<std::string> arg_regtest_private_audit_public_key = {
+    "regtest-private-audit-public-key", "Isolated regtest only: public clearance authority", ""
   };
   const command_line::arg_descriptor<difficulty_type> arg_fixed_difficulty  = {
     "fixed-difficulty"
@@ -346,6 +354,8 @@ namespace cryptonote
     command_line::add_arg(desc, arg_regtest_lineage_audit_height);
     command_line::add_arg(desc, arg_regtest_lineage_audit_opening_height);
     command_line::add_arg(desc, arg_regtest_lineage_audit_duration);
+    command_line::add_arg(desc, arg_regtest_private_audit_height);
+    command_line::add_arg(desc, arg_regtest_private_audit_public_key);
     command_line::add_arg(desc, arg_keep_fakechain);
     command_line::add_arg(desc, arg_fixed_difficulty);
     command_line::add_arg(desc, arg_dns_checkpoints);
@@ -694,15 +704,22 @@ namespace cryptonote
     const uint64_t test_audit_height = command_line::get_arg(vm, arg_regtest_lineage_audit_height);
     const uint64_t test_opening_height = command_line::get_arg(vm, arg_regtest_lineage_audit_opening_height);
     const uint64_t test_audit_duration = command_line::get_arg(vm, arg_regtest_lineage_audit_duration);
+    const uint64_t test_private_height = command_line::get_arg(vm, arg_regtest_private_audit_height);
+    const auto test_private_key = command_line::get_arg(vm, arg_regtest_private_audit_public_key);
+    CHECK_AND_ASSERT_MES(regtest || (!test_private_height && test_private_key.empty()), false,
+        "Private audit test authority and height require --regtest");
+    CHECK_AND_ASSERT_MES(bool(test_private_height) == !test_private_key.empty(), false,
+        "Configure both the private audit test height and authority");
     CHECK_AND_ASSERT_MES(regtest || test_audit_duration == lineage_policy::duration_blocks, false,
         "Audit test duration requires --regtest");
     CHECK_AND_ASSERT_MES(regtest || (!test_audit_height && !test_opening_height), false, "Audit test height requires --regtest");
     CHECK_AND_ASSERT_MES(!test_opening_height || (test_audit_height && test_opening_height < test_audit_height),
         false, "Previous audit boundary must precede activation");
     // Keep existing fixtures at the pre-audit fork until their explicit epoch.
+    const uint64_t test_fork_height = test_private_height ? test_private_height : test_audit_height;
     std::vector<std::pair<uint8_t, uint64_t>> regtest_hard_forks = {{1, 0},
-        {test_audit_height == 1 ? lineage_policy::fork_version : uint8_t(lineage_policy::fork_version - 1), 1}};
-    if (test_audit_height > 1) regtest_hard_forks.emplace_back(lineage_policy::fork_version, test_audit_height);
+        {test_fork_height == 1 ? lineage_policy::fork_version : uint8_t(lineage_policy::fork_version - 1), 1}};
+    if (test_fork_height > 1) regtest_hard_forks.emplace_back(lineage_policy::fork_version, test_fork_height);
     regtest_hard_forks.emplace_back(0, 0);
     const cryptonote::test_options regtest_test_options = {
       regtest_hard_forks.data(),
@@ -715,6 +732,17 @@ namespace cryptonote
         regtest ? test_opening_height : m_nettype == MAINNET ? lineage_policy::mainnet_opening_height :
         m_nettype == TESTNET ? lineage_policy::testnet_opening_height : lineage_policy::stagenet_opening_height,
         regtest ? test_audit_duration : lineage_policy::duration_blocks);
+    const uint64_t private_height = regtest ? test_private_height :
+        m_nettype == MAINNET ? private_audit_policy::mainnet_height :
+        m_nettype == TESTNET ? private_audit_policy::testnet_height : private_audit_policy::stagenet_height;
+    const std::string private_key_text = regtest ? test_private_key :
+        m_nettype == MAINNET ? audit_review_authority::mainnet :
+        m_nettype == TESTNET ? audit_review_authority::testnet : audit_review_authority::stagenet;
+    crypto::public_key private_authority = crypto::null_pkey;
+    CHECK_AND_ASSERT_MES(!private_height || epee::string_tools::hex_to_pod(private_key_text, private_authority),
+        false, "The main developer must designate a public signing authority before activating the audit");
+    try { m_blockchain_storage.configure_private_audit(regtest ? FAKECHAIN : m_nettype, private_height, private_authority); }
+    catch (const std::exception& e) { MERROR(e.what()); return false; }
     r = m_blockchain_storage.init(db.release(), m_nettype, m_offline, regtest ? &regtest_test_options : test_options, fixed_difficulty, get_checkpoints);
     CHECK_AND_ASSERT_MES(r, false, "Failed to initialize blockchain storage");
 

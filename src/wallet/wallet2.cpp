@@ -99,6 +99,7 @@ using namespace epee;
 #include "tx_builder.h"
 #include "scanning_tools.h"
 #include "cryptonote_core/lineage_audit_policy.h"
+#include "cryptonote_core/audit_clearance.h"
 #include "cryptonote_core/lineage_audit.h"
 #include "carrot_core/scan.h"
 
@@ -7935,7 +7936,7 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
         "Audit proof creation requires a full software wallet");
   }
   audit_result result;
-  result.activation_height = scheduled;
+  result.activation_height = private_review ? m_lineage_activation_height : scheduled;
   result.opening_height = opening_height;
   result.closing_height = status.closing_height;
   result.candidate_height = status.candidate_height;
@@ -8199,6 +8200,10 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
     total += amount;
   };
   std::map<std::string, audit_asset_balance> balances;
+  std::set<std::pair<std::string, uint32_t>> cleared_outputs;
+  if (m_lineage_activation_height && result.candidate_height >= m_lineage_activation_height)
+    for (const auto& td : m_transfers) if (!td.m_spent && is_transfer_unlocked(td))
+      cleared_outputs.emplace(epee::string_tools::pod_to_hex(td.m_txid), td.m_internal_output_index);
   for (size_t offset = 0; offset < result.outputs.size(); offset += 1000) {
     const size_t end = std::min(offset + 1000, result.outputs.size());
     if (cryptonote::lineage_policy::public_enrollment) {
@@ -8220,6 +8225,14 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
         row.state = item.decision == "CLEAR" ? "CLEARED_BY_DEVELOPER" :
             item.decision == "DENY" ? "DENIED_BY_DEVELOPER" : item.state;
         row.reason = item.reason; row.recommendation = item.recommendation; row.decision_reason = item.decision_reason;
+      }
+      if (!row.stake && m_lineage_activation_height && result.candidate_height >= m_lineage_activation_height && !row.spent) {
+        const bool eligible = cleared_outputs.count({row.transaction, row.output_index}) != 0;
+        if (eligible) {
+          row.state = "CLEARED"; row.recommendation = "CLEAR";
+          if (decision == reviewed.end()) row.reason = "CONFIRMED_POLICY_CLEARANCE: " + row.reason;
+        }
+        else if (row.state == "CLEARED" || row.state == "CLEARED_BY_DEVELOPER") row.state = "CLEARANCE_PENDING";
       }
       if (cryptonote::lineage_policy::public_enrollment && row.state.empty()) {
         row.state = status.entries[i].state;
@@ -8272,6 +8285,9 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
 std::string wallet2::export_audit_review(uint64_t snapshot_height)
 {
   CHECK_AND_ASSERT_THROW_MES(get_blockchain_current_height() > 1, "Synchronize wallet before exporting audit evidence");
+  update_lineage_audit_status();
+  CHECK_AND_ASSERT_THROW_MES(m_lineage_regtest_height || (m_lineage_activation_height &&
+      get_blockchain_current_height() > m_lineage_activation_height), "Wallet audit requests open at the configured activation block");
   cryptonote::audit_review_package context;
   context.network = uint8_t(m_lineage_regtest_height ? cryptonote::FAKECHAIN : m_nettype);
   context.genesis = epee::string_tools::pod_to_hex(m_blockchain.genesis());
@@ -8359,83 +8375,115 @@ void wallet2::import_audit_review(const std::string& text, const std::string& tr
       CHECK_AND_ASSERT_THROW_MES(report.revision > old.revision ||
           (report.revision == old.revision && cryptonote::audit_review_report_hash(report) == cryptonote::audit_review_report_hash(old)),
           "Audit decision is stale or conflicts with an existing result at the same revision");
+      if (!old.clearances.empty()) for (const auto& prior : old.outputs) {
+        if (prior.decision != "CLEAR" && !(prior.decision.empty() && prior.state == "CLEARED")) continue;
+        for (const auto& next : report.outputs)
+          CHECK_AND_ASSERT_THROW_MES(prior.transaction != next.transaction || prior.output_index != next.output_index ||
+              prior.stake != next.stake || next.decision != "DENY", "A previously cleared output cannot be changed to denied");
+      }
     }
+  }
+  // Persist first. Import/retry submits only compact public authorizations,
+  // never private ownership proofs or economic records.
+  cryptonote::audit_clearance_batch batch;
+  std::set<std::tuple<std::string, uint32_t, bool>> certified;
+  for (const auto& raw : report.clearances) {
+    std::string binary; cryptonote::audit_clearance_certificate c;
+    CHECK_AND_ASSERT_THROW_MES(epee::string_tools::parse_hexstr_to_binbuff(raw, binary) &&
+        ::serialization::parse_binary(binary, c) && cryptonote::t_serializable_object_to_blob(c) == binary &&
+        cryptonote::verify_audit_clearance(c, trusted) && c.network == report.network &&
+        epee::string_tools::pod_to_hex(c.genesis) == report.genesis && c.snapshot_height == report.snapshot_height &&
+        epee::string_tools::pod_to_hex(c.snapshot_hash) == report.snapshot_hash && c.revision == report.revision &&
+        certified.emplace(epee::string_tools::pod_to_hex(c.transaction), c.output_index, c.stake).second,
+        "Invalid or duplicated public clearance certificate");
+    CHECK_AND_ASSERT_THROW_MES(std::any_of(report.outputs.begin(), report.outputs.end(), [&](const auto& item) {
+      return item.transaction == epee::string_tools::pod_to_hex(c.transaction) && item.output_index == c.output_index &&
+          item.stake == c.stake && (item.decision == "DENY" ? c.decision == 2 :
+          (item.decision == "CLEAR" || item.state == "CLEARED") && c.decision == 1);
+    }), "Certificate is not covered by this wallet's signed decision");
+    batch.certificates.push_back(c);
   }
   for (const auto& id : matched) set_attribute("audit-review-result-v3-" + id, text);
   set_attribute("audit-review-trusted-v3", canonical_trusted);
   store();
+  if (!batch.certificates.empty()) {
+    cryptonote::COMMAND_RPC_LINEAGE_AUDIT_STATUS::request status_req;
+    cryptonote::COMMAND_RPC_LINEAGE_AUDIT_STATUS::response status;
+    CHECK_AND_ASSERT_THROW_MES(invoke_http_json_rpc("/json_rpc", "get_private_audit_status", status_req, status) &&
+        status.status == CORE_RPC_STATUS_OK && status.authority == canonical_trusted &&
+        std::all_of(batch.certificates.begin(), batch.certificates.end(), [&](const auto& c) {
+          return c.activation_height == status.activation_height;
+        }), "Result saved; daemon authority or epoch differs from this receipt");
+    cryptonote::COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE::request req;
+    cryptonote::COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE::response res;
+    req.data = epee::string_tools::buff_to_hex_nodelimer(cryptonote::t_serializable_object_to_blob(batch));
+    CHECK_AND_ASSERT_THROW_MES(invoke_http_json_rpc("/json_rpc", "submit_audit_clearance", req, res) &&
+        res.status == CORE_RPC_STATUS_OK, "Result saved; clearance publication failed, import this receipt again to retry");
+    update_lineage_audit_status();
+  }
 }
 
 void wallet2::update_lineage_audit_status()
 {
-  uint64_t scheduled = m_nettype == cryptonote::MAINNET ? cryptonote::lineage_policy::mainnet_height :
-      m_nettype == cryptonote::TESTNET ? cryptonote::lineage_policy::testnet_height :
-      cryptonote::lineage_policy::stagenet_height;
-  if (scheduled) m_lineage_activation_height = scheduled;
+  const uint64_t scheduled = m_nettype == cryptonote::MAINNET ? cryptonote::private_audit_policy::mainnet_height :
+      m_nettype == cryptonote::TESTNET ? cryptonote::private_audit_policy::testnet_height :
+      cryptonote::private_audit_policy::stagenet_height;
+  m_lineage_activation_height = m_lineage_regtest_height ? 1 : scheduled;
   m_lineage_closing_height = 0;
   m_lineage_release_heights.clear();
-  if (!cryptonote::lineage_policy::consensus_enforcement) return;
+  if (!scheduled && !m_lineage_regtest_height) return;
   if (m_lineage_regtest_height) {
-    m_lineage_activation_height = 1; // Fail closed if pointed at a real network.
-    cryptonote::COMMAND_RPC_GET_INFO::request info_req;
+    cryptonote::COMMAND_RPC_GET_INFO::request req;
     cryptonote::COMMAND_RPC_GET_INFO::response info;
-    if (!invoke_http_json_rpc("/json_rpc", "get_info", info_req, info) || info.status != CORE_RPC_STATUS_OK || info.nettype != "fakechain") return;
-    scheduled = m_lineage_regtest_height;
-    m_lineage_activation_height = scheduled;
+    if (!invoke_http_json_rpc("/json_rpc", "get_info", req, info) ||
+        info.status != CORE_RPC_STATUS_OK || info.nettype != "fakechain") return;
   }
   cryptonote::COMMAND_RPC_LINEAGE_AUDIT_STATUS::request req;
   cryptonote::COMMAND_RPC_LINEAGE_AUDIT_STATUS::response res;
-  if (!invoke_http_json_rpc("/json_rpc", "get_lineage_audit_status", req, res) || res.status != CORE_RPC_STATUS_OK)
-    return; // With an active schedule an unavailable response leaves everything locked.
-  if (scheduled && res.activation_height != scheduled) return;
-  const uint64_t opening_height = m_lineage_regtest_height ? res.opening_height :
-      m_nettype == cryptonote::MAINNET ? cryptonote::lineage_policy::mainnet_opening_height :
-      m_nettype == cryptonote::TESTNET ? cryptonote::lineage_policy::testnet_opening_height : cryptonote::lineage_policy::stagenet_opening_height;
-  if (res.opening_height != opening_height) return;
-  if (!m_lineage_regtest_height && scheduled && res.closing_height != scheduled + cryptonote::lineage_policy::duration_blocks) return;
-  if (res.candidate_height != get_blockchain_current_height()) return;
+  if (!invoke_http_json_rpc("/json_rpc", "get_private_audit_status", req, res) || res.status != CORE_RPC_STATUS_OK ||
+      (scheduled && res.activation_height != scheduled) || res.candidate_height != get_blockchain_current_height()) return;
+  // A report-only fakechain has no spend gate, retained for private proof tests.
   m_lineage_activation_height = res.activation_height;
-  m_lineage_closing_height = res.closing_height;
-  if (!m_lineage_activation_height || get_blockchain_current_height() < m_lineage_activation_height) return;
-  std::vector<crypto::key_image> images;
-  for (const auto& td : m_transfers)
-    if (cryptonote::is_lineage_audit_asset(td.asset_type) && !td.m_spent && td.m_key_image_known && !td.m_key_image_partial) images.push_back(td.m_key_image);
-  for (size_t offset = 0; offset < images.size(); offset += 1000) {
-    req.key_images.clear();
-    for (size_t i = offset; i < std::min(images.size(), offset + 1000); ++i)
-      req.key_images.push_back(epee::string_tools::pod_to_hex(images[i]));
-    res = {};
-    if (!invoke_http_json_rpc("/json_rpc", "get_lineage_audit_status", req, res) || res.status != CORE_RPC_STATUS_OK ||
-        res.activation_height != m_lineage_activation_height || res.entries.size() != req.key_images.size() ||
-        res.candidate_height != get_blockchain_current_height() || res.opening_height != opening_height ||
-        res.closing_height != m_lineage_closing_height) {
-      m_lineage_release_heights.clear();
-      m_lineage_closing_height = 0;
-      return;
+  if (!res.activation_height || get_blockchain_current_height() < res.activation_height) return;
+  const uint64_t height = get_blockchain_current_height();
+  const auto tip = epee::string_tools::pod_to_hex(m_blockchain[height - 1]);
+  std::map<std::string, std::set<uint64_t>> eligible;
+  for (const auto& td : m_transfers) if (!td.m_spent && cryptonote::is_lineage_audit_asset(td.asset_type))
+    eligible.emplace(td.asset_type, std::set<uint64_t>{});
+  // Read the public population, without revealing which outputs this wallet owns.
+  for (auto& asset : eligible) {
+    cryptonote::COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS::request query;
+    query.asset_type = asset.first;
+    for (;;) {
+      cryptonote::COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS::response page;
+      if (!invoke_http_json_rpc("/json_rpc", "get_private_audit_outputs", query, page, rpc_timeout) ||
+          page.status != CORE_RPC_STATUS_OK || page.activation_height != res.activation_height ||
+          page.candidate_height != height || page.tip_hash != tip || page.asset_type != asset.first ||
+          page.outputs.size() > query.limit || (page.more && page.outputs.empty())) return;
+      for (const auto& output : page.outputs) {
+        if (output.index < query.from_index || output.height >= height ||
+            (!asset.second.empty() && output.index <= *asset.second.rbegin())) return;
+        asset.second.insert(output.index);
+      }
+      if (!page.more) break;
+      if (*asset.second.rbegin() == UINT64_MAX) return;
+      query.from_index = *asset.second.rbegin() + 1;
     }
-    for (size_t i = 0; i < res.entries.size(); ++i)
-      if (res.entries[i].state == "AUDIT_PASSED" || res.entries[i].state == "MATURING")
-        m_lineage_release_heights.emplace(images[offset + i], res.entries[i].release_height);
   }
+  for (const auto& td : m_transfers) if (!td.m_spent && td.m_key_image_known && !td.m_key_image_partial &&
+      eligible[td.asset_type].count(td.m_asset_type_output_index))
+    m_lineage_release_heights.emplace(td.m_key_image, height);
 }
 bool wallet2::is_transfer_unlocked(const transfer_details& td)
 {
-  const uint64_t scheduled = m_nettype == cryptonote::MAINNET ? cryptonote::lineage_policy::mainnet_height :
-      m_nettype == cryptonote::TESTNET ? cryptonote::lineage_policy::testnet_height :
-      cryptonote::lineage_policy::stagenet_height;
-  // A restored wallet cache can already be past activation before its first
-  // refresh. An empty status cache must not make those funds signable. The
-  // isolated test override also stays closed until its network is checked.
-  const uint64_t activation = m_lineage_activation_height ? m_lineage_activation_height :
-      m_lineage_regtest_height ? 1 : scheduled;
-  if (cryptonote::lineage_policy::consensus_enforcement && cryptonote::is_lineage_audit_asset(td.asset_type) &&
-      activation && get_blockchain_current_height() >= activation) {
-    if (!td.m_key_image_known || td.m_key_image_partial) return false;
-    const bool new_eligible_output = m_lineage_closing_height && td.m_block_height >= activation;
-    if (!new_eligible_output) {
-      const auto found = m_lineage_release_heights.find(td.m_key_image);
-      if (found == m_lineage_release_heights.end() || get_blockchain_current_height() < found->second) return false;
-    }
+  const uint64_t scheduled = m_nettype == cryptonote::MAINNET ? cryptonote::private_audit_policy::mainnet_height :
+      m_nettype == cryptonote::TESTNET ? cryptonote::private_audit_policy::testnet_height :
+      cryptonote::private_audit_policy::stagenet_height;
+  const uint64_t activation = m_lineage_activation_height ? m_lineage_activation_height : scheduled;
+  if (activation && get_blockchain_current_height() >= activation && cryptonote::is_lineage_audit_asset(td.asset_type)) {
+    const auto found = m_lineage_release_heights.find(td.m_key_image);
+    if (!td.m_key_image_known || td.m_key_image_partial || found == m_lineage_release_heights.end() ||
+        found->second != get_blockchain_current_height()) return false;
   }
   // Get the unlock time for the appropriate output
   uint64_t unlock_time = 0;
@@ -10318,8 +10366,7 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
       }
     }
     
-    const bool audit_population = cryptonote::lineage_policy::consensus_enforcement &&
-        m_lineage_closing_height && m_lineage_activation_height &&
+    const bool audit_population = m_lineage_activation_height &&
         get_blockchain_current_height() >= m_lineage_activation_height && cryptonote::is_lineage_audit_asset(rct_asset_type);
     if (audit_population) {
       is_after_segregation_fork = false;
@@ -10332,7 +10379,7 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
           COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS::response page;
           // A node may need to reconstruct the public population after restart
           // or a long idle period. Use the normal history-query timeout.
-          THROW_WALLET_EXCEPTION_IF(!invoke_http_json_rpc("/json_rpc", "get_lineage_audit_outputs", query, page, rpc_timeout) ||
+          THROW_WALLET_EXCEPTION_IF(!invoke_http_json_rpc("/json_rpc", "get_private_audit_outputs", query, page, rpc_timeout) ||
               page.status != CORE_RPC_STATUS_OK, error::wallet_internal_error, "Eligible audit outputs unavailable");
           THROW_WALLET_EXCEPTION_IF(page.asset_type != rct_asset_type || page.activation_height != m_lineage_activation_height ||
               page.closing_height != m_lineage_closing_height || page.candidate_height != get_blockchain_current_height() ||
@@ -10376,11 +10423,11 @@ void wallet2::get_outs(std::vector<std::vector<tools::wallet2::get_outs_entry>> 
       // check we're clear enough of rct start, to avoid corner cases below
       THROW_WALLET_EXCEPTION_IF(rct_offsets.size() <= CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE,
                                 error::get_output_distribution, "Not enough rct outputs : " + std::to_string(max_rct_index));
-      // Note: the rct_offsets.back() < max_rct_index check was removed because
-      // after a database rebuild (e.g., spam output removal), the daemon's output
-      // count can legitimately be lower than the wallet's stored indices. The
-      // wallet now provides its own output key directly to the daemon, bypassing
-      // stale index lookups.
+      THROW_WALLET_EXCEPTION_IF(!std::is_sorted(rct_offsets.begin(), rct_offsets.end()),
+        error::get_output_distribution, "Daemon returned a non-monotonic output distribution");
+      THROW_WALLET_EXCEPTION_IF(!audit_population && rct_offsets.back() <= max_rct_index,
+        error::get_output_distribution,
+        "Output distribution does not cover the selected input. Refresh or rescan the wallet with an up-to-date daemon");
     }
 
     // get histogram for the amounts we need

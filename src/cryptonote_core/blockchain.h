@@ -43,6 +43,7 @@
 #include <boost/multi_index/hashed_index.hpp>
 #include <boost/multi_index/member.hpp>
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
@@ -65,6 +66,7 @@
 #include "cryptonote_basic/hardfork.h"
 #include "blockchain_db/blockchain_db.h"
 #include "lineage_audit.h"
+#include "audit_clearance.h"
 
 namespace tools { class Notify; }
 
@@ -655,6 +657,14 @@ namespace cryptonote
     bool queue_lineage_disclosure(const std::string& data, crypto::hash& id, std::string& reason);
     std::vector<std::string> pending_lineage_disclosures();
     std::vector<uint64_t> lineage_disclosure_heights(const std::vector<crypto::hash>& ids) const;
+    void configure_private_audit(network_type net, uint64_t activation, const crypto::public_key& authority)
+    { m_private_audit.configure(net, activation, authority); }
+    uint64_t private_audit_activation() const { return m_private_audit.activation(); }
+    bool queue_audit_clearance(const std::string& data, crypto::hash& id, std::string& reason, bool& added);
+    std::vector<std::string> pending_audit_clearances();
+    const crypto::public_key& private_audit_authority() const { return m_private_audit.authority(); }
+    std::vector<audit_clearance_registry::eligible_output> private_audit_outputs(
+        const std::string& asset, uint64_t from, size_t limit, bool& more) const;
 
     /**
      * @brief get fee quantization mask
@@ -1282,6 +1292,13 @@ namespace cryptonote
 
     BlockchainDB* m_db;
     mutable lineage_audit m_lineage_audit;
+    mutable audit_clearance_registry m_private_audit;
+    std::unordered_map<crypto::hash, std::string> m_clearance_pending;
+    bool m_clearance_queue_loaded = false;
+    std::chrono::steady_clock::time_point m_clearance_budget_time{};
+    size_t m_clearance_budget = 0;
+    std::string clearance_queue_path(const crypto::hash& id) const;
+    void load_clearance_queue();
     std::deque<std::string> m_lineage_pending_disclosures;
     bool m_lineage_queue_loaded = false;
     void load_lineage_queue();

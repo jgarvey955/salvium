@@ -1,5 +1,13 @@
 # Private audit review and wallet integration
 
+The current consensus clearance and developer release procedure is documented in
+[AUDIT_DEVELOPER_HANDOFF.md](AUDIT_DEVELOPER_HANDOFF.md). Version 3 private evidence
+and reports remain the review format; version 4 certificates add final on-chain
+output authorization. The trusted mainnet opening is block 169100. Confirmed CLEAR
+cannot be changed to DENY; subsequent valid transfers inherit clearance. Production
+activation heights and authority keys remain unset pending main developer release review.
+
+
 The native verifier clears conclusive funding paths and gives the main developer
 unresolved cases with reasons. NonKYC records establish economic attribution
 after pooled custody; pooling alone does not establish customer misconduct.
@@ -7,7 +15,7 @@ after pooled custody; pooling alone does not establish customer misconduct.
 The wallet owner initiates a request through an explicit private export. The
 daemon and background refresh never initiate, sign or submit that request.
 Only the main developer processes requests and signs results, including results
-that clear automatically after verification. The owner imports the result.
+that clear automatically after verification. The processing coordinator publishes public certificates directly; wallets learn confirmed clearance on refresh without import. Recipient receipts remain optional private records.
 
 The main developer must supply the public signing key in
 `src/cryptonote_core/audit_review_authority.h` during private release review. Keys are
@@ -45,7 +53,7 @@ revised or signed again. To sign an earlier unsigned analysis, rerun the origina
 `--input` evidence against the canonical database with `--sign-key`. Recipient
 identities, report fields and JSON allocation are checked before processing;
 private output files never replace an existing file.
-Import the individual package receipts, one file per import. A receipt contains
+Optional receipt imports use the individual package files, one file per import. A receipt contains
 at most 512 outputs from a single package; the wallet rejects a combined case
 report and avoids duplicating large cases in its encrypted cache.
 

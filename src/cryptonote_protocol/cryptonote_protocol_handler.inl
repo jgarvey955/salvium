@@ -991,6 +991,29 @@ namespace cryptonote
   }
   //------------------------------------------------------------------------------------------------------------------------
   template<class t_core>
+  bool t_cryptonote_protocol_handler<t_core>::relay_audit_clearance(const std::string& data, const boost::uuids::uuid& source)
+  {
+    if (data.empty() || data.size() > cryptonote::lineage_limits::max_bytes) return false;
+    NOTIFY_AUDIT_CLEARANCE::request request; request.data = data;
+    m_p2p->for_each_connection([&](connection_context& context, nodetool::peerid_type, uint32_t) {
+      if (context.m_connection_id != source && context.m_state == connection_context::state_normal)
+        post_notify<NOTIFY_AUDIT_CLEARANCE>(request, context);
+      return true;
+    });
+    return true;
+  }
+  template<class t_core>
+  int t_cryptonote_protocol_handler<t_core>::handle_notify_audit_clearance(int command,
+      NOTIFY_AUDIT_CLEARANCE::request& arg, cryptonote_connection_context& context)
+  {
+    if (context.m_state != connection_context::state_normal || arg.data.empty() ||
+        arg.data.size() > cryptonote::lineage_limits::max_bytes) return 1;
+    crypto::hash id; std::string reason; bool added = false;
+    if (m_core.get_blockchain_storage().queue_audit_clearance(arg.data, id, reason, added) && added)
+      relay_audit_clearance(arg.data, context.m_connection_id);
+    return 1;
+  }
+  template<class t_core>
   bool t_cryptonote_protocol_handler<t_core>::relay_wallet_audit(const std::string& data, const boost::uuids::uuid& source)
   {
     if (!lineage_policy::public_enrollment) return false;
@@ -1857,6 +1880,12 @@ skip:
     m_standby_checker.do_call(boost::bind(&t_cryptonote_protocol_handler<t_core>::check_standby_peers, this));
     m_sync_search_checker.do_call(boost::bind(&t_cryptonote_protocol_handler<t_core>::update_sync_search, this));
     const auto now = std::chrono::steady_clock::now();
+    if (now - m_last_audit_relay >= std::chrono::seconds(30)) {
+      const auto pending = m_core.get_blockchain_storage().pending_audit_clearances();
+      for (size_t i = 0; i < std::min<size_t>(4, pending.size()); ++i)
+        relay_audit_clearance(pending[i], boost::uuids::nil_uuid());
+      if (!pending.empty()) m_last_audit_relay = now;
+    }
     if (lineage_policy::public_enrollment && now - m_last_audit_relay >= std::chrono::seconds(30)) {
       m_last_audit_relay = now;
       const auto pending = m_core.get_blockchain_storage().pending_lineage_disclosures();

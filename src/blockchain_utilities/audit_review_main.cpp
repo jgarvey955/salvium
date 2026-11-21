@@ -1,4 +1,7 @@
 #include "cryptonote_core/audit_review.h"
+#include "cryptonote_core/audit_clearance.h"
+#include "cryptonote_core/audit_review_authority.h"
+#include "serialization/binary_utils.h"
 #include "blockchain_db/lmdb/db_lmdb.h"
 #include "serialization/keyvalue_serialization.h"
 #include "storages/portable_storage_template_helper.h"
@@ -37,6 +40,14 @@ struct review_decisions {
     KV_SERIALIZE(decisions)
   END_KV_SERIALIZE_MAP()
 };
+struct public_clearances {
+  uint32_t version = 4;
+  std::vector<std::string> batches;
+  BEGIN_KV_SERIALIZE_MAP()
+    KV_SERIALIZE(version)
+    KV_SERIALIZE(batches)
+  END_KV_SERIALIZE_MAP()
+};
 template<class T> T load(const std::string& path) {
   T value;
   if (!load_audit_json(value, read_audit_file(path)))
@@ -62,6 +73,8 @@ int main(int argc, char** argv)
       ("decisions", po::value<std::string>(), "CLEAR/DENY decisions bound to report_hash")
       ("sign-key", po::value<std::string>(), "Private review signing key file")
       ("revision", po::value<uint64_t>(), "Increasing result revision for an updated case")
+      ("activation-height", po::value<uint64_t>(), "Issue public clearance certificates for this configured audit epoch")
+      ("clearance-authority", po::value<std::string>(), "Fakechain certificate replay authority (production authority is compiled in)")
       ("verify-key", po::value<std::string>(), "Verify report against this independent public key")
       ("outdir", po::value<std::string>(), "New private case directory with recipient-specific results");
     po::variables_map vm;
@@ -106,9 +119,18 @@ int main(int argc, char** argv)
       db.open((boost::filesystem::path(vm["data-dir"].as<std::string>()) / "lmdb").string(), DBF_RDONLY);
       {
         db_rtxn_guard snapshot(&db);
+        const uint64_t configured = net == MAINNET ? private_audit_policy::mainnet_height :
+            net == TESTNET ? private_audit_policy::testnet_height : private_audit_policy::stagenet_height;
+        const uint64_t activation = net == FAKECHAIN && vm.count("activation-height") ?
+            vm["activation-height"].as<uint64_t>() : configured;
+        crypto::public_key authority = crypto::null_pkey;
+        const std::string key = net == FAKECHAIN && vm.count("clearance-authority") ?
+            vm["clearance-authority"].as<std::string>() : net == MAINNET ? audit_review_authority::mainnet :
+            net == TESTNET ? audit_review_authority::testnet : audit_review_authority::stagenet;
+        require(!activation || epee::string_tools::hex_to_pod(key, authority), "Supply the configured clearance replay authority");
         report = audit_review_verifier::verify(db, net, packages, vm.count("opening") ?
             vm["opening"].as<uint64_t>() : net == MAINNET ? lineage_policy::mainnet_opening_height : 0,
-            vm["public-work-limit"].as<size_t>());
+            vm["public-work-limit"].as<size_t>(), activation, authority);
       }
       db.close();
     }
@@ -155,6 +177,12 @@ int main(int argc, char** argv)
       report.revision = revision;
     }
     const boost::filesystem::path out(vm["outdir"].as<std::string>());
+    const uint64_t configured = report.network == MAINNET ? private_audit_policy::mainnet_height :
+        report.network == TESTNET ? private_audit_policy::testnet_height : private_audit_policy::stagenet_height;
+    const uint64_t activation = vm.count("activation-height") ? vm["activation-height"].as<uint64_t>() : configured;
+    require(!activation || (sign && activation <= report.snapshot_height &&
+        (report.network == FAKECHAIN || activation == configured)), "Certificate epoch must match the configured activation and canonical snapshot");
+    report.clearances.clear();
     require(!boost::filesystem::exists(out), "Choose a new output directory; evidence is never overwritten");
     require(boost::filesystem::create_directory(out), "Cannot create case directory");
     boost::filesystem::permissions(out, boost::filesystem::owner_all);
@@ -176,13 +204,40 @@ int main(int argc, char** argv)
       queue.decisions.push_back({item.package_id, item.transaction, item.recommendation,
           "", item.reason, item.output_index, item.stake});
     write_private_audit_file((out / "review-queue.json").string(), epee::serialization::store_t_to_json(queue));
+    public_clearances publication;
+    audit_clearance_batch public_batch;
+    std::set<std::tuple<std::string, uint32_t, bool>> published;
+    const auto flush_public = [&]() {
+      if (public_batch.certificates.empty()) return;
+      publication.batches.push_back(epee::string_tools::buff_to_hex_nodelimer(t_serializable_object_to_blob(public_batch)));
+      public_batch.certificates.clear();
+    };
     for (const auto& id : recipients) {
       auto receipt = report;
       receipt.outputs.erase(std::remove_if(receipt.outputs.begin(), receipt.outputs.end(),
           [&](const audit_review_item& item) { return item.package_id != id; }), receipt.outputs.end());
+      if (activation) for (const auto& item : receipt.outputs) {
+        if (item.decision.empty() && item.state != "CLEARED") continue;
+        audit_clearance_certificate c;
+        c.network = report.network; c.activation_height = activation;
+        c.snapshot_height = report.snapshot_height;
+        require(epee::string_tools::hex_to_pod(report.genesis, c.genesis) &&
+            epee::string_tools::hex_to_pod(report.snapshot_hash, c.snapshot_hash) &&
+            epee::string_tools::hex_to_pod(item.transaction, c.transaction), "Invalid certificate context");
+        c.output_index = item.output_index; c.stake = item.stake; c.revision = report.revision;
+        c.decision = item.decision == "DENY" ? 2 : 1;
+        sign_audit_clearance(c, secret);
+        receipt.clearances.push_back(epee::string_tools::buff_to_hex_nodelimer(t_serializable_object_to_blob(c)));
+        if (published.emplace(item.transaction, item.output_index, item.stake).second) {
+          public_batch.certificates.push_back(c);
+          if (public_batch.certificates.size() == lineage_limits::max_outputs) flush_public();
+        }
+      }
       if (sign) sign_audit_review_report(receipt, secret);
       write_private_audit_file((out / (id + ".json")).string(), epee::serialization::store_t_to_json(receipt));
     }
+    flush_public();
+    write_private_audit_file((out / "clearances.public").string(), epee::serialization::store_t_to_json(publication));
     std::cout << "AUTO_CLEARED=" << automatic << " DEVELOPER_REVIEW=" << pending << " MANUAL_DECISIONS=" << manual
         << " SIGNED=" << (sign ? "yes" : "no") << "\nCASE_HASH="
         << epee::string_tools::pod_to_hex(audit_review_report_hash(report)) << '\n';

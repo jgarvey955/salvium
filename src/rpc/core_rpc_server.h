@@ -147,6 +147,9 @@ namespace cryptonote
         MAP_JON_RPC_WE("on_getblockhash",        on_getblockhash,               COMMAND_RPC_GETBLOCKHASH)
         MAP_JON_RPC_WE("get_block_template",     on_getblocktemplate,           COMMAND_RPC_GETBLOCKTEMPLATE)
         MAP_JON_RPC_WE("get_lineage_audit_status", on_lineage_audit_status, COMMAND_RPC_LINEAGE_AUDIT_STATUS)
+        MAP_JON_RPC_WE("get_private_audit_status", on_private_audit_status, COMMAND_RPC_LINEAGE_AUDIT_STATUS)
+        MAP_JON_RPC_WE("get_private_audit_outputs", on_private_audit_outputs, COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS)
+        MAP_JON_RPC_WE("submit_audit_clearance", on_submit_audit_clearance, COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE)
         MAP_JON_RPC_WE("get_lineage_audit_outputs", on_lineage_audit_outputs, COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS)
         MAP_JON_RPC_WE("submit_lineage_disclosure", on_submit_lineage_disclosure, COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE)
         MAP_JON_RPC_WE("getblocktemplate",       on_getblocktemplate,           COMMAND_RPC_GETBLOCKTEMPLATE)
@@ -238,6 +241,9 @@ namespace cryptonote
     bool on_getblockhash(const COMMAND_RPC_GETBLOCKHASH::request& req, COMMAND_RPC_GETBLOCKHASH::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_getblocktemplate(const COMMAND_RPC_GETBLOCKTEMPLATE::request& req, COMMAND_RPC_GETBLOCKTEMPLATE::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_lineage_audit_status(const COMMAND_RPC_LINEAGE_AUDIT_STATUS::request& req, COMMAND_RPC_LINEAGE_AUDIT_STATUS::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
+    bool on_private_audit_status(const COMMAND_RPC_LINEAGE_AUDIT_STATUS::request& req, COMMAND_RPC_LINEAGE_AUDIT_STATUS::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
+    bool on_private_audit_outputs(const COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS::request& req, COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
+    bool on_submit_audit_clearance(const COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE::request& req, COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_lineage_audit_outputs(const COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS::request& req, COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_submit_lineage_disclosure(const COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE::request& req, COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);
     bool on_getminerdata(const COMMAND_RPC_GETMINERDATA::request& req, COMMAND_RPC_GETMINERDATA::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx = NULL);

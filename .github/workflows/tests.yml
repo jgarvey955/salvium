@@ -45,13 +45,11 @@ jobs:
             -D USE_DEVICE_TREZOR=OFF
 
       - name: build focused tests
-        run: cmake --build build/ci-debug --target unit_tests wallet_rpc_server block_weight hash-target-tests audit_review audit_review_tests lineage_audit_tests wallet_audit_inventory_tests
-
-      - name: run focused tests
-        run: ctest --test-dir build/ci-debug --output-on-failure -R "unit_tests|block_weight|hash-target"
+        run: cmake --build build/ci-debug --target unit_tests wallet_rpc_server block_weight hash-target-tests audit_review audit_review_tests audit_clearance_tests lineage_audit_tests wallet_audit_inventory_tests
 
       - name: run private audit regressions
         run: |
+          build/ci-debug/src/cryptonote_core/audit_clearance_tests
           build/ci-debug/src/cryptonote_core/audit_review_tests tests/data/sal1-bad-origin-465074.hex
           build/ci-debug/src/cryptonote_core/lineage_audit_tests tests/data/sal1-bad-origin-465074.hex
           build/ci-debug/src/wallet/wallet_audit_inventory_tests
@@ -90,16 +88,14 @@ jobs:
             -D USE_DEVICE_TREZOR=OFF
 
       - name: build asan unit tests
-        run: cmake --build build/ci-asan --target unit_tests audit_review_tests lineage_audit_tests wallet_audit_inventory_tests
-
-      - name: run asan unit tests
-        run: ctest --test-dir build/ci-asan --output-on-failure -R unit_tests
+        run: cmake --build build/ci-asan --target unit_tests audit_review_tests audit_clearance_tests lineage_audit_tests wallet_audit_inventory_tests
 
       - name: run sanitized private audit regressions
         env:
           ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
+          build/ci-asan/src/cryptonote_core/audit_clearance_tests
           build/ci-asan/src/cryptonote_core/audit_review_tests tests/data/sal1-bad-origin-465074.hex
           build/ci-asan/src/cryptonote_core/lineage_audit_tests tests/data/sal1-bad-origin-465074.hex
           build/ci-asan/src/wallet/wallet_audit_inventory_tests

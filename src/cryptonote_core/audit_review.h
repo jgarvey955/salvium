@@ -84,6 +84,8 @@ struct audit_review_report
   std::string coverage = "SUBMITTED_OUTPUTS_ONLY";
   std::vector<audit_review_item> outputs;
   std::string signer, signature;
+  // Independently signed public certificates; omitted by report-only tools.
+  std::vector<std::string> clearances;
   BEGIN_KV_SERIALIZE_MAP()
     KV_SERIALIZE(version)
     KV_SERIALIZE(revision)
@@ -99,6 +101,7 @@ struct audit_review_report
     KV_SERIALIZE(outputs)
     KV_SERIALIZE(signer)
     KV_SERIALIZE(signature)
+    KV_SERIALIZE_OPT(clearances, std::vector<std::string>())
   END_KV_SERIALIZE_MAP()
 };
 
@@ -120,6 +123,7 @@ class audit_review_verifier
 public:
   static audit_review_report verify(const BlockchainDB&, network_type,
       const std::vector<audit_review_package>&, uint64_t opening_height,
-      size_t public_work_limit = 50000);
+      size_t public_work_limit = 50000, uint64_t activation_height = 0,
+      const crypto::public_key& authority = crypto::null_pkey);
 };
 }
