@@ -4,6 +4,13 @@ Deliver this work privately to the main developer. Do not publish a PR, push the
 branches or upload the handoff archive publicly. The sender transfers the private
 archive through their chosen private channel. No signing secret is included.
 
+Create a new private source archive from the two committed `audit` branches with
+`python3 utils/package_private_audit.py --output-dir /private/new-audit-handoff`.
+It includes Git bundles, developer instructions, source identities and validation.
+It excludes wallet evidence, exchange ledgers, databases, build binaries and
+signing secrets. The older carrier/enrollment packaging tools are historical;
+use this private handoff for the current owner-request workflow.
+
 ## Description
 
 Wallet owners explicitly request an audit by exporting a finite, signed evidence
