@@ -225,7 +225,30 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
     auto found = funding_cache.find(id);
     if (found == funding_cache.end()) {
       bool bad = lineage_audit::has_bad_asset_origin(tx) || tx_has_cleartext_confidential_amount(tx);
-      auto deps = lineage.inspect_funding(db, tx, h, bad);
+      std::shared_ptr<const std::vector<lineage_audit::dependency>> deps;
+      if (h <= opening && !bad && tx.type != transaction_type::MINER && tx.type != transaction_type::PROTOCOL) {
+        // The trusted opening does not require reconstruction/reverification
+        // of earlier ancestry. Retain one level of canonical public links so
+        // positive adverse owner evidence is not silently discarded.
+        std::vector<lineage_audit::dependency> links;
+        const bool legacy = db.get_block_from_height(h).major_version < HF_VERSION_REALIGN_RCT_INDEX;
+        for (const auto& input : tx.vin) {
+          const auto* key = boost::get<txin_to_key>(&input);
+          require(key && !key->key_offsets.empty() && key->key_offsets.size() <= 256,
+              "Invalid trusted-opening funding input");
+          bad |= key->asset_type != tx.source_asset_type || !is_lineage_audit_asset(key->asset_type);
+          lineage_audit::dependency dep{key->k_image, key->asset_type, {}};
+          uint64_t index = 0;
+          for (const auto offset : key->key_offsets) {
+            require(offset <= UINT64_MAX - index, "Trusted-opening funding index overflow");
+            index += offset;
+            dep.ring.push_back(lineage.resolve(db, key->asset_type, index, legacy));
+            require(dep.ring.back().height < h, "Forward trusted-opening funding input");
+          }
+          links.push_back(std::move(dep));
+        }
+        deps = std::make_shared<const std::vector<lineage_audit::dependency>>(std::move(links));
+      } else deps = lineage.inspect_funding(db, tx, h, bad);
       found = funding_cache.emplace(id, std::move(deps)).first;
       funding_invalid[id] = bad;
     }
