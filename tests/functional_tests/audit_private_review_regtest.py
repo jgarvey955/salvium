@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 from audit_gate_regtest import AuditChain, COIN
-from audit_release_regtest import RpcError
+from audit_release_regtest import Rpc, RpcError
 
 
 def must_fail(call):
@@ -61,6 +61,7 @@ def main():
 
     try:
         chain.launch()
+        must_fail(lambda: Rpc(chain.wallets[2].port).call("audit", {"status_only": True}))
         chain.mine(100, fund_miner=True)
         funding = chain.transfer(0, 1, 50 * COIN, relay=False)
         assert chain.daemon.request("/send_raw_transaction", {"tx_as_hex": funding["tx_blob"], "do_not_relay": True})["status"] == "OK"
@@ -169,6 +170,31 @@ def main():
                 wallet.call("audit", {"review_result": path.read_text(), "developer_public_key": public})
             current = wallet.call("audit", {"status_only": True})
             assert all(r["state"] == "CLEARED" for r in current["outputs"]), current
+        bob_rows = bob.call("audit", {"status_only": True})["outputs"]
+        bob_keys = {(r["transaction"], r["output_index"], r["stake"]) for r in bob_rows}
+        original = json.loads((newer / "case.json").read_text())
+        changes = {"report_hash": command("--report", newer / "case.json", "--verify-key", public).split()[-1],
+            "decisions": [{"package_id": r["package_id"], "transaction": r["transaction"],
+                "output_index": r["output_index"], "stake": r["stake"], "action": "DENY",
+                "reason": "Controlled test: developer records an adverse review decision"}
+                for r in original["outputs"] if (r["transaction"], r["output_index"], r["stake"]) in bob_keys]}
+        denied_decisions = root / "denied-decisions.json"
+        denied_decisions.write_text(json.dumps(changes))
+        denied = root / "denied"
+        command("--report", newer / "case.json", "--decisions", denied_decisions, "--sign-key", secret, "--outdir", denied)
+        for path in owned_receipts(denied, bob):
+            bob.call("audit", {"review_result": path.read_text(), "developer_public_key": public})
+        assert all(r["state"] == "DENIED_BY_DEVELOPER" for r in bob.call("audit", {"status_only": True})["outputs"])
+        changes["report_hash"] = command("--report", denied / "case.json", "--verify-key", public).split()[-1]
+        for row in changes["decisions"]:
+            row.update(action="CLEAR", reason="Controlled test: developer verifies new exculpatory evidence")
+        restored_decisions = root / "restored-decisions.json"
+        restored_decisions.write_text(json.dumps(changes))
+        restored = root / "restored"
+        command("--report", denied / "case.json", "--decisions", restored_decisions, "--sign-key", secret, "--outdir", restored)
+        for path in owned_receipts(restored, bob):
+            bob.call("audit", {"review_result": path.read_text(), "developer_public_key": public})
+        assert all(r["state"] == "CLEARED_BY_DEVELOPER" for r in bob.call("audit", {"status_only": True})["outputs"])
         must_fail(lambda: chain.wallets[0].call("audit", {"review_result": receipts(pending)[0].read_text(), "developer_public_key": public}))
         # Persisted results are consumed by the real CLI entry point.
         bob.call("close_wallet")
@@ -220,7 +246,8 @@ def main():
                 "immature_stake_review", "signed_developer_clearance", "forgery_rejection", "stale_revision_rejection",
                 "recipient_isolation", "wallet_reopen_and_native_cli", "reorg_revokes_all_decisions",
                 "native_nonkyc_signature_reconciliation", "native_cli_owner_export_and_signed_import",
-                "authenticated_case_revision", "invalid_recipient_and_duplicate_evidence_rejection"],
+                "authenticated_case_revision", "invalid_recipient_and_duplicate_evidence_rejection",
+                "unauthenticated_rpc_rejection", "signed_denial_and_later_reasoned_clearance"],
             note="1000 unused NonKYC subaddresses exercise scope discovery; this is not a 1000-funded-output capacity test")
         (root / "result.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(json.dumps(summary), flush=True)
