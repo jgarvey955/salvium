@@ -121,7 +121,8 @@ def main():
         custody = {r["package_id"] for r in pending_case["outputs"]
             if (r["transaction"], r["output_index"], r["stake"]) in alice_keys}
         reserve = sum(r["amount"] for r in pending_case["outputs"] if r["package_id"] in custody and not r["spent"])
-        withdrawal = next(r for r in pending_case["outputs"] if r["transaction"] == onward["tx_hash"] and not r["stake"])
+        withdrawal = next(r for r in pending_case["outputs"] if r["transaction"] == onward["tx_hash"]
+            and not r["stake"] and r["amount"] == 10 * COIN and r["package_id"] not in custody)
         assert withdrawal["state"] == "REVIEW_REQUIRED" and withdrawal["amount"] == 10 * COIN
         amount = withdrawal["amount"]
         ledger = {k: pending_case[k] for k in ("network", "genesis", "snapshot_height", "snapshot_hash")}
