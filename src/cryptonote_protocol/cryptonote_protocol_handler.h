@@ -50,6 +50,7 @@
 #include "common/verification_work_limiter.h"
 #include "cryptonote_basic/connection_context.h"
 #include "cryptonote_core/lineage_audit_policy.h"
+#include "cryptonote_basic/lineage_audit_limits.h"
 #include "crypto/random.h"
 #include "net/levin_base.h"
 #include "p2p/net_node_common.h"
