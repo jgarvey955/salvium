@@ -354,13 +354,15 @@ def test_stake_release(chain, txid, principal):
     # consensus parameters merely to speed this test up.
     payout_height = inclusion + 30 * 24 * 30 + 1
     while chain.tip() < payout_height - 1:
-        count = min(1000, payout_height - 1 - chain.tip())
+        count = min(500, payout_height - 1 - chain.tip())
         chain.mine(count, refresh=False)
         print(f"Stake waiting: height {chain.tip()} / {payout_height}", flush=True)
     assert not chain.block(payout_height - 1)["protocol_tx"]["vout"], "unexpected early payout"
-    data = chain.daemon.call("get_yield_info", {
-        "include_raw_data": True, "from_height": inclusion + 1,
-        "to_height": payout_height - 1})["yield_data"]
+    data = []
+    for start in range(inclusion + 1, payout_height, 1000):
+        data.extend(chain.daemon.call("get_yield_info", {
+            "include_raw_data": True, "from_height": start,
+            "to_height": min(start + 999, payout_height - 1)})["yield_data"])
     assert [item["block_height"] for item in data] == list(range(inclusion + 1, payout_height))
     assert all(item["locked_coins_tally"] == principal for item in data), "unexpected stake competitor"
     expected_payout = principal + sum(item["slippage_total_this_block"] for item in data)
