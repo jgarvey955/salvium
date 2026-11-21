@@ -82,6 +82,8 @@ Public ancestry uses an explicit stack and shared cache. The default limit is
 50000 examined outputs; `--public-work-limit` allows up to 500000. Zero selects
 private-proof diagnostics. Work exhaustion cannot produce clearance. Limits are
 4096 packages, 512 proofs per package, 250000 submitted proofs and 256 MiB per file.
+An immature possible source also prevents public-only clearance. An exact proof
+of the mature real source can resolve that ambiguity without blaming the decoy.
 
 ## NonKYC evidence
 

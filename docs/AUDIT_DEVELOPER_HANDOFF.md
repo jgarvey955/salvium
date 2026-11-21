@@ -78,3 +78,27 @@ Use `docs/AUDIT_PRIVATE_REVIEW.md` for exact processing commands, exchange schem
 wallet RPC paging, third-party transport and signature domains. The final
 validation record must identify the tested source, binaries, tests and remaining
 release limitations; historical audit validation files describe earlier versions.
+The current record is [AUDIT_PRIVATE_REVIEW_VALIDATION.json](AUDIT_PRIVATE_REVIEW_VALIDATION.json).
+
+## Reproduce the private workflow checks
+
+Enable `SALVIUM_BUILD_LINEAGE_TESTS=ON` in `build/audit/release` when configuring
+the static core build, then build with
+`make release-static builddir=build/audit topdir=../../..`. Run these commands
+from the core repository, one at a time:
+
+~~~sh
+bash tests/functional_tests/run_audit_limited.sh build/audit/release/src/cryptonote_core/audit_review_tests tests/data/sal1-bad-origin-465074.hex
+bash tests/functional_tests/run_audit_limited.sh build/audit/release/src/cryptonote_core/lineage_audit_tests tests/data/sal1-bad-origin-465074.hex
+bash tests/functional_tests/run_audit_limited.sh build/audit/release/src/wallet/wallet_audit_inventory_tests
+bash tests/functional_tests/run_audit_limited.sh python3 tests/functional_tests/audit_nonkyc_reconciliation.py
+bash tests/functional_tests/run_audit_limited.sh python3 tests/functional_tests/audit_private_review_regtest.py --binaries build/audit/release/bin
+~~~
+
+The integration fixture uses fresh software wallets, a separate local fakechain,
+private test directories and loopback ports. It never starts the production
+daemon. Its NonKYC ledger is synthetic. The lineage unit executable also retains
+tests of the withdrawn public prototype; their success does not activate it.
+The GUI needs its own full static build and interactive export/import check
+before release; source syntax and QML lint alone do not establish a working GUI
+release artifact.
