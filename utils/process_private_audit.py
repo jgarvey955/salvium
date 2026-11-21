@@ -31,11 +31,19 @@ def rpc(endpoint, method, params, login=None):
         response = connection.getresponse()
         data = response.read(4 * 1024 * 1024 + 1)
         if response.status == 401 and login:
-            challenge = response.getheader("WWW-Authenticate", "")
-            if not challenge.startswith("Digest "):
-                raise ValueError("Unsupported daemon authentication challenge")
-            auth = urllib.request.parse_keqv_list(urllib.request.parse_http_list(challenge[7:]))
-            if auth.get("algorithm", "MD5") != "MD5" or "auth" not in auth.get("qop", "").split(","):
+            # Epee sends separate challenges for MD5 and MD5-sess. Joining
+            # repeated fields corrupts their parameter sets; choose one whole
+            # supported challenge and retain its connection-bound nonce.
+            auth = None
+            for name, challenge in response.getheaders():
+                if name.lower() != "www-authenticate" or not challenge.lower().startswith("digest "):
+                    continue
+                candidate = urllib.request.parse_keqv_list(urllib.request.parse_http_list(challenge[7:]))
+                if candidate.get("algorithm", "MD5").upper() == "MD5" and \
+                        "auth" in [value.strip() for value in candidate.get("qop", "").split(",")]:
+                    auth = candidate
+                    break
+            if auth is None:
                 raise ValueError("Unsupported daemon digest authentication")
             username, password = login
             if any(c in username for c in '\r\n"\\'):
