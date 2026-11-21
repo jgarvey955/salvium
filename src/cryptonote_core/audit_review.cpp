@@ -357,7 +357,10 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
               }
             }
           }
-        } catch (const std::exception&) { entry.state = 3; }
+        } catch (const std::exception& error) {
+          MDEBUG("Public audit ancestor " << id << ": " << error.what());
+          entry.state = 3;
+        }
         found = public_nodes.emplace(id, std::move(entry)).first;
       }
       if (found->second.state != 1) { stack.pop_back(); continue; }
@@ -431,7 +434,7 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
         input_complete = true;
         bool all_bad = true;
         for (const auto& possible : dep.ring) {
-          input_complete &= public_good(possible);
+          input_complete &= possible.unlock_height <= node.funding_height && public_good(possible);
           const auto found = public_nodes.find(public_identity(possible));
           all_bad &= found != public_nodes.end() && found->second.state == 4;
         }
