@@ -90,6 +90,19 @@ class Reconciliation(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.atomic(value)
 
+    def test_ambiguous_json_and_native_amounts(self):
+        for raw in ('{"amount": 20, "amount": 21}', '{"amount": NaN}'):
+            with self.assertRaises(ValueError):
+                module.load_json(raw)
+        for value in (-1, 20.0, True, "20"):
+            self.case["outputs"][1]["amount"] = value
+            with self.assertRaises(ValueError):
+                self.run_case()
+
+    def test_trade_and_internal_groups_cannot_cancel_each_other(self):
+        self.ledger["events"][0]["kind"] = "internal"
+        self.assertTrue(any("Unbalanced" in error for error in self.run_case()["errors"]))
+
 
 if __name__ == "__main__":
     unittest.main()
