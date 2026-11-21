@@ -21,9 +21,15 @@ public:
     tx.vin.push_back(txin_to_key{});
     crypto::public_key key; crypto::secret_key secret; crypto::generate_keys(key, secret);
     tx.vout.push_back({1, txout_to_key{key, "SAL1", 10}});
+    return add_transaction(tx, height);
+  }
+  crypto::hash add_transaction(const transaction& tx, uint64_t height) {
+    check(tx.vout.size() == 1, "Fixture requires one output");
     const auto id = get_transaction_hash(tx);
     transactions.emplace(id, std::make_pair(tx, height)); outputs.push_back({id, 0});
-    blocks[height].tx_hashes.push_back(id); return id;
+    if (tx.type == transaction_type::PROTOCOL) blocks[height].protocol_tx = tx;
+    else blocks[height].tx_hashes.push_back(id);
+    return id;
   }
   uint64_t height() const override { return candidate; }
   transaction get_tx(const crypto::hash& id) const override { return transactions.at(id).first; }
@@ -121,6 +127,35 @@ int main() {
     check(!registry.check_spend(db, spend, reason), "Orphaned authorization survived reorg");
     c.decision = 1; sign_audit_clearance(c, secret); batch.certificates = {c};
     check(!registry.validate_batch(db, batch, 113, reason), "Orphaned snapshot accepted");
+    // Late principal clearance finally authorizes an existing unique payout,
+    // while the payout's ordinary 60-block maturity remains in force.
+    clearance_db stakes;
+    transaction principal = stakes.get_tx(stakes.add(1));
+    stakes.transactions.clear(); stakes.outputs.clear(); stakes.blocks.clear();
+    principal.type = transaction_type::STAKE; principal.amount_burnt = 12;
+    crypto::public_key return_key; crypto::secret_key return_secret;
+    crypto::generate_keys(return_key, return_secret); principal.return_address = return_key;
+    principal.invalidate_hashes();
+    const auto principal_id = stakes.add_transaction(principal, 10);
+    const uint64_t payout_height = 10 + get_config(FAKECHAIN).STAKE_LOCK_PERIOD + 1;
+    transaction payout; payout.version = 1; payout.type = transaction_type::PROTOCOL;
+    payout.vin.push_back(txin_gen{payout_height});
+    payout.vout.push_back({12, txout_to_key{return_key, "SAL1", 60}});
+    const auto payout_id = stakes.add_transaction(payout, payout_height);
+    c.transaction = principal_id; c.stake = true; c.revision = 1; c.decision = 1;
+    c.activation_height = 90; c.snapshot_height = payout_height;
+    c.genesis = stakes.get_block_hash_from_height(0); c.snapshot_hash = stakes.get_block_hash_from_height(payout_height);
+    sign_audit_clearance(c, secret); batch.certificates = {c};
+    stakes.carrier(payout_height + 1, batch); stakes.candidate = payout_height + 2;
+    audit_clearance_registry stake_registry; stake_registry.configure(FAKECHAIN, 90, authority); stake_registry.sync(stakes);
+    check(stake_registry.cleared(payout_id, 0) && !stake_registry.output_spendable(stakes, 1, stakes.candidate),
+        "Late principal clearance lost finality or bypassed payout maturity");
+    check(stake_registry.eligible_outputs(stakes, "SAL1", 0, 1000, more).empty(), "Immature payout entered public decoy population");
+    c.transaction = payout_id; c.stake = false; c.decision = 2;
+    sign_audit_clearance(c, secret); batch.certificates = {c};
+    check(!stake_registry.validate_batch(stakes, batch, stakes.candidate, reason), "Inherited final payout could be denied while maturing");
+    stakes.candidate = payout_height + 60; stake_registry.sync(stakes);
+    check(stake_registry.output_spendable(stakes, 1, stakes.candidate), "Payout required a second audit after normal maturity");
     std::cout << "AUDIT_CLEARANCE_PASS authority, tamper, epoch, duplicates, activation, H+1, mixed rings, inheritance, immutable clearance, denial resolution, replay, reorg\n";
     return 0;
   } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
