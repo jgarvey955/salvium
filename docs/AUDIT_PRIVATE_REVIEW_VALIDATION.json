@@ -1,0 +1,153 @@
+{
+  "record_version": 1,
+  "workflow": "owner-initiated private audit v3; main developer processes and signs",
+  "recorded_utc": "2026-11-21T19:38:45.343371+00:00",
+  "tested_core_source_commit": "98a86280c779615e1067fde5eb67acf63e820d42",
+  "core_source_sha256": {
+    "Makefile": "82e0c857532f3f6fadae7ccd98bf6beab44361bcce058445a8f1bbf96535d275",
+    "src/cryptonote_core/audit_review.cpp": "7b72543897cd9dc8caff368391562c861847448df5e4790861d6a2c73a76fac3",
+    "src/cryptonote_core/audit_review.h": "448097251f35ec7ce001d580fd13c7c50f4d60b17da20c967c634b61de5adf3c",
+    "src/cryptonote_core/audit_review_authority.h": "eda50a8563ba5a11752c556f8e359bb081902cd75ed2b6e09975ca01eb402f6a",
+    "src/cryptonote_core/lineage_audit.cpp": "afd1d40e77f092312ad47e60c340fb949e34d016521832058cdf3394a5af602a",
+    "src/blockchain_utilities/audit_review_main.cpp": "28abdbcd0abd06cbb7a380701bd03bc5959d7de27f1c785462046ceba9346b5e",
+    "src/wallet/wallet2.cpp": "3c52af0094d80005285e5ea3753898f84561ee79526469bf411864d2d1db64f3",
+    "src/wallet/wallet_rpc_server.cpp": "4addae7a04420a5f938e5a8afb3aeff1cea7e8b3afce2e39680adc7c4822319b",
+    "src/wallet/api/wallet2_api.h": "d8e285867dc571e1e16989893f8b46249f7b95ac1865d268ba44e2ee51e25500",
+    "src/simplewallet/simplewallet.cpp": "26aa36302aec79c69eee40004ae2519cd331bbb0178e130009ced2b17679df52",
+    "utils/reconcile_nonkyc_audit.py": "1bdd457f81d065b05d0fa743f641cd135043724a10738d8421110a310e883ec3",
+    "tests/unit_tests/audit_review.cpp": "aa087ec5daaf79dec572b794a2d49996eb2f0de4899108f22309435bc93076a6",
+    "tests/unit_tests/wallet_audit_inventory.cpp": "87bc50d61b64c189f3d3a203f33ad9be95fbc8a1ac3065fa71b79626feb5592e",
+    "tests/functional_tests/audit_private_review_regtest.py": "d71e228ce949786a99bb7f740aa675ddabd58f8ad965ad99660dadab9babd27b",
+    "tests/functional_tests/audit_nonkyc_reconciliation.py": "e70e1f89dc9daf26292b651ef059e067d5ec99c168e4951cd486fbfa8334583c"
+  },
+  "build": {
+    "result": "PASS",
+    "command": "make release-static builddir=build/audit topdir=../../.. -j2",
+    "configuration": {
+      "STATIC": "ON",
+      "ARCH": "x86-64",
+      "CMAKE_BUILD_TYPE": "Release",
+      "SALVIUM_BUILD_LINEAGE_TESTS": "ON",
+      "compiler": "gcc-16 / g++-16"
+    },
+    "log": "build/audit-test-work/review-build-13.log",
+    "log_sha256": "f003786287ed2e40a3ac9442923d82355d73533d304f62fcb61006f7798d1bb8",
+    "binary_version_tag": "0800b24b7",
+    "provenance_note": "The incremental build compiled the working-tree source subsequently committed as tested_core_source_commit. Its configure-time version tag predates that commit; exact source and tested binary hashes are recorded here.",
+    "tested_binary_sha256": {
+      "salviumd": "59853b555ba03944e4e2756655d9156e4b221732d6d1f3f6cb8e68b3993f06eb",
+      "salvium-wallet-rpc": "b3b925819bd9d3d2b6cbfb87fc7fba5be90a69b3fd230370aaf2a2d6dcbc16b8",
+      "salvium-wallet-cli": "d8c3977307878b3222c0abaae9db32844a5b5ce154900436a88d4527e917a43e",
+      "salvium-audit-review": "90e7b7b821b5b1f7f6a46309574f8335993be5b514aacc6c1877cdbaaeafd2c4"
+    }
+  },
+  "checks": {
+    "native_private_review": {
+      "result": "PASS",
+      "local_log": "build/audit-test-work/review-native-tests-final.log",
+      "log_sha256": "d5f17ede7d340e180739a80f0f3716341c588d3f1b90d56094655ecaccb445c6"
+    },
+    "lineage_issuance_and_funding_regressions": {
+      "result": "PASS",
+      "local_log": "build/audit-test-work/review-lineage-tests-final.log",
+      "log_sha256": "6815dc42eaa612c2f5015f45e559f49a39f9a11b2396abf5b255b08834ba67f5"
+    },
+    "wallet_inventory_and_authority": {
+      "result": "PASS",
+      "local_log": "build/audit-test-work/review-inventory-tests-final.log",
+      "log_sha256": "052a6dc27276e06b476da2ab690d0576cc0889021ab793594799a22fc7f66af2"
+    },
+    "nonkyc_accounting_12_tests": {
+      "result": "PASS",
+      "local_log": "build/audit-test-work/review-nonkyc-tests-final.log",
+      "log_sha256": "788159b73a0a1fc1bdf4c340269f6fb4fca5d180de3191305fc6d65fb06403c3"
+    },
+    "native_cli_rpc_private_workflow": {
+      "result": "PASS",
+      "local_log": "build/audit-test-work/review-wallet-regtest.log",
+      "log_sha256": "a6068cac85965f1eb35acf7bf077ba076dca1bbf8c927935ddea2c55e04eed60"
+    },
+    "gui_cpp_syntax_and_qml_lint": {
+      "result": "PASS",
+      "local_log": "build/audit-test-work/review-gui-final-source-checks.log",
+      "log_sha256": "e6a2b262ccacf4a7bc91cc04fe187c5cec14ce4d4bb80a18fbd6d6d083920782"
+    }
+  },
+  "private_workflow_result": {
+    "status": "PRIVATE_AUDIT_WALLET_PASS",
+    "snapshot": 133,
+    "checks": [
+      "native_rpc_private_exports",
+      "cross_wallet_all_funding_clearance",
+      "missing_owner_review",
+      "immature_stake_review",
+      "signed_developer_clearance",
+      "forgery_rejection",
+      "stale_revision_rejection",
+      "recipient_isolation",
+      "wallet_reopen_and_native_cli",
+      "reorg_revokes_all_decisions",
+      "native_nonkyc_signature_reconciliation",
+      "native_cli_owner_export_and_signed_import"
+    ],
+    "note": "1000 unused NonKYC subaddresses exercise scope discovery; this is not a 1000-funded-output capacity test"
+  },
+  "synthetic_case": {
+    "network": "FAKECHAIN",
+    "snapshot_height": 133,
+    "submitted_outputs": 106,
+    "all_owner_evidence_result": "106 auto-cleared; zero unresolved",
+    "public_only_result": "Unresolved because public candidates do not establish actual funding maturity; exact owner funding proofs resolve it.",
+    "exchange_result": "Synthetic scoped ledger reconciled through actual native signature verification; human review remains required."
+  },
+  "security_regressions": [
+    "Rekeyed real salYAHU malformed-origin transaction fixture remains review-required with DENY recommendation.",
+    "Proven illicit funding across two owners remains review-required; an illicit decoy cannot contaminate an exact legitimate source.",
+    "Immature possible funding prevents public-only clearance; an exact mature source proof clears despite that decoy.",
+    "Canonically returned stake principal is excluded from unspent custody even when its funding remains defective.",
+    "Owner-generated production signing authorities, forged amounts, orphaned snapshots, stale/conflicting revisions and foreign recipient results are rejected.",
+    "A wallet regtest flag cannot enable ephemeral signing authorities when the connected daemon reports mainnet."
+  ],
+  "historical_fixture": {
+    "path": "tests/data/sal1-bad-origin-465074.hex",
+    "sha256": "c741410bb6197740c5c089ea90b190daf384690db9b40377a3a5620baa99ade1",
+    "transaction": "9353dd3288e20618596085228ea6faf5bf2a9d01cd98c36ea5ceeef2c2d4eb1e",
+    "note": "The ownership regression rekeys this real transaction fixture; it does not claim control of the real historical outputs."
+  },
+  "gui": {
+    "source_commit": "a0de6e106c1f3915b735b7acd19e42075246ce98",
+    "branch_base": "official upstream/master 9a23787ed824185a6f49058ed1aa4f0967bfe25c",
+    "source_sha256": {
+      "pages/AuditReview.qml": "40e9891805a1fb67bd43071afc62d7fc1380f18db0dec484d7960b8df056e989",
+      "pages/Audit.qml": "7ddf2cdd766c8ff65cd1673a40273119e088d797892e67a5944c373a7fc4404e",
+      "main.qml": "0a1f2a929a3531be91efd2318cb89247972cfd306543f4136d51cc5fd1989703",
+      "src/libwalletqt/Wallet.cpp": "29c48d846a904cd85662868325dbe615357cbec9789f355f3494b4b52b14e79c",
+      "src/libwalletqt/Wallet.h": "8d6df9f3d519823c3637d3ddca556191276f64dd737fb5e66b83d821b22916ee"
+    },
+    "cpp_syntax": "PASS against the tested core wallet API",
+    "qml_lint": "PASS",
+    "full_static_build": "BLOCKED: Qt5Core development CMake configuration / static Qt toolchain unavailable in this environment",
+    "full_build_log_sha256": "a23b31b3bb8c8714221d5077074ddada0cf0423f0fdc249fea73e0deac06f90b",
+    "interactive_gui_export_import": "NOT RUN; required on a full GUI release build"
+  },
+  "release_qualified": false,
+  "remaining_release_requirements": [
+    "Main developer must privately manage the signing secret and configure only its public authority key for each supported production network.",
+    "Full static GUI build, packaging and interactive export/import verification on supported release platforms.",
+    "Independent review of the cryptographic protocol and trust configuration before production release.",
+    "Real owner requests and independently confirmed complete NonKYC operator records.",
+    "Separate chain-wide monetary/forensic scans and historical consensus/PoW replay for supply conclusions."
+  ],
+  "scope_limits": [
+    "Reports cover SUBMITTED_OUTPUTS_ONLY against an assumed canonical database.",
+    "No real NonKYC ledger, current global illicit balance, full mainnet replay or supported-platform release qualification is certified by these tests.",
+    "1000 unused subaddresses exercise all-account discovery, not 1000 funded outputs or exchange-scale capacity.",
+    "Private signing currently requires a full software wallet; hardware/multisig and third-party wallets require compatible signing implementations.",
+    "Historical public enrollment / consensus-gate unit tests remain in the suite; public v2 enrollment and consensus enforcement stay disabled."
+  ],
+  "test_isolation": {
+    "production_daemon_started_or_restarted": false,
+    "configuration": "Explicit empty test configurations; fresh local chain/wallet directories, loopback endpoints and isolated ring databases",
+    "resource_limits": "One CPU, 8 GiB RAM, no swap, 256 tasks for the build/test process tree"
+  }
+}
