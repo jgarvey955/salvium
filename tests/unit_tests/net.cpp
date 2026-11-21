@@ -512,7 +512,7 @@ TEST_P(blocked_mode_client_ssl, disconnect_with_pending_probe_is_graceful)
     EXPECT_FALSE(peer_error);
 }
 
-INSTANTIATE_TEST_SUITE_P(tls, blocked_mode_client_ssl, testing::Values(
+INSTANTIATE_TEST_CASE_P(tls, blocked_mode_client_ssl, testing::Values(
     TLS1_2_VERSION
 #if OPENSSL_VERSION_NUMBER >= 0x10101000L && !defined(LIBRESSL_VERSION_NUMBER)
     , TLS1_3_VERSION
