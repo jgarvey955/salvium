@@ -303,7 +303,7 @@ int main()
     check(wallet.is_transfer_unlocked(wallet.get_transfer_details(0)), "Verified legacy output remained locked");
     rpc_candidate_height = 101;
     wallet.update_lineage_audit_status();
-    check(wallet.is_transfer_unlocked(wallet.get_transfer_details(3)), "Chain tip change re-enabled lineage isolation");
+    check(!wallet.is_transfer_unlocked(wallet.get_transfer_details(3)), "Unverified daemon height bypassed the wallet gate");
     rpc_candidate_height = 100;
     wallet.update_lineage_audit_status();
     check(wallet.is_transfer_unlocked(wallet.get_transfer_details(3)), "Refreshed chain tip did not restore clearance");
