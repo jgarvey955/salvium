@@ -83,3 +83,5 @@ Build only with `make release-static builddir=build/audit topdir=../../.. -j2`.
 The normal build directory remains reserved for `my-complete`. Never start or
 restart production for an audit test. See
 [reviewer commands and wallet integration](docs/AUDIT_PRIVATE_REVIEW.md).
+The [main developer handoff](docs/AUDIT_DEVELOPER_HANDOFF.md) explains owner
+initiation, processing authority and signing-key setup before release.
