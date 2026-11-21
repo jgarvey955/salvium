@@ -45,6 +45,9 @@ revised or signed again. To sign an earlier unsigned analysis, rerun the origina
 `--input` evidence against the canonical database with `--sign-key`. Recipient
 identities, report fields and JSON allocation are checked before processing;
 private output files never replace an existing file.
+Import the individual package receipts, one file per import. A receipt contains
+at most 512 outputs from a single package; the wallet rejects a combined case
+report and avoids duplicating large cases in its encrypted cache.
 
 Review the queue, retain only decisions being made, choose `CLEAR` or `DENY`,
 and supply a nonempty `reason`. The original `report_hash` must match:

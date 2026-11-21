@@ -124,6 +124,8 @@ def main():
         case = json.loads((complete / "case.json").read_text())
         assert all(r["state"] == "CLEARED" for r in case["outputs"]), case
         assert any(r["stake"] for r in case["outputs"])
+        must_fail(lambda: chain.wallets[0].call("audit", {
+            "review_result": (complete / "case.json").read_text(), "developer_public_key": public}))
         for name, mutate in (
                 ("unsigned-case", lambda r: r.update(signer="", signature="")),
                 ("altered-case", lambda r: r["outputs"][0].update(amount=r["outputs"][0]["amount"] + 1)),
