@@ -6,6 +6,20 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import tempfile
+
+
+def load_json(raw):
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"Duplicate JSON field: {key}")
+            result[key] = value
+        return result
+    def invalid_number(value):
+        raise ValueError(f"Invalid JSON number: {value}")
+    return json.loads(raw, object_pairs_hook=unique_fields, parse_constant=invalid_number)
 
 
 def atomic(value):
@@ -19,6 +33,10 @@ def atomic(value):
 
 
 def reconcile(case, ledger, case_hash, ledger_hash):
+    for source in (case, ledger):
+        if type(source["network"]) is not int or source["network"] not in range(4) or \
+                type(source["snapshot_height"]) is not int or not 0 <= source["snapshot_height"] < 2**64:
+            raise ValueError("Invalid native network or snapshot height")
     for field in ("genesis", "network", "snapshot_height", "snapshot_hash"):
         if case[field] != ledger[field]:
             raise ValueError(f"NonKYC {field} differs from the native audit snapshot")
@@ -46,6 +64,10 @@ def reconcile(case, ledger, case_hash, ledger_hash):
     reserves = defaultdict(int)
     owned = set(ledger["custody_package_ids"])
     for row in case["outputs"]:
+        if type(row["amount"]) is not int or not 0 <= row["amount"] < 2**64 or \
+                type(row["output_index"]) is not int or not 0 <= row["output_index"] < 2**32 or \
+                type(row["stake"]) is not bool or type(row["spent"]) is not bool:
+            raise ValueError("Noncanonical native output fields")
         key = row["transaction"], row["output_index"], row["stake"]
         if key in output_map:
             prior = output_map[key]
@@ -89,7 +111,7 @@ def reconcile(case, ledger, case_hash, ledger_hash):
         if running[key] < 0:
             errors.append(f"Negative running balance after event {event['id']}")
         if kind in {"trade", "internal"}:
-            trade_groups[event["group"]][event["asset"]] += delta
+            trade_groups[(kind, event["group"])][event["asset"]] += delta
         if kind == "trade":
             purchased[key] = max(0, purchased[key] + delta)
         elif delta < 0:
@@ -172,11 +194,18 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--decisions-output", type=Path, help="Optional editable developer decision template")
     args = parser.parse_args()
-    verification = subprocess.run([str(args.verifier.resolve()), "--report", str(args.case),
-        "--verify-key", args.developer_public_key], check=True, capture_output=True, text=True)
+    case_raw = args.case.read_bytes()
+    case = load_json(case_raw)
+    # Verify the exact bytes parsed below, even if an input file changes while
+    # the native verifier runs. The temporary directory is owner-only.
+    with tempfile.TemporaryDirectory(prefix="salvium-nonkyc-case-") as temporary:
+        snapshot = Path(temporary) / "case.json"
+        snapshot.write_bytes(case_raw)
+        verification = subprocess.run([str(args.verifier.resolve()), "--report", str(snapshot),
+            "--verify-key", args.developer_public_key], check=True, capture_output=True, text=True)
     case_hash = next(line.split()[1] for line in verification.stdout.splitlines() if line.startswith("VERIFIED "))
     raw = args.ledger.read_bytes()
-    result = reconcile(json.loads(args.case.read_text()), json.loads(raw), case_hash, hashlib.sha256(raw).hexdigest())
+    result = reconcile(case, load_json(raw), case_hash, hashlib.sha256(raw).hexdigest())
     # Refuse overwrites and restrict private ledger-derived evidence to its owner.
     import os
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
