@@ -1,6 +1,7 @@
 #include "cryptonote_core/audit_review.h"
 #include "cryptonote_core/audit_clearance.h"
 #include "cryptonote_core/audit_review_authority.h"
+#include "cryptonote_basic/cryptonote_format_utils.h"
 #include "serialization/binary_utils.h"
 #include "blockchain_db/lmdb/db_lmdb.h"
 #include "serialization/keyvalue_serialization.h"
