@@ -92,7 +92,7 @@ int main() {
     check(!registry.validate_batch(db, duplicate, 101, reason), "Duplicate certificate accepted");
     auto excessive = batch; excessive.certificates.resize(lineage_limits::max_outputs + 1, c);
     check(!registry.validate_batch(db, excessive, 101, reason), "Certificate work limit bypassed");
-    auto wrong = batch; ++wrong.certificates[0].activation_height; sign_audit_clearance(wrong.certificates[0], secret);
+    auto wrong = batch; --wrong.certificates[0].activation_height; sign_audit_clearance(wrong.certificates[0], secret);
     check(!registry.validate_batch(db, wrong, 101, reason), "Wrong epoch accepted");
     transaction spend; spend.type = transaction_type::TRANSFER; spend.source_asset_type = "SAL1";
     txin_to_key input; input.asset_type = "SAL1"; input.key_offsets = {0}; spend.vin.push_back(input);

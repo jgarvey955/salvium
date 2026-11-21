@@ -27,7 +27,7 @@ struct audit_clearance_certificate
   uint32_t output_index = 0;
   bool stake = false;
   uint64_t revision = 1;
-  // 1 authorizes spending; 2 records an explicit developer denial/revocation.
+  // 1 finally authorizes spending; 2 records a developer denial of uncleared funds.
   uint8_t decision = 0;
   crypto::signature signature{};
 
