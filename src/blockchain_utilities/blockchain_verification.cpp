@@ -31,6 +31,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include <boost/multiprecision/cpp_int.hpp>
+
 #include "blockchain_db/blockchain_db.h"
 #include "blockchain_db/lmdb/db_lmdb.h"
 #include "common/command_line.h"
@@ -53,6 +55,8 @@ using namespace cryptonote;
 
 namespace
 {
+  using boost::multiprecision::uint128_t;
+
   // ----------------------------
   // Helpers
   // ----------------------------
@@ -84,6 +88,8 @@ namespace
   {
     return epee::string_tools::pod_to_hex(pod);
   }
+
+  std::string uint128_to_string(const uint128_t& value) { return value.str(); }
 
   std::string uint128_to_string(unsigned __int128 value)
   {
