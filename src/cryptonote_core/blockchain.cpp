@@ -4400,6 +4400,8 @@ bool Blockchain::check_lineage_spend(const transaction& tx, std::string& reason)
 bool Blockchain::check_lineage_disclosure(const block& candidate, std::string& reason) const
 {
   CRITICAL_REGION_LOCAL(m_blockchain_lock);
+  if (!m_private_audit.active(m_db->height()) &&
+      !(lineage_policy::public_enrollment && m_lineage_audit.active(m_db->height()))) return true;
   try {
     if (!m_private_audit.validate_block(*m_db, candidate, reason)) return false;
     if (!lineage_policy::public_enrollment) {

@@ -160,6 +160,9 @@ bool audit_clearance_registry::cleared(const crypto::hash& tx, uint32_t index, b
 }
 bool audit_clearance_registry::validate_block(const BlockchainDB& db, const block& candidate, std::string& reason)
 {
+  // Preserve historical consensus, including legacy opaque miner extras.
+  // Pre-activation carriers never enter the clearance registry.
+  if (!active(db.height())) return true;
   try {
     sync(db);
     const auto carriers = batches(candidate);
