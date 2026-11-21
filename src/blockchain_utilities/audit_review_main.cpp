@@ -3,6 +3,8 @@
 #include "serialization/keyvalue_serialization.h"
 #include "storages/portable_storage_template_helper.h"
 #include "string_tools.h"
+#include "memwipe.h"
+#include "misc_language.h"
 #include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
 #include <algorithm>
@@ -37,7 +39,7 @@ struct review_decisions {
 };
 template<class T> T load(const std::string& path) {
   T value;
-  if (!epee::serialization::load_t_from_json(value, read_audit_file(path)))
+  if (!load_audit_json(value, read_audit_file(path)))
     throw std::runtime_error("Invalid audit JSON: " + path);
   return value;
 }
@@ -68,12 +70,17 @@ int main(int argc, char** argv)
     if (vm.count("keygen")) {
       crypto::public_key key; crypto::secret_key secret;
       crypto::generate_keys(key, secret);
-      write_private_audit_file(vm["keygen"].as<std::string>(), epee::string_tools::pod_to_hex(unwrap(unwrap(secret))) + "\n");
+      auto encoded = epee::string_tools::pod_to_hex(unwrap(unwrap(secret))) + "\n";
+      auto wipe = epee::misc_utils::create_scope_leave_handler([&] { memwipe(encoded.data(), encoded.size()); });
+      write_private_audit_file(vm["keygen"].as<std::string>(), encoded);
       std::cout << "Audit public key: " << epee::string_tools::pod_to_hex(key) << '\n';
       return 0;
     }
     audit_review_report report;
-    if (vm.count("report")) report = load<audit_review_report>(vm["report"].as<std::string>());
+    if (vm.count("report")) {
+      report = load<audit_review_report>(vm["report"].as<std::string>());
+      validate_audit_review_report(report);
+    }
     if (vm.count("verify-key")) {
       crypto::public_key key;
       require(epee::string_tools::hex_to_pod(vm["verify-key"].as<std::string>(), key) &&
@@ -105,6 +112,22 @@ int main(int argc, char** argv)
       }
       db.close();
     }
+    crypto::secret_key secret;
+    const bool sign = vm.count("sign-key");
+    if (sign) {
+      auto text = read_audit_file(vm["sign-key"].as<std::string>(), 128);
+      auto wipe = epee::misc_utils::create_scope_leave_handler([&] { memwipe(text.data(), text.size()); });
+      const auto end = text.find_last_not_of("\r\n");
+      require(end != std::string::npos && end + 1 == 64, "Invalid audit signing key file");
+      require(epee::string_tools::hex_to_pod(boost::string_ref(text.data(), end + 1), unwrap(unwrap(secret))), "Invalid audit signing key file");
+      if (vm.count("report")) {
+        crypto::public_key key;
+        require(crypto::secret_key_to_public_key(secret, key) && verify_audit_review_report(report, key),
+            "Existing cases must carry a valid developer signature; reprocess unsigned evidence with --input");
+      }
+    } else if (vm.count("report")) {
+      require(vm.count("verify-key"), "Authenticate an existing case with --verify-key or --sign-key");
+    }
     if (vm.count("decisions")) {
       const auto changes = load<review_decisions>(vm["decisions"].as<std::string>());
       require(changes.report_hash == epee::string_tools::pod_to_hex(audit_review_report_hash(report)),
@@ -135,12 +158,7 @@ int main(int argc, char** argv)
     require(!boost::filesystem::exists(out), "Choose a new output directory; evidence is never overwritten");
     require(boost::filesystem::create_directory(out), "Cannot create case directory");
     boost::filesystem::permissions(out, boost::filesystem::owner_all);
-    crypto::secret_key secret;
-    const bool sign = vm.count("sign-key");
     if (sign) {
-      auto text = read_audit_file(vm["sign-key"].as<std::string>());
-      while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
-      require(epee::string_tools::hex_to_pod(text, unwrap(unwrap(secret))), "Invalid audit signing key file");
       sign_audit_review_report(report, secret);
     } else { report.signer.clear(); report.signature.clear(); }
     write_private_audit_file((out / "case.json").string(), epee::serialization::store_t_to_json(report));

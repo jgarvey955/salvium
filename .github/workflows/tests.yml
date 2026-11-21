@@ -13,7 +13,7 @@ env:
 
 jobs:
   unit-and-tools:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,7 +32,7 @@ jobs:
             build-essential cmake pkg-config libssl-dev libzmq3-dev libunbound-dev \
             libsodium-dev libunwind-dev liblzma-dev libreadline-dev libexpat1-dev \
             libpgm-dev libhidapi-dev libusb-1.0-0-dev libprotobuf-dev \
-            protobuf-compiler libudev-dev libboost-all-dev python3 ccache gperf \
+            protobuf-compiler libudev-dev libboost-all-dev python3 python3-requests python3-psutil python3-monotonic python3-zmq ccache gperf \
             libtool autotools-dev automake bsdmainutils git ca-certificates
 
       - name: configure debug tests
@@ -40,20 +40,31 @@ jobs:
           ccache --max-size=300M
           cmake -S . -B build/ci-debug \
             -D BUILD_TESTS=ON \
+            -D SALVIUM_BUILD_LINEAGE_TESTS=ON \
             -D CMAKE_BUILD_TYPE=Debug \
             -D USE_DEVICE_TREZOR=OFF
 
       - name: build focused tests
-        run: cmake --build build/ci-debug --target unit_tests block_weight hash-target-tests
+        run: cmake --build build/ci-debug --target unit_tests wallet_rpc_server block_weight hash-target-tests audit_review audit_review_tests lineage_audit_tests wallet_audit_inventory_tests
 
       - name: run focused tests
-        run: ctest --test-dir build/ci-debug --output-on-failure -R "unit_tests|block_weight|hash"
+        run: ctest --test-dir build/ci-debug --output-on-failure -R "unit_tests|block_weight|hash-target"
+
+      - name: run private audit regressions
+        run: |
+          build/ci-debug/src/cryptonote_core/audit_review_tests
+          build/ci-debug/src/cryptonote_core/lineage_audit_tests
+          build/ci-debug/src/wallet/wallet_audit_inventory_tests
+          python3 tests/functional_tests/audit_nonkyc_reconciliation.py
 
       - name: check python tools
         run: python3 -m py_compile utils/protocol_invariants.py
 
+      - name: check wallet RPC serialization and lifecycle
+        run: python3 tests/functional_tests/wallet_rpc_lifecycle.py "$PWD/build/ci-debug/bin/salvium-wallet-rpc"
+
   asan-unit:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,19 +77,30 @@ jobs:
             build-essential cmake pkg-config libssl-dev libzmq3-dev libunbound-dev \
             libsodium-dev libunwind-dev liblzma-dev libreadline-dev libexpat1-dev \
             libpgm-dev libhidapi-dev libusb-1.0-0-dev libprotobuf-dev \
-            protobuf-compiler libudev-dev libboost-all-dev python3 gperf \
+            protobuf-compiler libudev-dev libboost-all-dev python3 python3-requests python3-psutil python3-monotonic python3-zmq gperf \
             libtool autotools-dev automake bsdmainutils git ca-certificates
 
       - name: configure asan tests
         run: |
           cmake -S . -B build/ci-asan \
             -D BUILD_TESTS=ON \
+            -D SALVIUM_BUILD_LINEAGE_TESTS=ON \
             -D SANITIZE=ON \
             -D CMAKE_BUILD_TYPE=Debug \
             -D USE_DEVICE_TREZOR=OFF
 
       - name: build asan unit tests
-        run: cmake --build build/ci-asan --target unit_tests
+        run: cmake --build build/ci-asan --target unit_tests audit_review_tests lineage_audit_tests wallet_audit_inventory_tests
 
       - name: run asan unit tests
         run: ctest --test-dir build/ci-asan --output-on-failure -R unit_tests
+
+      - name: run sanitized private audit regressions
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          build/ci-asan/src/cryptonote_core/audit_review_tests
+          build/ci-asan/src/cryptonote_core/lineage_audit_tests
+          build/ci-asan/src/wallet/wallet_audit_inventory_tests
+

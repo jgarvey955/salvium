@@ -993,6 +993,7 @@ namespace cryptonote
   template<class t_core>
   bool t_cryptonote_protocol_handler<t_core>::relay_wallet_audit(const std::string& data, const boost::uuids::uuid& source)
   {
+    if (!lineage_policy::public_enrollment) return false;
     NOTIFY_WALLET_AUDIT::request request;
     request.data = data;
     m_p2p->for_each_connection([&](connection_context& context, nodetool::peerid_type, uint32_t) {
@@ -1006,6 +1007,7 @@ namespace cryptonote
   int t_cryptonote_protocol_handler<t_core>::handle_notify_wallet_audit(int command,
       NOTIFY_WALLET_AUDIT::request& arg, cryptonote_connection_context& context)
   {
+    if (!lineage_policy::public_enrollment) return 1;
     if (context.m_state != connection_context::state_normal || arg.data.empty() || arg.data.size() > cryptonote::lineage_limits::max_bytes) return 1;
     auto& chain = m_core.get_blockchain_storage();
     const auto pending = chain.pending_lineage_disclosures();
@@ -1855,7 +1857,7 @@ skip:
     m_standby_checker.do_call(boost::bind(&t_cryptonote_protocol_handler<t_core>::check_standby_peers, this));
     m_sync_search_checker.do_call(boost::bind(&t_cryptonote_protocol_handler<t_core>::update_sync_search, this));
     const auto now = std::chrono::steady_clock::now();
-    if (now - m_last_audit_relay >= std::chrono::seconds(30)) {
+    if (lineage_policy::public_enrollment && now - m_last_audit_relay >= std::chrono::seconds(30)) {
       m_last_audit_relay = now;
       const auto pending = m_core.get_blockchain_storage().pending_lineage_disclosures();
       if (!pending.empty()) {

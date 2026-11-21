@@ -87,6 +87,8 @@ crypto::hash audit_review_report_hash(const audit_review_report& r)
 }
 bool authorized_audit_review_signer(network_type net, const crypto::public_key& key)
 {
+  if (!crypto::check_key(key) || rct::pk2rct(key) == rct::identity() ||
+      !rct::isInMainSubgroup(rct::pk2rct(key))) return false;
   // Isolated fakechain fixtures use ephemeral test keys. Wallet callers must
   // verify their daemon really is fakechain before enabling that test mode.
   if (net == FAKECHAIN) return true;
@@ -96,8 +98,41 @@ bool authorized_audit_review_signer(network_type net, const crypto::public_key& 
   crypto::public_key authority;
   return epee::string_tools::hex_to_pod(configured, authority) && authority == key;
 }
+void validate_audit_review_report(const audit_review_report& r)
+{
+  const auto canonical_hash = [](const std::string& text) {
+    crypto::hash value;
+    return epee::string_tools::hex_to_pod(text, value) && hex(value) == text;
+  };
+  require(r.version == 3 && r.revision && r.network <= uint8_t(FAKECHAIN) &&
+      r.coverage == "SUBMITTED_OUTPUTS_ONLY" && r.opening_height < r.snapshot_height &&
+      r.snapshot_height < UINT64_MAX - 11 && r.public_work_limit <= 500000 &&
+      r.public_outputs_checked <= r.public_work_limit && canonical_hash(r.genesis) &&
+      canonical_hash(r.snapshot_hash) && canonical_hash(r.evidence_hash), "Invalid private audit report context");
+  require(!r.outputs.empty() && r.outputs.size() <= 250000, "Invalid private audit report output count");
+  std::set<std::tuple<std::string, std::string, uint32_t, bool>> identities;
+  size_t missing = 0;
+  for (const auto& o : r.outputs) {
+    require(canonical_hash(o.package_id) && canonical_hash(o.transaction) &&
+        is_lineage_audit_asset(o.asset_type), "Invalid private audit output identity");
+    require(identities.emplace(o.package_id, o.transaction, o.output_index, o.stake).second,
+        "Duplicate output in private audit report");
+    require((o.state == "CLEARED" || o.state == "REVIEW_REQUIRED") &&
+        (o.recommendation == "CLEAR" || o.recommendation == "DENY") &&
+        (o.state != "CLEARED" || o.recommendation == "CLEAR") &&
+        (o.decision.empty() || o.decision == "CLEAR" || o.decision == "DENY") &&
+        (o.decision.empty() ? o.decision_reason.empty() : !o.decision_reason.empty()) &&
+        o.reason.size() <= 4096 && o.decision_reason.size() <= 4096,
+        "Invalid private audit finding or developer decision");
+    require(o.missing_inputs.size() <= 1000000 - missing, "Too many private audit funding references");
+    missing += o.missing_inputs.size();
+    for (const auto& image : o.missing_inputs)
+      require(canonical_hash(image), "Invalid private audit funding reference");
+  }
+}
 void sign_audit_review_report(audit_review_report& r, const crypto::secret_key& secret)
 {
+  validate_audit_review_report(r);
   crypto::public_key key;
   require(crypto::secret_key_to_public_key(secret, key) && crypto::check_key(key), "Invalid audit signing key");
   require(authorized_audit_review_signer(static_cast<network_type>(r.network), key),
@@ -109,20 +144,17 @@ void sign_audit_review_report(audit_review_report& r, const crypto::secret_key& 
 }
 bool verify_audit_review_report(const audit_review_report& r, const crypto::public_key& trusted)
 {
+  try { validate_audit_review_report(r); } catch (const std::exception&) { return false; }
   crypto::signature signature;
   if (r.version != 3 || !r.revision || r.coverage != "SUBMITTED_OUTPUTS_ONLY" || r.signer != hex(trusted) ||
       !authorized_audit_review_signer(static_cast<network_type>(r.network), trusted) ||
       !crypto::check_key(trusted) || rct::pk2rct(trusted) == rct::identity() ||
       !epee::string_tools::hex_to_pod(r.signature, signature)) return false;
-  for (const auto& o : r.outputs)
-    if ((o.state != "CLEARED" && o.state != "REVIEW_REQUIRED") ||
-        (o.recommendation != "CLEAR" && o.recommendation != "DENY") ||
-        (!o.decision.empty() && o.decision != "CLEAR" && o.decision != "DENY") ||
-        (!o.decision.empty() && o.decision_reason.empty())) return false;
   return crypto::check_signature(audit_review_report_hash(r), trusted, signature);
 }
 void write_private_audit_file(const std::string& path, const std::string& contents)
 {
+  require(contents.size() <= max_audit_file_bytes, "Audit file exceeds 256 MiB limit");
   const auto temporary = path + "." + hex(crypto::rand<crypto::hash>()) + ".tmp";
   auto file = tools::private_file::create(temporary);
   require(bool(file.handle()), "Cannot create private audit file (choose a new filename)");
@@ -132,12 +164,12 @@ void write_private_audit_file(const std::string& path, const std::string& conten
   // any existing destination, retaining owner-only permissions.
   boost::filesystem::copy_file(temporary, path);
 }
-std::string read_audit_file(const std::string& path)
+std::string read_audit_file(const std::string& path, size_t max_bytes)
 {
   std::ifstream f(path, std::ios::binary | std::ios::ate);
   require(bool(f), "Cannot open audit file");
   const auto size = f.tellg();
-  require(size >= 0 && size <= 256 * 1024 * 1024, "Audit file exceeds 256 MiB limit");
+  require(size >= 0 && uint64_t(size) <= max_bytes, "Audit file exceeds size limit");
   std::string s(static_cast<size_t>(size), '\0');
   f.seekg(0); f.read(&s[0], s.size());
   require(bool(f), "Cannot read audit file");
@@ -287,12 +319,15 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
         "Mixed network, snapshot or orphaned audit evidence");
     const auto package_id = audit_review_package_id(p);
     if (!package_ids.insert(package_id).second) continue;
+    std::set<std::tuple<crypto::hash, uint32_t, bool>> package_outputs;
     for (const auto& raw : p.proofs) {
       std::string binary;
       lineage_output_proof proof;
       require(raw.size() < 4096 && epee::string_tools::parse_hexstr_to_binbuff(raw, binary) &&
           serialization::parse_binary(binary, proof) && t_serializable_object_to_blob(proof) == binary,
           "Invalid or noncanonical private ownership proof");
+      require(package_outputs.emplace(proof.transaction, proof.output_index, proof.stake_return).second,
+          "Duplicate output in private audit evidence package");
       auto node = inspect_output(proof, &p);
       auto& item = node.item;
       auto& source = node.source;

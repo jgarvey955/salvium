@@ -97,6 +97,18 @@ public:
   void stop() {}
 };
 
+TEST(cryptonote_protocol_handler, private_audit_does_not_decode_public_enrollment)
+{
+  test_core core;
+  cryptonote::t_cryptonote_protocol_handler<test_core> protocol(core, nullptr);
+  cryptonote::cryptonote_connection_context context;
+  epee::byte_stream output;
+  bool handled = false;
+  protocol.handle_invoke_map(true, cryptonote::NOTIFY_WALLET_AUDIT::ID,
+      epee::span<const uint8_t>{}, output, context, handled);
+  EXPECT_FALSE(handled);
+}
+
 typedef nodetool::node_server<cryptonote::t_cryptonote_protocol_handler<test_core>> Server;
 
 static bool is_blocked(Server &server, const epee::net_utils::network_address &address, time_t *t = NULL)
