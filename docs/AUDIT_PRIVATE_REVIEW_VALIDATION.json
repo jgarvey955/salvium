@@ -149,5 +149,13 @@
     "production_daemon_started_or_restarted": false,
     "configuration": "Explicit empty test configurations; fresh local chain/wallet directories, loopback endpoints and isolated ring databases",
     "resource_limits": "One CPU, 8 GiB RAM, no swap, 256 tasks for the build/test process tree"
+  },
+  "ci_compatibility_checks": {
+    "source_commit": "1ae4dc535b0416f805b49e04e356d17faf2daf7f",
+    "bundled_gtest_network_unit_syntax": "PASS",
+    "pinned_libtapi_patches": "PASS against SHA256-verified archive 62e419c12d1c9fad67cc1cd523132bc00db050998337c734c15bc8d73cc02b61",
+    "pinned_libtapi_cmake4_configure": "PASS; complete macOS cross-build not run locally",
+    "log_sha256": "8df41f994a6bba62e4d848d8fb17f837a6185a6e99bc005dfbe450c110d6ae74",
+    "remote_ci": "The previous head failed at the newer GoogleTest macro and old vendor CMake policy. Those errors are corrected here; full remote reruns remain separate checks."
   }
 }
