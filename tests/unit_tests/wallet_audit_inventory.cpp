@@ -15,6 +15,9 @@ namespace {
 uint64_t rpc_candidate_height = 100;
 uint64_t rpc_opening_height = 0;
 uint64_t rpc_activation_height = 10;
+uint64_t rpc_private_activation_height = 0;
+bool rpc_public_eligible = false;
+std::string rpc_tip_hash;
 size_t rpc_key_image_queries = 0;
 std::string rpc_nettype = "fakechain";
 void check(bool condition, const char* message)
@@ -46,10 +49,11 @@ public:
       cryptonote::COMMAND_RPC_GET_INFO::response info{};
       info.status = "OK"; info.nettype = rpc_nettype; info.height = rpc_candidate_height;
       result = epee::serialization::store_t_to_json(info);
-    } else if (method == "get_lineage_audit_status") {
+    } else if (method == "get_lineage_audit_status" || method == "get_private_audit_status") {
       cryptonote::COMMAND_RPC_LINEAGE_AUDIT_STATUS::response status{};
       status.status = "OK"; status.activation_height = rpc_activation_height; status.candidate_height = rpc_candidate_height;
       status.opening_height = rpc_opening_height;
+      if (method == "get_private_audit_status") status.activation_height = rpc_private_activation_height;
       const auto& params = request["params"];
       if (params.HasMember("key_images")) {
         rpc_key_image_queries += params["key_images"].Size();
@@ -59,6 +63,14 @@ public:
           status.entries.push_back({"AUDIT_PASSED", 20, 30});
       }
       result = epee::serialization::store_t_to_json(status);
+    } else if (method == "get_private_audit_outputs") {
+      cryptonote::COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS::response page{};
+      page.status = "OK"; page.activation_height = rpc_private_activation_height;
+      page.candidate_height = rpc_candidate_height; page.tip_hash = rpc_tip_hash;
+      page.asset_type = request["params"]["asset_type"].GetString();
+      check(!request["params"].HasMember("key_images"), "Public population request exposed key images");
+      if (rpc_public_eligible) for (uint64_t i = 0; i < 4; ++i) page.outputs.push_back({i, 1});
+      result = epee::serialization::store_t_to_json(page);
     } else throw std::runtime_error("Unexpected native RPC: " + method);
     response_.m_response_code = 200;
     response_.m_body = "{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"result\":" + result + "}";
@@ -92,6 +104,7 @@ public:
     for (size_t i = 0; i < 4; ++i) {
       tools::wallet2::transfer_details td{};
       td.m_block_height = 1;
+      td.m_asset_type_output_index = i;
       td.m_tx.version = i == 3 ? 5 : 2;
       td.m_tx.type = cryptonote::transaction_type::MINER;
       td.m_amount = amounts[i]; td.asset_type = "SAL1";
@@ -252,6 +265,7 @@ int main()
     const auto& config = cryptonote::get_config(cryptonote::MAINNET);
     cryptonote::generate_genesis_block(genesis, config.GENESIS_TX, config.GENESIS_NONCE);
     const auto genesis_hash = cryptonote::get_block_hash(genesis);
+    rpc_tip_hash = epee::string_tools::pod_to_hex(genesis_hash);
     wallet.import_blockchain({0, genesis_hash, std::vector<crypto::hash>(100, genesis_hash)});
     wallet_accessor_test::inventory(wallet);
     check(wallet.is_transfer_unlocked(wallet.get_transfer_details(3)),
@@ -293,6 +307,25 @@ int main()
     rpc_candidate_height = 100;
     wallet.update_lineage_audit_status();
     check(wallet.is_transfer_unlocked(wallet.get_transfer_details(3)), "Refreshed chain tip did not restore clearance");
+    rpc_private_activation_height = 10;
+    wallet.update_lineage_audit_status();
+    check(!wallet.is_transfer_unlocked(wallet.get_transfer_details(0)) &&
+        !wallet.is_transfer_unlocked(wallet.get_transfer_details(3)), "Active audit allowed uncleared outputs");
+    rpc_public_eligible = true;
+    wallet.update_lineage_audit_status();
+    check(wallet.is_transfer_unlocked(wallet.get_transfer_details(0)) &&
+        wallet.is_transfer_unlocked(wallet.get_transfer_details(3)), "Public clearance required an owner receipt import");
+    rpc_candidate_height = 101;
+    wallet.update_lineage_audit_status();
+    check(!wallet.is_transfer_unlocked(wallet.get_transfer_details(3)), "Stale public population failed open");
+    rpc_candidate_height = 100;
+    wallet.update_lineage_audit_status();
+    check(wallet.is_transfer_unlocked(wallet.get_transfer_details(3)), "Canonical public population failed to restore clearance");
+    rpc_public_eligible = false;
+    wallet.update_lineage_audit_status();
+    check(!wallet.is_transfer_unlocked(wallet.get_transfer_details(3)), "Orphaned clearance remained spendable");
+    rpc_private_activation_height = 0;
+    wallet.update_lineage_audit_status();
     for (bool watch : {false, true}) {
       wallet_accessor_test::signing_mode(wallet, watch, !watch);
       check(wallet.audit(false).state == "REVIEW_REQUIRED", "Read-only wallet review unavailable");
@@ -322,7 +355,7 @@ int main()
       rejected_test_authority = std::string(e.what()).find("Ephemeral audit test keys require an isolated fakechain daemon") != std::string::npos;
     }
     check(rejected_test_authority, "Regtest flag bypassed main developer authority on a mainnet daemon");
-    std::cout << "WALLET_AUDIT_REVIEW_PASS: local inventory, direct-origin distinction, no proofs, no key-image queries, no lineage signing gate\n";
+    std::cout << "WALLET_AUDIT_REVIEW_PASS: local inventory, direct-origin distinction, no public proofs or key-image queries, confirmed population gate without receipt import, stale/reorg fail closed\n";
     return 0;
   } catch (const std::exception& e) {
     std::cerr << e.what() << '\n';
