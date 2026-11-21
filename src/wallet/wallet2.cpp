@@ -8307,7 +8307,7 @@ void wallet2::import_audit_review(const std::string& text, const std::string& tr
   CHECK_AND_ASSERT_THROW_MES(epee::string_tools::hex_to_pod(trusted_text, trusted) &&
       epee::serialization::load_t_from_json(report, text), "Invalid audit result or developer public key");
   CHECK_AND_ASSERT_THROW_MES(cryptonote::authorized_audit_review_signer(static_cast<cryptonote::network_type>(report.network), trusted),
-      "No matching designated main developer authority in this build; the main developer supplies it during PR/release review");
+      "No matching designated main developer authority in this build; the main developer supplies it during private release review");
   CHECK_AND_ASSERT_THROW_MES(cryptonote::verify_audit_review_report(report, trusted), "Invalid main developer audit signature");
   std::string pinned;
   const auto canonical_trusted = epee::string_tools::pod_to_hex(trusted);

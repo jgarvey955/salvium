@@ -101,7 +101,7 @@ void sign_audit_review_report(audit_review_report& r, const crypto::secret_key& 
   crypto::public_key key;
   require(crypto::secret_key_to_public_key(secret, key) && crypto::check_key(key), "Invalid audit signing key");
   require(authorized_audit_review_signer(static_cast<network_type>(r.network), key),
-      "Only the designated main developer can sign results; configure the public authority during PR/release review");
+      "Only the designated main developer can sign results; configure the public authority during private release review");
   r.signer = hex(key);
   crypto::signature signature{};
   crypto::generate_signature(audit_review_report_hash(r), key, secret, signature);

@@ -10,7 +10,7 @@ Only the main developer processes requests and signs results, including results
 that clear automatically after verification. The owner imports the result.
 
 The main developer must supply the public signing key in
-`src/cryptonote_core/audit_review_authority.h` during PR/release review. Keys are
+`src/cryptonote_core/audit_review_authority.h` during private release review. Keys are
 intentionally empty in this branch. Exports and unsigned analysis work, but
 production-network signing and result acceptance fail until an authority is
 designated. An arbitrary key supplied by an owner cannot authorize clearance.

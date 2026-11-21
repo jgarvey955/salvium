@@ -12,7 +12,7 @@ exchange custody, token registration funding, and stake principal and payouts.
 The wallet owner initiates each request with an explicit export. The main
 developer processes it, runs automatic verification and signs the results.
 Background refresh and the daemon never initiate wallet requests. The developer
-will supply the public authority key during PR review; production-network
+will supply the public authority key during private release review; production-network
 results cannot be signed or accepted while it is unset.
 
 Clearance is an audit verdict. Ordinary transaction validation and maturity remain
