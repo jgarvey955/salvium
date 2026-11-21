@@ -106,11 +106,9 @@ private:
   struct catalog_entry
   {
     eligible_output output;
-    identity authorization;
     uint64_t spendable_height = 0;
   };
   std::map<std::string, std::map<uint64_t, catalog_entry>> eligible_;
-  std::map<identity, std::vector<std::pair<std::string, uint64_t>>> catalog_references_;
   std::map<uint64_t, std::vector<std::pair<identity, uint64_t>>> due_;
   std::map<uint64_t, std::vector<std::pair<crypto::hash, uint32_t>>> automatic_due_;
   void inherit_block(const BlockchainDB& db, const block& b, uint64_t height);
