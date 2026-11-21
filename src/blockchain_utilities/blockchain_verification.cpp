@@ -2139,10 +2139,10 @@ int main(int argc, const char* argv[])
         std::cout << "LINEAGE_OUTPUT confidence=ROOT_CONFIRMED depth=0"
                   << " tx=" << pod_to_hex_string(rec.tx_hash)
                   << " output_id=" << output_id << " height=" << rec.od.height
-                  << " blacklist=RECOMMENDED reason=SERIALIZED_CLEARTEXT_CONFIDENTIAL_ORIGIN\n";
+                  << " disposition=DEVELOPER_REVIEW recommendation=DENY reason=SERIALIZED_CLEARTEXT_CONFIDENTIAL_ORIGIN\n";
         std::cout << "PROPOSED_BLACKLIST output_id=" << output_id
                   << " confidence=ROOT_CONFIRMED"
-                  << " action=REJECT_RING_REFERENCE recommended=yes\n";
+                  << " action=HUMAN_REVIEW recommendation=DENY automatic_isolation=no\n";
       }
 
       auto resolve_lineage_ring =

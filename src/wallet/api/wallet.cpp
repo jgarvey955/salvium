@@ -2009,12 +2009,51 @@ PendingTransaction *WalletImpl::createCreateTokenTransaction(const std::string &
     return transaction.release();
 }
 
+bool WalletImpl::exportAuditReviewToFile(const std::string& path, uint64_t snapshot_height)
+{
+    try {
+        const auto evidence = exportAuditReview(snapshot_height);
+        if (evidence.empty()) return false;
+        cryptonote::write_private_audit_file(path, evidence);
+        return true;
+    } catch (const std::exception& e) { setStatusError(e.what()); return false; }
+}
+
+bool WalletImpl::importAuditReviewFromFile(const std::string& path, const std::string& developer_public_key)
+{
+    try { return importAuditReview(cryptonote::read_audit_file(path), developer_public_key); }
+    catch (const std::exception& e) { setStatusError(e.what()); return false; }
+}
+
+std::string WalletImpl::exportAuditReview(uint64_t snapshot_height)
+{
+    clearStatus();
+    try {
+        RefreshLock refresh_lock(*this);
+        m_wallet->refresh(trustedDaemon());
+        epee::wipeable_string password(m_password);
+        tools::wallet_keys_unlocker unlocker(*m_wallet, &password);
+        return m_wallet->export_audit_review(snapshot_height);
+    } catch (const std::exception& e) { setStatusError(e.what()); return {}; }
+}
+
+bool WalletImpl::importAuditReview(const std::string& result, const std::string& developer_public_key)
+{
+    clearStatus();
+    try {
+        RefreshLock refresh_lock(*this);
+        m_wallet->refresh(trustedDaemon());
+        m_wallet->import_audit_review(result, developer_public_key);
+        return true;
+    } catch (const std::exception& e) { setStatusError(e.what()); return false; }
+}
+
 std::string WalletImpl::audit(bool status_only, bool all_accounts, uint32_t account,
     const std::set<uint32_t>& subaddresses)
 {
     clearStatus();
     try {
-        LOCK_REFRESH();
+        RefreshLock refresh_lock(*this);
         m_wallet->refresh(trustedDaemon());
         const auto result = m_wallet->audit(!status_only, all_accounts, account, subaddresses);
         return epee::serialization::store_t_to_json(result);

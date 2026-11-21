@@ -44,7 +44,7 @@ ifneq ($(windows_host),)
   endif
 endif
 native_target ?= $(if $(MINGW_CHOST),$(MINGW_CHOST),$(shell $(CC) -dumpmachine))
-release_static_builddir := build/$(native_target)
+release_static_builddir = $(builddir)
 release_target_arg :=
 release_static_generator :=
 release_static_build64 := ON

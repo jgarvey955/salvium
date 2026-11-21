@@ -1604,6 +1604,37 @@ namespace tools
         CHECK_AND_ASSERT_THROW_MES(!req.all_accounts || (req.account_index == 0 && req.subaddr_indices.empty()),
             "Set all_accounts=false when selecting an audit account or subaddresses");
         m_wallet->refresh(m_wallet->is_trusted_daemon());
+        CHECK_AND_ASSERT_THROW_MES(!(req.export_evidence && !req.review_result.empty()),
+            "Export evidence and import results in separate requests");
+        CHECK_AND_ASSERT_THROW_MES(!req.export_evidence || (req.all_accounts && req.subaddr_indices.empty() && !req.status_only),
+            "Private export covers all wallet accounts; do not combine it with a status-only or scoped request");
+        if (!req.review_result.empty()) m_wallet->import_audit_review(req.review_result, req.developer_public_key);
+        CHECK_AND_ASSERT_THROW_MES(req.output_limit > 0 && req.output_limit <= 1000, "Audit output page limit must be 1 to 1000");
+        if (req.export_evidence) {
+          CHECK_AND_ASSERT_THROW_MES(req.evidence_limit > 0 && req.evidence_limit <= 4, "Audit evidence page limit must be 1 to 4 packages");
+          std::string text;
+          if (req.export_id.empty()) {
+            CHECK_AND_ASSERT_THROW_MES(req.evidence_offset == 0, "Start an audit export before requesting later pages");
+            text = m_wallet->export_audit_review(req.snapshot_height);
+          } else {
+            CHECK_AND_ASSERT_THROW_MES(m_wallet->get_attribute("audit-review-exports-v3", text), "No saved private audit export");
+          }
+          cryptonote::audit_review_request exported;
+          CHECK_AND_ASSERT_THROW_MES(epee::serialization::load_t_from_json(exported, text) && !exported.packages.empty(),
+              "Saved private audit evidence is invalid");
+          res.export_id = exported.packages.front().nonce;
+          CHECK_AND_ASSERT_THROW_MES(req.export_id.empty() || req.export_id == res.export_id,
+              "Audit export changed; restart paging with the new snapshot");
+          CHECK_AND_ASSERT_THROW_MES(req.snapshot_height == UINT64_MAX ||
+              req.snapshot_height == exported.packages.front().snapshot_height, "Audit export snapshot differs");
+          CHECK_AND_ASSERT_THROW_MES(req.evidence_offset < exported.packages.size(), "Audit evidence offset is out of range");
+          const size_t end = std::min<size_t>(exported.packages.size(), size_t(req.evidence_offset) + req.evidence_limit);
+          cryptonote::audit_review_request page;
+          page.packages.assign(exported.packages.begin() + req.evidence_offset, exported.packages.begin() + end);
+          res.private_evidence = epee::serialization::store_t_to_json(page);
+          res.next_evidence_offset = end;
+          res.evidence_more = end < exported.packages.size();
+        }
         const auto result = m_wallet->audit(!req.status_only && !req.do_not_relay, req.all_accounts,
             req.account_index, req.subaddr_indices, req.do_not_relay && !req.status_only);
         res.state = result.state;
@@ -1630,9 +1661,16 @@ namespace tools
         res.stake_immature = result.stake_immature;
         res.balances = result.balances;
         res.proofs = result.proofs;
-        for (const auto& row : result.outputs)
-          res.outputs.push_back({row.transaction, row.key_image, row.state, row.asset_type, row.amount,
+        res.total_outputs = result.outputs.size();
+        const size_t output_end = std::min<size_t>(result.outputs.size(), size_t(req.output_offset) + req.output_limit);
+        CHECK_AND_ASSERT_THROW_MES(req.output_offset <= result.outputs.size(), "Audit output offset is out of range");
+        res.next_output_offset = output_end; res.outputs_more = output_end < result.outputs.size();
+        for (size_t index = req.output_offset; index < output_end; ++index) {
+          const auto& row = result.outputs[index];
+          res.outputs.push_back({row.output_index, row.recommendation, row.reason, row.decision_reason,
+              row.transaction, row.key_image, row.state, row.asset_type, row.amount,
               row.completed_height, row.release_height, row.account, row.subaddress, row.spent, row.stake, row.immature});
+        }
         return true;
       } catch (const std::exception&) {
         handle_rpc_exception(std::current_exception(), er, WALLET_RPC_ERROR_CODE_GENERIC_TRANSFER_ERROR);

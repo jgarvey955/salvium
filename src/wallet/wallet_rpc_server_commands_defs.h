@@ -926,6 +926,12 @@ namespace wallet_rpc
     struct request_t
     {
       bool status_only;
+      bool export_evidence;
+      std::string export_id;
+      uint32_t evidence_offset, evidence_limit;
+      uint32_t output_offset, output_limit;
+      uint64_t snapshot_height;
+      std::string review_result, developer_public_key;
       bool all_accounts;
       std::string address;
       uint32_t account_index;
@@ -941,6 +947,15 @@ namespace wallet_rpc
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_OPT(status_only, false)
+        KV_SERIALIZE_OPT(export_evidence, false)
+        KV_SERIALIZE_OPT(export_id, std::string())
+        KV_SERIALIZE_OPT(evidence_offset, uint32_t(0))
+        KV_SERIALIZE_OPT(evidence_limit, uint32_t(4))
+        KV_SERIALIZE_OPT(output_offset, uint32_t(0))
+        KV_SERIALIZE_OPT(output_limit, uint32_t(1000))
+        KV_SERIALIZE_OPT(snapshot_height, UINT64_MAX)
+        KV_SERIALIZE_OPT(review_result, std::string())
+        KV_SERIALIZE_OPT(developer_public_key, std::string())
         KV_SERIALIZE_OPT(all_accounts, true)
         KV_SERIALIZE_OPT(address, std::string())
         KV_SERIALIZE_OPT(account_index, (uint32_t)0)
@@ -958,6 +973,8 @@ namespace wallet_rpc
     typedef epee::misc_utils::struct_init<request_t> request;
 
     struct output {
+      uint32_t output_index;
+      std::string recommendation, reason, decision_reason;
       std::string transaction;
       std::string key_image;
       std::string state;
@@ -972,6 +989,10 @@ namespace wallet_rpc
       bool immature;
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(transaction)
+        KV_SERIALIZE(output_index)
+        KV_SERIALIZE(recommendation)
+        KV_SERIALIZE(reason)
+        KV_SERIALIZE(decision_reason)
         KV_SERIALIZE(key_image)
         KV_SERIALIZE(state)
         KV_SERIALIZE(asset_type)
@@ -987,6 +1008,11 @@ namespace wallet_rpc
     };
     struct response_t : split_transfer_response {
       std::string state;
+      std::string private_evidence;
+      std::string export_id;
+      uint32_t next_evidence_offset = 0, next_output_offset = 0;
+      uint64_t total_outputs = 0;
+      bool evidence_more = false, outputs_more = false;
       uint64_t activation_height;
       uint64_t opening_height;
       uint64_t closing_height;
@@ -1011,6 +1037,13 @@ namespace wallet_rpc
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_PARENT(split_transfer_response)
         KV_SERIALIZE(state)
+        KV_SERIALIZE(private_evidence)
+        KV_SERIALIZE(export_id)
+        KV_SERIALIZE(next_evidence_offset)
+        KV_SERIALIZE(next_output_offset)
+        KV_SERIALIZE(total_outputs)
+        KV_SERIALIZE(evidence_more)
+        KV_SERIALIZE(outputs_more)
         KV_SERIALIZE(activation_height)
         KV_SERIALIZE(opening_height)
         KV_SERIALIZE(closing_height)

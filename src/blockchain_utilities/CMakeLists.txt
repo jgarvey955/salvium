@@ -158,6 +158,13 @@ set(blockchain_verification_sources
   independent_chain_forensics.cpp
   )
 
+monero_add_executable(audit_review audit_review_main.cpp)
+target_link_libraries(audit_review PRIVATE cryptonote_core blockchain_db cncrypto common epee
+  ${Boost_PROGRAM_OPTIONS_LIBRARY} ${Boost_FILESYSTEM_LIBRARY} ${Boost_SYSTEM_LIBRARY}
+  ${CMAKE_THREAD_LIBS_INIT} ${EXTRA_LIBRARIES})
+set_property(TARGET audit_review PROPERTY OUTPUT_NAME "salvium-audit-review")
+install(TARGETS audit_review DESTINATION bin)
+
 set(blockchain_verification_private_headers
   independent_chain_forensics.h
   )

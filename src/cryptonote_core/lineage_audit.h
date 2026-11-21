@@ -128,6 +128,7 @@ public:
       const std::string& asset = "SAL1") const;
 
 private:
+  friend class audit_review_verifier;
   friend class lineage_audit_test;
   struct ring_member
   {

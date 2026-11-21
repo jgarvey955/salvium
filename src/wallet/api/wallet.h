@@ -174,6 +174,10 @@ public:
                                                       std::string url, 
                                                       uint32_t subaddr_account,
                                                       std::set<uint32_t> subaddr_indices = {}) override;
+    std::string exportAuditReview(uint64_t snapshot_height = UINT64_MAX) override;
+    bool importAuditReview(const std::string& result, const std::string& developer_public_key) override;
+    bool exportAuditReviewToFile(const std::string& path, uint64_t snapshot_height = UINT64_MAX) override;
+    bool importAuditReviewFromFile(const std::string& path, const std::string& developer_public_key) override;
     std::string audit(bool status_only = false, bool all_accounts = true,
         uint32_t account = 0, const std::set<uint32_t>& subaddresses = {}) override;
     PendingTransaction * createAuditTransaction(uint32_t mixin_count,
