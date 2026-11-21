@@ -467,7 +467,7 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
         }
   for (auto& node : outputs) {
     node.item.spent = node.source.stake_return ?
-        (node.source.payout_height <= report.snapshot_height && !node.invalid && !node.missing_authorization) :
+        (node.source.payout_height <= report.snapshot_height && !node.missing_authorization) :
         spent.count(node.source.image);
     report.outputs.push_back(std::move(node.item));
   }

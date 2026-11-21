@@ -73,7 +73,8 @@ def main():
         chain.mine(11)
         # All accounts are covered even when ordinary CLI scope is another account.
         account = chain.wallets[2].call("create_account", {"label": "NonKYC"})["account_index"]
-        chain.wallets[2].call("create_address", {"account_index": account, "count": 1000})
+        for offset in range(0, 1000, 64):
+            chain.wallets[2].call("create_address", {"account_index": account, "count": min(64, 1000 - offset)})
         snapshot = chain.tip()
         evidence = []
         for number, wallet in enumerate(chain.wallets):

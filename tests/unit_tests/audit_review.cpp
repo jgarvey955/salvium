@@ -1,5 +1,6 @@
 #include "cryptonote_core/audit_review.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
+#include "cryptonote_basic/tx_extra.h"
 #include "blockchain_db/testdb.h"
 #include "ringct/rctSigs.h"
 #include "device/device.hpp"
@@ -25,6 +26,9 @@ public:
   std::unordered_map<crypto::hash, std::pair<transaction, uint64_t>> txs;
   uint64_t epoch = 0;
   uint64_t height() const override { return 201; }
+  int get_yield_block_info(uint64_t, yield_block_info& info) const override {
+    info = {}; return 0;
+  }
   bool tx_exists(const crypto::hash& id) const override { return txs.count(id); }
   transaction get_tx(const crypto::hash& id) const override { return txs.at(id).first; }
   uint64_t get_tx_block_height(const crypto::hash& id) const override { return txs.at(id).second; }
@@ -61,9 +65,11 @@ audit_review_package context(const review_db& db) {
   return p;
 }
 lineage_output_proof prove(const audit_review_package& p, const transaction& tx, size_t index,
-    const rct::key& secret, const rct::key& mask, uint64_t amount, bool public_amount = false) {
+    const rct::key& secret, const rct::key& mask, uint64_t amount, bool public_amount = false,
+    bool stake_return = false) {
   lineage_output_proof proof;
   proof.transaction = get_transaction_hash(tx); proof.output_index = index; proof.amount = amount;
+  proof.stake_return = stake_return;
   proof.offset_mask = mask == rct::zero() ? 1 : 0;
   const auto offset = proof.offset_mask ? rct::identity() : rct::zero();
   crypto::public_key key;
@@ -201,6 +207,34 @@ int main(int argc, char** argv) {
     check(opening_root.outputs.front().state == "CLEARED" &&
         opening_root.outputs.front().reason == "ACCEPTED_OPENING",
         "Accepted opening unnecessarily required private ancestry before the boundary");
+    // A funding defect must not count returned principal again beside its payout.
+    review_db stake_db;
+    stake_db.txs[get_transaction_hash(accepted)] = {accepted, 2};
+    stake_db.indices.emplace_back(get_transaction_hash(accepted), 0);
+    const auto stake_owner = transfer(stake_db, independent, 10, {0}, 0);
+    stake_db.txs.erase(get_transaction_hash(stake_owner.tx));
+    auto defective_stake = stake_owner.tx;
+    defective_stake.type = transaction_type::STAKE;
+    defective_stake.amount_burnt = 50; // Original transfer proof cannot authorize this extra burn.
+    get_output_public_key(defective_stake.vout[0], defective_stake.return_address);
+    defective_stake.return_pubkey = rct::rct2pk(rct::pkGen());
+    defective_stake.invalidate_hashes();
+    stake_db.txs[get_transaction_hash(defective_stake)] = {defective_stake, 10};
+    transaction returned;
+    returned.version = 2; returned.type = transaction_type::PROTOCOL;
+    returned.vin.push_back(txin_gen{31});
+    returned.vout.push_back({50, txout_to_key{defective_stake.return_address, "SAL1", 60}});
+    add_additional_tx_pub_keys_to_extra(returned.extra, {defective_stake.return_pubkey});
+    stake_db.txs[get_transaction_hash(returned)] = {returned, 31};
+    auto stake_request = context(stake_db); stake_request.network = uint8_t(TESTNET);
+    append(stake_request, prove(stake_request, defective_stake, 0, stake_owner.secret, rct::identity(), 50, true, true));
+    append(stake_request, prove(stake_request, returned, 0, stake_owner.secret, rct::identity(), 50, true));
+    const auto paid_defect = audit_review_verifier::verify(stake_db, TESTNET, {stake_request}, 2, 0);
+    check(paid_defect.outputs[0].spent && !paid_defect.outputs[1].spent,
+        "Returned defective stake principal inflated unspent custody");
+    for (const auto& item : paid_defect.outputs)
+      check(item.state == "REVIEW_REQUIRED" && item.recommendation == "DENY",
+          "Recognizing a canonical payout cleared defective funding");
     auto wrong = p; wrong.snapshot_hash = hex(crypto::rand<crypto::hash>());
     rejected([&] { audit_review_verifier::verify(db, FAKECHAIN, {wrong}, 2); });
     wrong = p; wrong.network = uint8_t(MAINNET);
