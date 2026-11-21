@@ -52,8 +52,8 @@ jobs:
 
       - name: run private audit regressions
         run: |
-          build/ci-debug/src/cryptonote_core/audit_review_tests
-          build/ci-debug/src/cryptonote_core/lineage_audit_tests
+          build/ci-debug/src/cryptonote_core/audit_review_tests tests/data/sal1-bad-origin-465074.hex
+          build/ci-debug/src/cryptonote_core/lineage_audit_tests tests/data/sal1-bad-origin-465074.hex
           build/ci-debug/src/wallet/wallet_audit_inventory_tests
           python3 tests/functional_tests/audit_nonkyc_reconciliation.py
 
@@ -100,7 +100,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
-          build/ci-asan/src/cryptonote_core/audit_review_tests
-          build/ci-asan/src/cryptonote_core/lineage_audit_tests
+          build/ci-asan/src/cryptonote_core/audit_review_tests tests/data/sal1-bad-origin-465074.hex
+          build/ci-asan/src/cryptonote_core/lineage_audit_tests tests/data/sal1-bad-origin-465074.hex
           build/ci-asan/src/wallet/wallet_audit_inventory_tests
 
