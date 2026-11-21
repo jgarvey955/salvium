@@ -1470,8 +1470,9 @@ namespace cryptonote
     bool ok;
     {
       CRITICAL_REGION_LOCAL(chain);
-      if (lineage_policy::consensus_enforcement && chain.lineage_audit_closing_height() &&
-          chain.get_current_blockchain_height() >= chain.lineage_audit_activation()) {
+      if ((chain.private_audit_activation() && chain.get_current_blockchain_height() >= chain.private_audit_activation()) ||
+          (lineage_policy::consensus_enforcement && chain.lineage_audit_closing_height() &&
+          chain.get_current_blockchain_height() >= chain.lineage_audit_activation())) {
         transaction tx;
         ok = parse_and_validate_tx_from_blob(tx_blob, tx) && chain.check_lineage_tx_sanity(tx);
       } else {
@@ -2041,6 +2042,52 @@ namespace cryptonote
     return 0;
   }
   //------------------------------------------------------------------------------------------------------------------------------
+  bool core_rpc_server::on_private_audit_status(const COMMAND_RPC_LINEAGE_AUDIT_STATUS::request& req,
+      COMMAND_RPC_LINEAGE_AUDIT_STATUS::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx)
+  {
+    if (!req.key_images.empty() || !req.disclosure_ids.empty()) {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+      error_resp.message = "Private audit status takes no ownership identifiers"; return false;
+    }
+    auto& chain = m_core.get_blockchain_storage();
+    CRITICAL_REGION_LOCAL(chain);
+    res.activation_height = chain.private_audit_activation();
+    res.opening_height = lineage_policy::mainnet_opening_height;
+    res.candidate_height = chain.get_current_blockchain_height();
+    res.authority = string_tools::pod_to_hex(chain.private_audit_authority());
+    res.max_output_proofs_per_block = lineage_limits::max_outputs;
+    res.max_enrollment_bytes_per_block = lineage_limits::max_bytes;
+    res.status = CORE_RPC_STATUS_OK; return true;
+  }
+  bool core_rpc_server::on_private_audit_outputs(const COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS::request& req,
+      COMMAND_RPC_LINEAGE_AUDIT_OUTPUTS::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx)
+  {
+    try {
+      if (!req.limit || req.limit > 1000) throw std::runtime_error("Audit page limit must be 1 through 1000");
+      auto& chain = m_core.get_blockchain_storage();
+      CRITICAL_REGION_LOCAL(chain);
+      res.activation_height = chain.private_audit_activation();
+      res.candidate_height = chain.get_current_blockchain_height();
+      res.tip_hash = string_tools::pod_to_hex(chain.get_tail_id()); res.asset_type = req.asset_type;
+      for (const auto& output : chain.private_audit_outputs(req.asset_type, req.from_index, req.limit, res.more))
+        res.outputs.push_back({output.asset_index, output.height});
+      res.status = CORE_RPC_STATUS_OK; return true;
+    } catch (const std::exception& e) {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM; error_resp.message = e.what(); return false;
+    }
+  }
+  bool core_rpc_server::on_submit_audit_clearance(const COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE::request& req,
+      COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx)
+  {
+    std::string data, reason; crypto::hash id; bool added = false;
+    if (req.data.size() > 2 * lineage_limits::max_bytes || !string_tools::parse_hexstr_to_binbuff(req.data, data) ||
+        !m_core.get_blockchain_storage().queue_audit_clearance(data, id, reason, added)) {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+      error_resp.message = reason.empty() ? "Invalid signed clearance batch" : reason; return false;
+    }
+    if (added) m_core.get_protocol()->relay_audit_clearance(data, boost::uuids::nil_uuid());
+    res.disclosure_id = string_tools::pod_to_hex(id); res.status = CORE_RPC_STATUS_OK; return true;
+  }
   bool core_rpc_server::on_submit_lineage_disclosure(const COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE::request& req,
       COMMAND_RPC_SUBMIT_LINEAGE_DISCLOSURE::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx)
   {

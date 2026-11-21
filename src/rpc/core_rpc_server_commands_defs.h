@@ -1030,6 +1030,7 @@ namespace cryptonote
       uint64_t max_output_proofs_per_block;
       uint64_t max_enrollment_bytes_per_block;
       uint64_t work_items_per_block;
+      std::string authority;
       std::vector<entry> entries;
       std::vector<uint64_t> disclosure_heights;
       BEGIN_KV_SERIALIZE_MAP()
@@ -1041,6 +1042,7 @@ namespace cryptonote
         KV_SERIALIZE(max_output_proofs_per_block)
         KV_SERIALIZE(max_enrollment_bytes_per_block)
         KV_SERIALIZE(work_items_per_block)
+        KV_SERIALIZE_OPT(authority, std::string())
         KV_SERIALIZE(entries)
         KV_SERIALIZE(disclosure_heights)
       END_KV_SERIALIZE_MAP()

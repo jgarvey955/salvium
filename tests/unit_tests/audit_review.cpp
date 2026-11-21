@@ -186,6 +186,11 @@ int main(int argc, char** argv) {
         paths.outputs[1].reason == "PROVEN_ILLICIT_FUNDING_REQUIRES_REVIEW",
         "Illicit transfer across two independent owners escaped review");
     check(paths.outputs[2].state == "CLEARED", "An illicit decoy contaminated a proven legitimate spend");
+    const auto opening_with_adverse = audit_review_verifier::verify(db, FAKECHAIN, {peers, roots, p}, 150);
+    check(opening_with_adverse.outputs[0].state == "REVIEW_REQUIRED" &&
+        opening_with_adverse.outputs[1].state == "REVIEW_REQUIRED" &&
+        opening_with_adverse.outputs[2].state == "CLEARED",
+        "Trusted opening erased positive illicit funding evidence or blamed an innocent decoy");
     transaction accepted = reward;
     accepted.type = transaction_type::PROTOCOL;
     const auto accepted_secret = rct::skGen();

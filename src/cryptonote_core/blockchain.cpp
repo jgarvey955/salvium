@@ -50,6 +50,7 @@
 #include "tx_pool.h"
 #include "blockchain.h"
 #include "lineage_audit_policy.h"
+#include "audit_review.h"
 #include "tx_rules_engine.h"
 #include "tx_rules_adapters.h"
 #include "tx_verification_utils.h"
@@ -1466,11 +1467,11 @@ bool Blockchain::prevalidate_miner_transaction(const block& b, uint64_t height, 
   {
     // Scale extra limit by number of outputs since Carrot requires 1 32-byte ephemeral pubkey per output (for Janus).
     std::size_t max_extra_size = 1060 + b.miner_tx.vout.size() * 32; //(1+32) + (1+1+16*32) + (1+16*32) = 1060
-    if (lineage_policy::public_enrollment && m_lineage_audit.active(height)) {
+    if ((lineage_policy::public_enrollment && m_lineage_audit.active(height)) || m_private_audit.active(height)) {
       std::vector<tx_extra_field> fields;
       if (!parse_tx_extra(b.miner_tx.extra, fields)) return false;
       size_t audit_bytes = 0;
-      for (const auto& field : fields) if (boost::get<tx_extra_lineage_audit>(&field)) {
+      for (const auto& field : fields) if (boost::get<tx_extra_lineage_audit>(&field) || boost::get<tx_extra_audit_clearance>(&field)) {
         const auto size = t_serializable_object_to_blob(field).size();
         if (size > lineage_limits::max_bytes - audit_bytes) {
           MERROR("miner audit extra exceeds aggregate byte limit");
@@ -1496,6 +1497,11 @@ bool Blockchain::prevalidate_miner_transaction(const block& b, uint64_t height, 
 bool Blockchain::prevalidate_protocol_transaction(const block& b, uint64_t height, uint8_t hf_version)
 {
   LOG_PRINT_L3("Blockchain::" << __func__);
+  if (m_private_audit.active(height)) {
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(b.protocol_tx.extra, fields)) return false;
+    for (const auto& field : fields) if (boost::get<tx_extra_audit_clearance>(&field)) return false;
+  }
   if (height == 0) {
     // Genesis block exception
     CHECK_AND_ASSERT_MES(b.protocol_tx.version == 1, false, "Invalid genesis protocol transaction version");
@@ -2696,6 +2702,25 @@ bool Blockchain::create_block_template(block& b, const crypto::hash *from_block,
       lineage_extra.clear();
     }
   }
+  if (canonical_parent && m_private_audit.active(height)) {
+    audit_clearance_batch combined;
+    std::set<std::tuple<std::string, uint32_t, bool>> seen;
+    for (const auto& data : pending_audit_clearances()) {
+      audit_clearance_batch batch;
+      if (!serialization::parse_binary(data, batch)) continue;
+      for (const auto& c : batch.certificates) {
+        if (combined.certificates.size() >= lineage_limits::max_outputs) break;
+        if (seen.emplace(epee::string_tools::pod_to_hex(c.transaction), c.output_index, c.stake).second)
+          combined.certificates.push_back(c);
+      }
+    }
+    if (!combined.certificates.empty()) {
+      const auto extra = t_serializable_object_to_blob(tx_extra_field{tx_extra_audit_clearance{
+          t_serializable_object_to_blob(combined)}});
+      CHECK_AND_ASSERT_MES(extra.size() <= lineage_limits::max_bytes, false, "Clearance template carrier too large");
+      lineage_extra += extra;
+    }
+  }
   const auto add_lineage_extra = [&]() {
     b.miner_tx.extra.insert(b.miner_tx.extra.end(), lineage_extra.begin(), lineage_extra.end());
     b.miner_tx.invalidate_hashes();
@@ -3328,6 +3353,8 @@ bool Blockchain::get_outs(const COMMAND_RPC_GET_OUTPUTS_BIN::request& req, COMMA
     const bool audit_window_policy = lineage_policy::consensus_enforcement &&
         m_lineage_audit.closing_height() && m_lineage_audit.active(m_db->height());
     if (audit_window_policy) m_lineage_audit.sync(*m_db, m_nettype);
+    const bool private_audit_policy_active = m_private_audit.active(m_db->height());
+    if (private_audit_policy_active) m_private_audit.sync(*m_db);
     for (size_t i = 0; i < data.size(); ++i)
     {
       const output_data_t& t = data[i];
@@ -3343,6 +3370,8 @@ bool Blockchain::get_outs(const COMMAND_RPC_GET_OUTPUTS_BIN::request& req, COMMA
       out.unlocked = !poisoned[i] && is_tx_spendtime_unlocked(t.unlock_time, hf_version);
       if (out.unlocked && audit_window_policy && is_lineage_audit_asset(cryptonote::asset_type_from_id(t.asset_type)))
         out.unlocked = m_lineage_audit.output_spendable(*m_db, m_nettype, resolved_output_ids[i], m_db->height());
+      if (out.unlocked && private_audit_policy_active)
+        out.unlocked = m_private_audit.output_spendable(*m_db, resolved_output_ids[i], m_db->height());
       out.height = t.height;
       out.txid = crypto::null_hash;
       out.output_id = resolved_output_ids[i];
@@ -4117,6 +4146,141 @@ void Blockchain::on_new_tx_from_block(const cryptonote::transaction &tx)
 // This function overloads its sister function with
 // an extra value (hash of highest block that holds an output used as input)
 // as a return-by-reference.
+std::string Blockchain::clearance_queue_path(const crypto::hash& id) const
+{
+  const auto files = m_db->get_filenames();
+  CHECK_AND_ASSERT_THROW_MES(!files.empty(), "Clearance queue requires a persistent database");
+  return (boost::filesystem::path(files.front()).parent_path() / "audit-clearance-queue-v4" /
+      epee::string_tools::pod_to_hex(id)).string();
+}
+void Blockchain::load_clearance_queue()
+{
+  m_private_audit.sync(*m_db);
+  if (m_clearance_queue_loaded || m_db->is_read_only()) return;
+  m_clearance_queue_loaded = true;
+  const auto directory = boost::filesystem::path(clearance_queue_path(crypto::null_hash)).parent_path();
+  if (!boost::filesystem::exists(directory)) return;
+  size_t bytes = 0, files = 0;
+  for (const auto& entry : boost::filesystem::directory_iterator(directory)) {
+    if (++files > 4096) break;
+    crypto::hash id;
+    if (!epee::string_tools::hex_to_pod(entry.path().filename().string(), id) ||
+        !boost::filesystem::is_regular_file(entry.path()) || boost::filesystem::is_symlink(entry.path())) continue;
+    try {
+      auto data = read_audit_file(entry.path().string(), lineage_limits::max_bytes);
+      if (data.empty() || data.size() > lineage_limits::max_queue_bytes - bytes ||
+          crypto::cn_fast_hash(data.data(), data.size()) != id) continue;
+      bytes += data.size(); m_clearance_pending.emplace(id, std::move(data));
+    } catch (const std::exception&) {}
+  }
+}
+std::vector<std::string> Blockchain::pending_audit_clearances()
+{
+  CRITICAL_REGION_LOCAL(m_blockchain_lock);
+  if (!m_private_audit.active(m_db->height())) return {};
+  load_clearance_queue();
+  std::vector<std::string> result;
+  std::map<audit_clearance_registry::identity, uint64_t> highest;
+  for (const auto& pending : m_clearance_pending) {
+    audit_clearance_batch batch;
+    if (serialization::parse_binary(pending.second, batch)) for (const auto& c : batch.certificates) {
+      auto& revision = highest[{epee::string_tools::pod_to_hex(c.transaction), c.output_index, c.stake}];
+      revision = std::max(revision, c.revision);
+    }
+  }
+  std::set<audit_clearance_registry::identity> emitted;
+  // Cap work as well as returned bytes. Partially confirmed batches retain
+  // their unconfirmed certificates; per-certificate signatures permit this.
+  size_t work = 0;
+  for (auto item = m_clearance_pending.begin(); item != m_clearance_pending.end() && work < 1024;) {
+    audit_clearance_batch batch, remaining;
+    bool valid = serialization::parse_binary(item->second, batch);
+    if (valid) for (const auto& c : batch.certificates) {
+      ++work;
+      const audit_clearance_registry::identity identity{epee::string_tools::pod_to_hex(c.transaction), c.output_index, c.stake};
+      if (c.revision < highest[identity] || emitted.count(identity)) continue;
+      const auto* old = m_private_audit.find(c.transaction, c.output_index, c.stake);
+      if (m_private_audit.cleared(c.transaction, c.output_index, c.stake)) continue;
+      if (old && old->certificate.revision >= c.revision) continue;
+      audit_clearance_batch single; single.certificates.push_back(c);
+      std::string reason;
+      if (m_private_audit.validate_batch(*m_db, single, m_db->height(), reason)) {
+        remaining.certificates.push_back(c); emitted.insert(identity);
+      }
+    }
+    if (remaining.certificates.empty()) {
+      boost::system::error_code ec;
+      boost::filesystem::remove(clearance_queue_path(item->first), ec);
+      item = m_clearance_pending.erase(item);
+    } else {
+      result.push_back(t_serializable_object_to_blob(remaining)); ++item;
+    }
+  }
+  return result;
+}
+bool Blockchain::queue_audit_clearance(const std::string& data, crypto::hash& id, std::string& reason, bool& added)
+{
+  CRITICAL_REGION_LOCAL(m_blockchain_lock);
+  added = false;
+  try {
+    CHECK_AND_ASSERT_THROW_MES(m_private_audit.active(m_db->height()), "Private audit is not active");
+    CHECK_AND_ASSERT_THROW_MES(!data.empty() && data.size() <= lineage_limits::max_bytes, "Invalid clearance batch size");
+    load_clearance_queue();
+    id = crypto::cn_fast_hash(data.data(), data.size());
+    if (m_clearance_pending.count(id)) return true;
+    audit_clearance_batch batch;
+    CHECK_AND_ASSERT_THROW_MES(serialization::parse_binary(data, batch) &&
+        t_serializable_object_to_blob(batch) == data, "Invalid clearance batch encoding");
+    const auto now = std::chrono::steady_clock::now();
+    if (now - m_clearance_budget_time >= std::chrono::seconds(1)) {
+      m_clearance_budget_time = now; m_clearance_budget = 0;
+    }
+    CHECK_AND_ASSERT_THROW_MES(batch.certificates.size() <= 1024 - m_clearance_budget, "Clearance verification busy; retry");
+    m_clearance_budget += batch.certificates.size();
+    if (!m_private_audit.validate_batch(*m_db, batch, m_db->height(), reason, true)) return false;
+    // Deduplicate by signed output identity/revision, not the enclosing batch
+    // hash. Reordering/repacking already-known signatures must not fill disk.
+    std::map<audit_clearance_registry::identity, uint64_t> pending_revisions;
+    std::map<audit_clearance_registry::identity, crypto::hash> pending_messages;
+    for (const auto& pending : m_clearance_pending) {
+      audit_clearance_batch known;
+      if (serialization::parse_binary(pending.second, known)) for (const auto& c : known.certificates) {
+        const audit_clearance_registry::identity identity{epee::string_tools::pod_to_hex(c.transaction), c.output_index, c.stake};
+        auto& revision = pending_revisions[identity];
+        if (c.revision >= revision) {
+          revision = c.revision; pending_messages[identity] = audit_clearance_message(c);
+        }
+      }
+    }
+    audit_clearance_batch novel;
+    for (const auto& c : batch.certificates) {
+      const audit_clearance_registry::identity identity{epee::string_tools::pod_to_hex(c.transaction), c.output_index, c.stake};
+      CHECK_AND_ASSERT_THROW_MES(pending_revisions[identity] != c.revision ||
+          pending_messages[identity] == audit_clearance_message(c), "Conflicting pending certificate revision");
+      const auto* old = m_private_audit.find(c.transaction, c.output_index, c.stake);
+      if (!m_private_audit.cleared(c.transaction, c.output_index, c.stake) &&
+          (!old || old->certificate.revision < c.revision) &&
+          pending_revisions[{epee::string_tools::pod_to_hex(c.transaction), c.output_index, c.stake}] < c.revision)
+        novel.certificates.push_back(c);
+    }
+    if (novel.certificates.empty()) return true;
+    std::sort(novel.certificates.begin(), novel.certificates.end(), [](const auto& a, const auto& b) {
+      return std::make_tuple(epee::string_tools::pod_to_hex(a.transaction), a.output_index, a.stake) <
+          std::make_tuple(epee::string_tools::pod_to_hex(b.transaction), b.output_index, b.stake);
+    });
+    const auto normalized = t_serializable_object_to_blob(novel);
+    id = crypto::cn_fast_hash(normalized.data(), normalized.size());
+    size_t bytes = 0;
+    for (const auto& pending : m_clearance_pending) bytes += pending.second.size();
+    CHECK_AND_ASSERT_THROW_MES(m_clearance_pending.size() < 4096 &&
+        normalized.size() <= lineage_limits::max_queue_bytes - bytes, "Clearance queue full; retry after confirmation");
+    const auto path = boost::filesystem::path(clearance_queue_path(id));
+    boost::filesystem::create_directories(path.parent_path());
+    if (!boost::filesystem::exists(path)) write_private_audit_file(path.string(), normalized);
+    m_clearance_pending.emplace(id, normalized); added = true;
+    invalidate_block_template_cache(); return true;
+  } catch (const std::exception& e) { reason = e.what(); return false; }
+}
 std::string Blockchain::lineage_queue_path(const crypto::hash& id) const
 {
   const auto files = m_db->get_filenames();
@@ -4225,12 +4389,14 @@ std::vector<uint64_t> Blockchain::lineage_disclosure_heights(const std::vector<c
 bool Blockchain::check_lineage_spend(const transaction& tx, std::string& reason) const
 {
   CRITICAL_REGION_LOCAL(m_blockchain_lock);
+  if (!m_private_audit.check_spend(*m_db, tx, reason)) return false;
   return m_lineage_audit.check_spend(*m_db, m_nettype, tx, reason);
 }
 bool Blockchain::check_lineage_disclosure(const block& candidate, std::string& reason) const
 {
   CRITICAL_REGION_LOCAL(m_blockchain_lock);
   try {
+    if (!m_private_audit.validate_block(*m_db, candidate, reason)) return false;
     if (!lineage_policy::public_enrollment) {
       std::vector<tx_extra_field> fields;
       if (!parse_tx_extra(candidate.miner_tx.extra, fields)) {
@@ -4269,13 +4435,36 @@ std::vector<std::pair<uint64_t, uint64_t>> Blockchain::lineage_outputs(uint64_t 
   return {first, end};
 }
 
+std::vector<audit_clearance_registry::eligible_output> Blockchain::private_audit_outputs(
+    const std::string& asset, uint64_t from, size_t limit, bool& more) const
+{
+  CRITICAL_REGION_LOCAL(m_blockchain_lock);
+  m_private_audit.sync(*m_db);
+  return m_private_audit.eligible_outputs(*m_db, asset, from, limit, more);
+}
+
 bool Blockchain::check_lineage_tx_sanity(const transaction& tx) const
 {
   CRITICAL_REGION_LOCAL(m_blockchain_lock);
-  if (!lineage_policy::consensus_enforcement) return true;
-  m_lineage_audit.sync(*m_db, m_nettype);
+  const bool private_active = m_private_audit.active(m_db->height());
+  if (!lineage_policy::consensus_enforcement && !private_active) return true;
   if (!is_lineage_audit_asset(tx.source_asset_type)) return false;
-  const auto& outputs = m_lineage_audit.eligible_outputs(*m_db, m_nettype, tx.source_asset_type);
+  std::vector<std::pair<uint64_t, uint64_t>> outputs;
+  if (private_active) {
+    m_private_audit.sync(*m_db);
+    uint64_t cursor = 0; bool more = true;
+    while (more) {
+      const auto page = m_private_audit.eligible_outputs(*m_db, tx.source_asset_type, cursor, 1000, more);
+      for (const auto& out : page) outputs.emplace_back(out.asset_index, out.height);
+      if (more) {
+        if (page.empty() || page.back().asset_index == UINT64_MAX) return false;
+        cursor = page.back().asset_index + 1;
+      }
+    }
+  } else {
+    m_lineage_audit.sync(*m_db, m_nettype);
+    outputs = m_lineage_audit.eligible_outputs(*m_db, m_nettype, tx.source_asset_type);
+  }
   std::set<uint64_t> ranks;
   size_t count = 0;
   for (const auto& input : tx.vin) {
@@ -4299,7 +4488,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, uint64_t& max_used_block_heigh
 
 #if defined(PER_BLOCK_CHECKPOINT)
   // check if we're doing per-block checkpointing
-  if (m_db->height() < m_blocks_hash_check.size() && kept_by_block)
+  if (m_db->height() < m_blocks_hash_check.size() && kept_by_block && !m_private_audit.active(m_db->height()))
   {
     max_used_block_id = null_hash;
     max_used_block_height = 0;
@@ -4329,6 +4518,13 @@ bool Blockchain::check_tx_outputs(const transaction& tx, tx_verification_context
   CRITICAL_REGION_LOCAL(m_blockchain_lock);
 
   const uint8_t hf_version = m_hardfork->get_current_version();
+  if (m_private_audit.active(m_db->height())) {
+    std::vector<tx_extra_field> fields;
+    if (!parse_tx_extra(tx.extra, fields)) { tvc.m_invalid_output = true; return false; }
+    for (const auto& field : fields) if (boost::get<tx_extra_audit_clearance>(&field)) {
+      tvc.m_invalid_output = true; return false;
+    }
+  }
 
   /*
   // from hard fork 2, we forbid dust and compound outputs
@@ -6412,7 +6608,7 @@ leave:
   }
   audit_block_step(blockchain_height, "protocol_transaction_prevalidation");
 
-  if (lineage_policy::public_enrollment && m_lineage_audit.active(blockchain_height)) {
+  {
     std::string reason;
     if (!check_lineage_disclosure(bl, reason)) {
       MERROR_VER("Invalid lineage audit disclosure: " << reason);

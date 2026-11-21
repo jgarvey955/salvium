@@ -42,7 +42,8 @@ class Reconciliation(unittest.TestCase):
         self.assertEqual(self.run_case()["developer_decisions"]["decisions"][0]["action"], "CLEAR")
         self.assertEqual(self.case["outputs"][1]["state"], "REVIEW_REQUIRED")
         self.case["outputs"][1]["reason"] = "CONFIRMED_MALFORMED_ORIGIN"
-        self.assertEqual(self.run_case()["developer_decisions"]["decisions"][0]["action"], "DENY")
+        self.assertEqual(self.run_case()["developer_decisions"]["decisions"][0]["action"], "CLEAR")
+        self.assertEqual(self.case["outputs"][1]["reason"], "CONFIRMED_MALFORMED_ORIGIN")
 
     def test_duplicate_custody_proof_never_doubles_reserves(self):
         self.case["outputs"].append(copy.deepcopy(self.case["outputs"][0]))
@@ -76,11 +77,23 @@ class Reconciliation(unittest.TestCase):
         self.ledger["balances"][1].update(opening_atomic="20")
         self.assertTrue(any("purchase does not cover" in error for error in self.run_case()["errors"]))
 
-    def test_bad_custody_prevents_clear_recommendation(self):
+    def test_bad_custody_does_not_disqualify_verified_purchase(self):
         self.case["outputs"][0]["reason"] = "CONFIRMED_MALFORMED_ORIGIN"
         result = self.run_case()
         self.assertTrue(result["warnings"])
+        self.assertEqual(result["developer_decisions"]["decisions"][0]["action"], "CLEAR")
+        self.assertEqual(self.case["outputs"][0]["reason"], "CONFIRMED_MALFORMED_ORIGIN")
+
+    def test_manual_adjustment_still_requires_review(self):
+        self.ledger["events"].insert(0, dict(id="adjustment", kind="adjustment", account="buyer",
+            asset="SAL1", delta_atomic="0"))
+        result = self.run_case()
+        self.assertTrue(result["purchase_review_warnings"])
         self.assertEqual(result["developer_decisions"]["decisions"][0]["action"], "DENY")
+
+    def test_withdrawal_without_purchase_is_not_purchase_evidence(self):
+        self.ledger["events"][-1].pop("acquisition")
+        self.assertEqual(self.run_case()["developer_decisions"]["decisions"][0]["action"], "DENY")
 
     def test_snapshot_and_precision(self):
         self.ledger["snapshot_hash"] = "wrong"

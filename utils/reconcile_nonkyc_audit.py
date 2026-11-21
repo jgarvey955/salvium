@@ -45,7 +45,7 @@ def reconcile(case, ledger, case_hash, ledger_hash):
     scope = set(ledger["assets_in_scope"])
     if not scope or len(scope) != len(ledger["assets_in_scope"]):
         raise ValueError("Declare unique native assets in reconciliation scope")
-    errors, warnings = [], []
+    errors, warnings, purchase_review_warnings = [], [], []
     if ledger.get("scope_complete") is not True:
         errors.append("Exchange has not declared complete ledger and custody scope")
     balances, liabilities = {}, defaultdict(int)
@@ -117,7 +117,9 @@ def reconcile(case, ledger, case_hash, ledger_hash):
         elif delta < 0:
             purchased[key] = max(0, purchased[key] + delta)
         if kind == "adjustment":
-            warnings.append(f"Manual adjustment {event['id']} requires developer review")
+            warning = f"Manual adjustment {event['id']} requires developer review"
+            warnings.append(warning)
+            purchase_review_warnings.append(warning)
         if kind in {"deposit", "withdrawal"}:
             receipt = event["transaction"], event["output_index"], False
             proof = output_map.get(receipt)
@@ -132,7 +134,8 @@ def reconcile(case, ledger, case_hash, ledger_hash):
                            for row in case["outputs"]):
                     errors.append(f"Deposit {event['id']} is not proven exchange custody")
             elif event.get("acquisition") == "market_purchase" and purchased_before >= abs(delta):
-                # This is an exchange assertion for human review, never an automatic root.
+                # A verified purchase establishes the recipient's clearance
+                # basis; it does not rewrite the original issuance history.
                 eligible_receipts.add(receipt)
             elif event.get("acquisition") == "market_purchase":
                 errors.append(f"Market purchase does not cover withdrawal {event['id']}")
@@ -168,17 +171,17 @@ def reconcile(case, ledger, case_hash, ledger_hash):
         if row["state"] != "REVIEW_REQUIRED" or row.get("decision"):
             continue
         identity = row["transaction"], row["output_index"], row["stake"]
-        recommend_clear = (not errors and not warnings and identity in eligible_receipts and
-            row["reason"] in {"MISSING_FUNDING_EVIDENCE", "PROVEN_ILLICIT_FUNDING_REQUIRES_REVIEW"})
+        recommend_clear = (not errors and not purchase_review_warnings and identity in eligible_receipts)
         action = "CLEAR" if recommend_clear else "DENY"
-        reason = (f"NonKYC records reconcile and assert an innocent market purchase; original finding: {row['reason']}. "
-                  "Developer must confirm the exchange assertion. " if recommend_clear else
+        reason = (f"NonKYC records reconcile a market purchase; original finding retained: {row['reason']}. "
+                  "Automatic signing requires independently authenticated exchange records. " if recommend_clear else
                   f"Retain review: {row['reason']}; reconciliation errors={len(errors)}, warnings={len(warnings)}. ")
         decisions.append({"package_id": row["package_id"], "transaction": row["transaction"],
             "output_index": row["output_index"], "stake": row["stake"], "action": action,
             "reason": reason + f"NonKYC evidence sha256={ledger_hash}"})
     return {"version": 1, "status": "RECONCILED_FOR_HUMAN_REVIEW" if not errors else "RECONCILIATION_FAILED",
         "ledger_sha256": ledger_hash, "errors": errors, "warnings": warnings,
+        "purchase_review_warnings": purchase_review_warnings,
         "per_asset": reconciliation, "developer_decisions": {"report_hash": case_hash, "decisions": decisions},
         "limits": ["Exchange scope and purchase attribution are operator assertions.",
                    "Reconciliation never creates a cryptographic funding link or clears an output automatically.",
@@ -193,6 +196,12 @@ def main():
     parser.add_argument("--developer-public-key", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--decisions-output", type=Path, help="Optional editable developer decision template")
+    parser.add_argument("--approved-ledger-sha256", help="Main developer approval of the independently obtained operator ledger")
+    parser.add_argument("--sign-key", type=Path, help="Main developer private signing key; used only with approved ledger")
+    parser.add_argument("--outdir", type=Path, help="New directory for automatically signed qualifying purchase receipts")
+    parser.add_argument("--daemon-address", help="Publish automatic clearances directly; owners need no import")
+    parser.add_argument("--rpc-login-file", type=Path, help="Private publisher RPC credentials file")
+    parser.add_argument("--activation-height", type=int, help="Certificate epoch; must match the native verifier configuration")
     args = parser.parse_args()
     case_raw = args.case.read_bytes()
     case = load_json(case_raw)
@@ -206,6 +215,14 @@ def main():
     case_hash = next(line.split()[1] for line in verification.stdout.splitlines() if line.startswith("VERIFIED "))
     raw = args.ledger.read_bytes()
     result = reconcile(case, load_json(raw), case_hash, hashlib.sha256(raw).hexdigest())
+    automatic = bool(args.sign_key or args.outdir or args.approved_ledger_sha256 or args.daemon_address or args.rpc_login_file)
+    if automatic:
+        if not (args.sign_key and args.outdir and args.approved_ledger_sha256):
+            parser.error("Automatic processing requires --sign-key, --outdir and --approved-ledger-sha256")
+        if args.approved_ledger_sha256.lower() != result["ledger_sha256"]:
+            parser.error("Ledger differs from the independently approved operator records")
+        if result["errors"] or result["purchase_review_warnings"]:
+            parser.error("Ledger requires developer review; automatic purchase clearance is unavailable")
     # Refuse overwrites and restrict private ledger-derived evidence to its owner.
     import os
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -215,6 +232,28 @@ def main():
         fd = os.open(args.decisions_output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as out:
             json.dump(result["developer_decisions"], out, indent=2); out.write("\n")
+    if automatic:
+        # Never turn an unresolved recommendation into an automatic denial.
+        # The developer queue retains those rows and their original findings.
+        changes = dict(result["developer_decisions"])
+        changes["decisions"] = [row for row in changes["decisions"] if row["action"] == "CLEAR"]
+        with tempfile.TemporaryDirectory(prefix="salvium-approved-purchases-") as temporary:
+            snapshot = Path(temporary) / "case.json"
+            decisions = Path(temporary) / "purchases.json"
+            snapshot.write_bytes(case_raw)
+            decisions.write_text(json.dumps(changes))
+            command = [str(args.verifier.resolve()), "--report", str(snapshot), "--decisions", str(decisions),
+                       "--sign-key", str(args.sign_key.resolve()), "--outdir", str(args.outdir.resolve())]
+            if args.activation_height is not None:
+                command += ["--activation-height", str(args.activation_height)]
+            subprocess.run(command, check=True)
+            if args.daemon_address:
+                import sys
+                publication = [sys.executable, str(Path(__file__).with_name("process_private_audit.py")),
+                    "--daemon-address", args.daemon_address, "--case-directory", str(args.outdir.resolve())]
+                if args.rpc_login_file:
+                    publication += ["--rpc-login-file", str(args.rpc_login_file.resolve())]
+                subprocess.run(publication, check=True)
     print(result["status"], f"errors={len(result['errors'])}", f"warnings={len(result['warnings'])}")
     return 2 if result["errors"] else 0
 

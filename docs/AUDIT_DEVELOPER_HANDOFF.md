@@ -1,104 +1,81 @@
-# Developer handoff: owner-initiated audit with main developer processing
+# Owner-initiated audit and final output clearance
 
-Review the implementation on the core `audit` PR and the separate GUI `audit`
-branch. Wallet evidence, NonKYC ledgers and signing secrets stay private. Owners
-send their requests privately to the main developer, who processes and signs the
-results. The older carrier/enrollment packaging tools are historical; use the
-private version 3 workflow described here.
+Owners start from the CLI `audit export` or the GUI **Request audit (export)** after activation. Requests go privately to the main developer. Neither daemon refresh nor background wallet activity creates private requests. Authenticated wallet RPC and the shared wallet library provide the same operation for other wallet implementations.
 
-## Description
+The main developer verifies ownership, exact amounts, canonical snapshot, asset issuance, actual funding across wallets, stake principal and scheduled payouts, conversions and token registration. Conclusive evidence clears automatically during developer processing. Missing or defective evidence enters a queue with its original finding, missing links and a CLEAR/DENY recommendation. A recommendation is not a final denial. The developer can resolve exceptions, including documented good-faith private sales or services, with a reasoned signed decision.
 
-Wallet owners explicitly request an audit by exporting a finite, signed evidence
-package from the CLI or GUI. The main developer receives that request privately,
-verifies issuance and funding against a common canonical snapshot, and signs the
-results. Conclusively verified outputs clear automatically during that processing.
-Unresolved or defective funding enters the developer's queue with its original
-finding, missing evidence and a CLEAR or DENY recommendation. The developer can
-record a reasoned decision and sign a newer revision. The owner imports only
-their recipient-specific result.
+The trusted opening is **block 169100**, after the last scheduled first-audit payout. Earlier holdings are accepted unless positive evidence establishes invalid minting, unauthorized issuance or another substantiated defect. Subsequent funding is resolved to that opening or another verified issuance/policy root. The salYAHU malformed SAL1 origin and its actual descendants remain forensic findings. An illicit ring decoy alone does not establish misconduct.
 
-The checks include the salYAHU-to-SAL1 malformed origin, cross-wallet funding
-paths, ring ambiguity, issuance, asset separation, token registration funding,
-stake principal and payout authorization, and duplicate audited spends. NonKYC
-ledger reconciliation adds custody/liability arithmetic, receipt matching,
-duplicate-credit checks and purchase-attribution recommendations for human review.
-An illicit decoy alone does not establish an illicit real spend. Missing evidence
-does not establish misconduct, and exchange pooling does not identify a customer
-as the creator of unauthorized coins.
+## Consensus and finality
 
-The daemon and background wallet refresh never initiate or submit private audit
-requests. An export requires the owner's explicit action or authenticated wallet
-RPC access delegated by the owner. Imports require that wallet's prior export,
-the designated main developer's signature, matching network/genesis/snapshot and
-a current revision. Owners cannot select a replacement signing authority to
-self-clear. Audit decisions preserve ordinary consensus validation and stake
-locks; public v2 enrollment and consensus lineage enforcement remain disabled.
+At the configured activation height, old supported outputs require clearance before spending. A version 4 developer certificate binds network, genesis, activation epoch, canonical snapshot, exact transaction/output (or stake principal), decision and revision. Public certificates contain no owner identifiers, amounts, ownership proofs, private purchase records or key images. They identify public output references and confirmation timing, so publication is not anonymous; batch publication can reduce owner-specific grouping.
 
-## Main developer: required before release
+The automatic processing service publishes these compact certificates directly to the daemon. Wallets discover confirmed clearance on refresh; owners do not need to import anything. Optional receipt import can retry publication. Nodes relay them through a separate bounded notification/queue; miners include bounded batches in coinbase extra. The withdrawn version 2 public ownership-proof route remains disabled. A local receipt or cache alone never authorizes consensus spending.
 
-The signing authority is intentionally **unset**. Supply the public key during
-private release review; the branch does not invent an authority on the developer's
-behalf. Exports and unsigned analysis work before designation. Production-network
-signing and result acceptance fail until the authority is configured.
+**CLEAR is final once confirmed on the canonical chain.** It cannot be amended to DENY or replaced with another disposition, even by the main developer. DENY/REVIEW can be resolved by a newer valid CLEAR. A certificate in block H permits spending in H+1, subject to ordinary maturity, stake locks and enough eligible outputs to construct the standard ring. There is no additional audit waiting period. A chain reorganization removes orphaned confirmation; replay reconstructs final clearance from the canonical chain.
 
-1. On the main developer's private processing machine, create a dedicated audit
-   signing key with `salvium-audit-review --keygen /private/reviewer.key`, or use
-   an independently managed compatible signing key.
-2. Keep the private key outside Git, release artifacts and wallet-owner devices.
-   Set only its public key in `src/cryptonote_core/audit_review_authority.h` for
-   each supported production network. Empty entries remain disabled.
-3. Confirm that public key through an independent channel. Build the
-   daemon, CLI and shared wallet library from core `audit`, then update the GUI
-   `audit` branch's `salvium` submodule pin to the reviewed core commit and rebuild.
-   The core branch contains `main`; the separate GUI branch starts from `master`.
-4. Publish the common snapshot height/hash and accepted scope. Owners export
-   requests and send them privately to the main developer. Do not collect seeds,
-   spend secrets or reusable viewing secrets.
-5. Run verification, reconcile NonKYC's operator export, and examine unresolved
-   recommendations. Confirm exchange scope and purchase attribution independently.
-   Sign automatic results and any reasoned manual CLEAR/DENY decisions, then
-   return only the relevant package results to each owner.
+All ring members must be eligible, so a cleared decoy cannot authorize an uncleared real input. Wallets select decoys from the public eligible population. Valid subsequent transfers and change inherit clearance after normal maturity, without a new owner audit. Canonical new issuance inherits clearance. Stake payouts inherit only through a unique authorized principal/payout mapping; ambiguous historical payouts need direct review. Clearance changes spend eligibility, never the output amount, destination, original issuance finding or historical supply accounting.
 
-Unsigned results, owner-generated keys, changed snapshots and stale/conflicting
-revisions cannot authorize clearance. Ephemeral signing keys exist only for
-isolated fakechain tests. A wallet regtest flag does not bypass authority when
-connected to a production daemon.
+## Main developer release configuration
 
-## Review and validation scope
+Production activation heights and public authority keys are deliberately unset. Configure the public keys in `src/cryptonote_core/audit_review_authority.h` and heights in `src/cryptonote_core/private_audit_policy.h`, then coordinate the consensus release across validating nodes and wallets. Private signing secrets never belong in Git or owner devices. The authority public key must be distributed independently and is safe to publish; another person's build with a different key cannot create valid certificates for the agreed network. Runtime test keys/heights are accepted only by isolated `--regtest` fakechains.
 
-The mainnet opening remains block 154749; accepted SAL-to-SAL1 authorizations are
-preserved. Private reports declare `SUBMITTED_OUTPUTS_ONLY`. Wallet evidence does
-not establish complete exchange liabilities, undisclosed holdings, a complete
-historical consensus/PoW replay or the current global unauthorized balance.
-Retain chain-wide monetary/forensic scans and historical replay as separate supply
-audit requirements. Actual NonKYC records and owner requests are needed to perform
-the real investigation.
+Core daemon, CLI and shared wallet code belong to core `audit` based on `main`. GUI code belongs to its own `audit` based on `master`, pinning that reviewed core. Build core audit with `make release-static builddir=build/audit topdir=../../..`; preserve normal `my-complete` binaries. Build GUI with its normal `make release-static` workflow.
 
-Use `docs/AUDIT_PRIVATE_REVIEW.md` for exact processing commands, exchange schema,
-wallet RPC paging, third-party transport and signature domains. The final
-validation record must identify the tested source, binaries, tests and remaining
-release limitations; historical audit validation files describe earlier versions.
-The current record is [AUDIT_PRIVATE_REVIEW_VALIDATION.json](AUDIT_PRIVATE_REVIEW_VALIDATION.json).
+Create a dedicated private key on the developer's processing machine:
 
-## Reproduce the private workflow checks
+```sh
+salvium-audit-review --keygen /private/reviewer.key
+```
 
-Enable `SALVIUM_BUILD_LINEAGE_TESTS=ON` in `build/audit/release` when configuring
-the static core build, then build with
-`make release-static builddir=build/audit topdir=../../..`. Run these commands
-from the core repository, one at a time:
+After configuring the release, select a common canonical snapshot and verify/sign owner requests:
 
-~~~sh
-bash tests/functional_tests/run_audit_limited.sh build/audit/release/src/cryptonote_core/audit_review_tests tests/data/sal1-bad-origin-465074.hex
-bash tests/functional_tests/run_audit_limited.sh build/audit/release/src/cryptonote_core/lineage_audit_tests tests/data/sal1-bad-origin-465074.hex
-bash tests/functional_tests/run_audit_limited.sh build/audit/release/src/wallet/wallet_audit_inventory_tests
-bash tests/functional_tests/run_audit_limited.sh python3 tests/functional_tests/audit_nonkyc_reconciliation.py
-bash tests/functional_tests/run_audit_limited.sh python3 tests/functional_tests/audit_private_review_regtest.py --binaries build/audit/release/bin
-~~~
+```sh
+python3 utils/process_private_audit.py \
+  --daemon-address http://127.0.0.1:19081 --verifier /path/to/salvium-audit-review -- \
+  --data-dir /path/to/chain \
+  --input /private/miner.json /private/alice.json /private/nonkyc.json \
+  --sign-key /private/reviewer.key --outdir /private/new-case
+```
 
-The integration fixture uses fresh software wallets, a separate local fakechain,
-private test directories and loopback ports. It never starts the production
-daemon. Its NonKYC ledger is synthetic. The lineage unit executable also retains
-tests of the withdrawn public prototype; their success does not activate it.
-The GUI needs its own full static build and interactive export/import check
-before release; source syntax and QML lint alone do not establish a working GUI
-release artifact.
+Clearances are published automatically when processing succeeds; no manual review is needed for conclusive rows. Owners simply refresh their wallets after confirmation. Package receipts are optional private records; return only an owner's own receipts, never the combined `case.json` or other owners' files. The wallet must already hold its exported request. It checks the designated signature, network, exact proofs, snapshot and revision before import. Pending clearance remains locked until chain confirmation. Repeat import retries publication without repeating the audit.
+
+For unresolved cases, edit the generated `review-queue.json` with reasoned decisions, then authenticate and revise the signed case:
+
+```sh
+python3 utils/process_private_audit.py \
+  --daemon-address http://127.0.0.1:19081 --verifier /path/to/salvium-audit-review -- \
+  --report /private/new-case/case.json \
+  --decisions /private/decisions.json --sign-key /private/reviewer.key \
+  --outdir /private/revised-case
+```
+
+A new case cannot override a previous final chain clearance. Revisions of unresolved decisions must increase. Unsigned or edited case reports must be reprocessed from original owner evidence; they cannot simply be signed as trusted findings.
+
+## Exchange purchases
+
+Any **verified exchange purchase** is licit under this clearance policy, including a withdrawal whose prior custody/funding has an illicit origin. A deposit or withdrawal alone does not prove a purchase. NonKYC is the first adapter; the normalized schema also supports historical exchange records and other wallet integrations. Preserve original illicit issuance and its forensic/supply totals even when the buyer receives policy clearance.
+
+Obtain complete operator records independently, reconcile balances, custody, liabilities, trade groups, exact withdrawal receipts, duplicate credits and purchase coverage. Operator purchase attribution is an economic assertion, not something the chain alone proves. Manual adjustments, incomplete scope or reconciliation errors stay in developer review.
+
+After independently authenticating the operator records, the main developer can approve their exact SHA256 and run automatic purchase processing:
+
+```sh
+python3 utils/reconcile_nonkyc_audit.py \
+  --case /private/new-case/case.json --ledger /private/operator-ledger.json \
+  --verifier /path/to/salvium-audit-review --developer-public-key PUBLIC_KEY \
+  --output /private/reconciliation.json \
+  --approved-ledger-sha256 INDEPENDENTLY_APPROVED_LEDGER_SHA256 \
+  --sign-key /private/reviewer.key --outdir /private/purchase-results \
+  --daemon-address http://127.0.0.1:19081
+```
+
+Only qualifying CLEAR recommendations are applied automatically. Other rows remain unresolved with recommendations; they are never automatically denied. Owner-supplied recommendation JSON or a self-asserted purchase does not authorize a certificate. The approved digest must come from the developer's independent authentication of the operator export.
+
+## Verification and scope
+
+Run native `audit_clearance_tests`, `audit_review_tests`, `lineage_audit_tests` and `wallet_audit_inventory_tests` from the isolated audit static build, plus `audit_nonkyc_reconciliation.py`, `audit_private_review_regtest.py` and `audit_clearance_regtest.py --binaries build/audit/release/bin`. Functional fixtures use explicit isolated configs, temporary fakechains and loopback ports. Never start or restart the production daemon for tests.
+
+Private reports declare `SUBMITTED_OUTPUTS_ONLY`; they do not establish complete undisclosed exchange holdings, global monetary supply or a full historical consensus/PoW replay. Real owner evidence and authentic operator records are required for the real audit. Keep chain-wide monetary/forensic scans as a separate accounting requirement. Earlier validation artifacts describe earlier versions and must not be presented as qualification of new consensus changes.
+
+Publication retries use `python3 utils/process_private_audit.py --daemon-address http://127.0.0.1:19081 --case-directory /private/new-case`. `clearances.public` contains only compact public certificates. The publisher never uploads case reports, ownership proofs or purchase ledgers. Configure an owner-only `--rpc-login-file` when daemon RPC authentication is enabled.

@@ -28,6 +28,7 @@
 
 #include "hardforks.h"
 #include "cryptonote_core/lineage_audit_policy.h"
+#include "cryptonote_core/private_audit_policy.h"
 
 #undef MONERO_DEFAULT_LOG_CATEGORY
 #define MONERO_DEFAULT_LOG_CATEGORY "blockchain.hardforks"
@@ -73,6 +74,9 @@ const hardfork_t mainnet_hard_forks[] = {
   {13, 521425, 0, 1782766500 },
 #if SALVIUM_LINEAGE_AUDIT_MAINNET_HEIGHT
   {cryptonote::lineage_policy::fork_version, cryptonote::lineage_policy::mainnet_height, 0, 1788739200 },
+#endif
+#if SALVIUM_PRIVATE_AUDIT_MAINNET_HEIGHT
+  {cryptonote::private_audit_policy::fork_version, cryptonote::private_audit_policy::mainnet_height, 0, 1788739200 },
 #endif
 };
 const size_t num_mainnet_hard_forks = sizeof(mainnet_hard_forks) / sizeof(mainnet_hard_forks[0]);
@@ -120,6 +124,9 @@ const hardfork_t testnet_hard_forks[] = {
 #if SALVIUM_LINEAGE_AUDIT_TESTNET_HEIGHT
   {cryptonote::lineage_policy::fork_version, cryptonote::lineage_policy::testnet_height, 0, 1788739200 },
 #endif
+#if SALVIUM_PRIVATE_AUDIT_TESTNET_HEIGHT
+  {cryptonote::private_audit_policy::fork_version, cryptonote::private_audit_policy::testnet_height, 0, 1788739200 },
+#endif
 };
 const size_t num_testnet_hard_forks = sizeof(testnet_hard_forks) / sizeof(testnet_hard_forks[0]);
 const uint64_t testnet_hard_fork_version_1_till = ((uint64_t)-1);
@@ -129,6 +136,9 @@ const hardfork_t stagenet_hard_forks[] = {
   { 1, 1, 0, 1341378000 },
 #if SALVIUM_LINEAGE_AUDIT_STAGENET_HEIGHT
   {cryptonote::lineage_policy::fork_version, cryptonote::lineage_policy::stagenet_height, 0, 1788739200 },
+#endif
+#if SALVIUM_PRIVATE_AUDIT_STAGENET_HEIGHT
+  {cryptonote::private_audit_policy::fork_version, cryptonote::private_audit_policy::stagenet_height, 0, 1788739200 },
 #endif
 
   // versions 2-7 in rapid succession from March 13th, 2018

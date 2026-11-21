@@ -9,10 +9,11 @@
 // Fourteen days at the 120-second block target. Enrollment is accepted in
 // [activation, activation + duration); each cleared output releases at C + 10.
 #define SALVIUM_LINEAGE_AUDIT_DURATION_BLOCKS 10080
-// Inclusive last block before the recovery scan. Mainnet starts at 154750,
-// when the first SAL-to-SAL1 conversion audit opened. Earlier SAL state is
-// context; SAL1 and token outputs can enroll, while legacy SAL is excluded. Zero is for isolated genesis fixtures.
-#define SALVIUM_LINEAGE_AUDIT_MAINNET_OPENING_HEIGHT 154749
+// Inclusive trusted opening after the first SAL-to-SAL1 audit's last scheduled
+// payout. Earlier history remains available to identify explicit defects; the
+// opening must never excuse invalid issuance or a substantiated adverse finding.
+// Zero is reserved for isolated genesis fixtures.
+#define SALVIUM_LINEAGE_AUDIT_MAINNET_OPENING_HEIGHT 169100
 #define SALVIUM_LINEAGE_AUDIT_TESTNET_OPENING_HEIGHT 0
 #define SALVIUM_LINEAGE_AUDIT_STAGENET_OPENING_HEIGHT 0
 namespace cryptonote { namespace lineage_policy {

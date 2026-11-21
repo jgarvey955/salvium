@@ -1,4 +1,5 @@
 #include "audit_review.h"
+#include "audit_clearance.h"
 #include "audit_review_authority.h"
 #include "blockchain_db/blockchain_db.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
@@ -83,6 +84,10 @@ crypto::hash audit_review_report_hash(const audit_review_report& r)
     field(s, o.decision); field(s, o.decision_reason);
   }
   field(s, r.signer);
+  if (!r.clearances.empty()) {
+    field(s, "public-clearance-certificates-v4"); number(s, r.clearances.size());
+    for (const auto& c : r.clearances) field(s, c);
+  }
   return crypto::cn_fast_hash(s.data(), s.size());
 }
 bool authorized_audit_review_signer(network_type net, const crypto::public_key& key)
@@ -110,6 +115,8 @@ void validate_audit_review_report(const audit_review_report& r)
       r.public_outputs_checked <= r.public_work_limit && canonical_hash(r.genesis) &&
       canonical_hash(r.snapshot_hash) && canonical_hash(r.evidence_hash), "Invalid private audit report context");
   require(!r.outputs.empty() && r.outputs.size() <= 250000, "Invalid private audit report output count");
+  require(r.clearances.size() <= r.outputs.size(), "Too many clearance certificates");
+  for (const auto& c : r.clearances) require(!c.empty() && c.size() <= 1024, "Invalid clearance certificate length");
   std::set<std::tuple<std::string, std::string, uint32_t, bool>> identities;
   size_t missing = 0;
   for (const auto& o : r.outputs) {
@@ -177,7 +184,8 @@ std::string read_audit_file(const std::string& path, size_t max_bytes)
 }
 
 audit_review_report audit_review_verifier::verify(const BlockchainDB& db, network_type net,
-    const std::vector<audit_review_package>& packages, uint64_t opening, size_t public_work_limit)
+    const std::vector<audit_review_package>& packages, uint64_t opening, size_t public_work_limit,
+    uint64_t activation_height, const crypto::public_key& authority)
 {
   require(!packages.empty() && packages.size() <= 4096, "Audit requires 1 to 4096 packages");
   size_t total_proofs = 0;
@@ -197,6 +205,9 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
   report.network = uint8_t(net); report.genesis = hex(db.get_block_hash_from_height(0));
   report.snapshot_height = anchor.snapshot_height; report.snapshot_hash = hex(db.get_block_hash_from_height(anchor.snapshot_height));
   report.opening_height = opening;
+  audit_clearance_registry policy_clearance;
+  policy_clearance.configure(net, activation_height, authority);
+  policy_clearance.sync(db);
   require(public_work_limit <= 500000, "Public ancestry verification limit exceeds 500000 outputs");
   report.public_work_limit = public_work_limit;
   std::set<std::string> package_ids;
@@ -310,6 +321,19 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
     else if (node.missing_authorization) item.reason = "MISSING_PAYOUT_AUTHORIZATION_EVIDENCE";
     else if (node.root) item.reason = h <= opening ? "ACCEPTED_OPENING" : "VERIFIED_ISSUANCE";
     else item.reason = "MISSING_FUNDING_EVIDENCE";
+    if (!proof.stake_return && activation_height && report.snapshot_height >= activation_height) {
+      uint64_t tx_id = 0;
+      require(db.tx_exists(proof.transaction, tx_id), "Missing policy clearance transaction");
+      const auto indices = db.get_tx_amount_output_indices(tx_id);
+      if (indices.size() == 1 && proof.output_index < indices[0].size() &&
+          policy_clearance.output_spendable(db, db.get_output_id_by_asset_index(source.asset,
+              indices[0][proof.output_index].second), report.snapshot_height + 1)) {
+        // Authorization is a policy basis, not a claim that original illicit
+        // issuance became valid. Retain the original forensic finding.
+        item.reason = "CONFIRMED_POLICY_CLEARANCE: " + item.reason;
+        node.root = true; node.invalid = false; node.missing_authorization = false;
+      }
+    }
     return node;
   };
   for (const auto& p : packages) {
@@ -432,6 +456,33 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
   for (const auto index : order) {
     auto& node = outputs[index];
     if (node.invalid) { node.source.verdict = 2; continue; }
+    if (node.root && node.item.reason == "ACCEPTED_OPENING") {
+      // The opening removes the requirement to reconstruct older ancestry;
+      // it must not discard positive adverse evidence already available.
+      bool adverse = false;
+      for (const auto& dep : *node.source.inputs) {
+        const auto known = by_image.find(dep.image);
+        if (known != by_image.end()) for (const auto parent_index : known->second) {
+          const auto& parent = outputs[parent_index].source;
+          if (parent.asset != dep.asset || parent.output_height >= node.funding_height) continue;
+          bool matches = false, ambiguous = false, mature = false;
+          for (const auto& member : dep.ring) if (member.key == parent.output_key) {
+            matches |= lineage_audit::matches(parent, member);
+            ambiguous |= !lineage_audit::matches(parent, member);
+            mature |= lineage_audit::matches(parent, member) && member.unlock_height <= node.funding_height;
+          }
+          if (matches && !ambiguous && (parent.verdict == 2 || parent.verdict == 3 || !mature)) adverse = true;
+        }
+        bool all_bad = !dep.ring.empty();
+        for (const auto& member : dep.ring) {
+          public_good(member);
+          const auto found = public_nodes.find(public_identity(member));
+          all_bad &= found != public_nodes.end() && found->second.state == 4;
+        }
+        adverse |= all_bad;
+      }
+      if (adverse) node.root = false;
+    }
     if (node.root && !node.missing_authorization) {
       node.source.verdict = 1;
       node.item.state = "CLEARED";

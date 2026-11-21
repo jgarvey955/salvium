@@ -98,6 +98,11 @@ namespace cryptonote
       if constexpr (lineage_policy::public_enrollment) {
         HANDLE_NOTIFY_T2(NOTIFY_WALLET_AUDIT, &cryptonote_protocol_handler::handle_notify_wallet_audit)
       }
+      // Reject oversized carriers before the key/value decoder allocates them.
+      if (is_notify && command == NOTIFY_AUDIT_CLEARANCE::ID && in_buff.size() > lineage_limits::max_bytes + 1024) {
+        handled = true; return 1;
+      }
+      HANDLE_NOTIFY_T2(NOTIFY_AUDIT_CLEARANCE, &cryptonote_protocol_handler::handle_notify_audit_clearance)
       HANDLE_NOTIFY_T2(NOTIFY_NEW_TRANSACTIONS, &cryptonote_protocol_handler::handle_notify_new_transactions)
       HANDLE_NOTIFY_T2(NOTIFY_REQUEST_GET_OBJECTS, &cryptonote_protocol_handler::handle_request_get_objects)
       HANDLE_NOTIFY_T2(NOTIFY_RESPONSE_GET_OBJECTS, &cryptonote_protocol_handler::handle_response_get_objects)
@@ -158,6 +163,8 @@ namespace cryptonote
     int handle_notify_new_block(int command, NOTIFY_NEW_BLOCK::request& arg, cryptonote_connection_context& context);
     int handle_notify_wallet_audit(int command, NOTIFY_WALLET_AUDIT::request& arg, cryptonote_connection_context& context);
     bool relay_wallet_audit(const std::string& data, const boost::uuids::uuid& source) override;
+    int handle_notify_audit_clearance(int command, NOTIFY_AUDIT_CLEARANCE::request& arg, cryptonote_connection_context& context);
+    bool relay_audit_clearance(const std::string& data, const boost::uuids::uuid& source) override;
     int handle_notify_new_transactions(int command, NOTIFY_NEW_TRANSACTIONS::request& arg, cryptonote_connection_context& context);
     int handle_request_get_objects(int command, NOTIFY_REQUEST_GET_OBJECTS::request& arg, cryptonote_connection_context& context);
     int handle_response_get_objects(int command, NOTIFY_RESPONSE_GET_OBJECTS::request& arg, cryptonote_connection_context& context);
