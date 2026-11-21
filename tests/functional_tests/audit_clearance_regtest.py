@@ -146,7 +146,8 @@ def main():
         subprocess.run(adapter_args + ["--output", str(root / "purchase-reconciliation.json"), "--outdir", str(purchase),
             "--approved-ledger-sha256", hashlib.sha256(ledger_file.read_bytes()).hexdigest()], check=True, timeout=180)
         purchased_case = json.loads((purchase / "case.json").read_text())
-        purchased_row = next(r for r in purchased_case["outputs"] if r["transaction"] == withdrawal["transaction"] and not r["stake"])
+        purchased_row = next(r for r in purchased_case["outputs"] if r["transaction"] == withdrawal["transaction"]
+            and r["output_index"] == withdrawal["output_index"] and r["package_id"] == withdrawal["package_id"] and not r["stake"])
         assert purchased_row["decision"] == "CLEAR" and purchased_row["reason"] == withdrawal["reason"]
         checks.append("authenticated exchange purchase signs and publishes automatically; unapproved ledger rejected; finding retained")
         print(publish(complete), flush=True)
