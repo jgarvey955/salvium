@@ -76,6 +76,18 @@ principals and payouts are not counted twice. Production activation remains 0.
 
 ## Additional build and concurrency review
 
+Block synchronization still assembled a legacy amount-indexed output cache
+that asset-aware input verification never consumed. Its repeated linear offset
+searches and duplicate transaction/output storage could consume excessive CPU
+and memory. A stack capture during the historical replay located the delay in
+this preparation path. Carrying over the existing `audit` correction removes
+the unused cache and its worker, and ensures all remainder blocks are parsed
+even when another block in the batch is already known. Parallel proof-of-work
+preparation and canonical per-asset input, signature and transaction validation
+remain in place. This is an availability correction; it does not establish an
+additional monetary issuance incident. Final qualification records the replay
+and branch-specific fakechain results against the updated source.
+
 RandomX cache/seed and lazy setting reads required synchronization, and POSIX
 background seed threads were left joinable after their handles were discarded.
 The code now observes each cache/seed under its corresponding lock, serializes
