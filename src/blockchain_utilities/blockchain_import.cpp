@@ -425,7 +425,7 @@ int import_from_file(cryptonote::core& core, const std::string& import_file_path
   if (!boost::filesystem::exists(fs_import_file_path, ec))
   {
     MFATAL("bootstrap file not found: " << fs_import_file_path);
-    return false;
+    return 1;
   }
 
   uint64_t block_first;
@@ -438,11 +438,29 @@ int import_from_file(cryptonote::core& core, const std::string& import_file_path
   std::streampos pos;
   // BootstrapFile bootstrap(import_file_path);
   uint64_t total_source_blocks = bootstrap.count_blocks(import_file_path, pos, seek_height, block_first);
+  if (!total_source_blocks || total_source_blocks - 1 > UINT64_MAX - block_first)
+  {
+    MERROR("Invalid source block range");
+    return 2;
+  }
+  const uint64_t source_last = total_source_blocks + block_first - 1;
+  if (!block_stop)
+    block_stop = source_last;
   MINFO("bootstrap file last block number: " << total_source_blocks+block_first-1 << " (zero-based height)  total blocks: " << total_source_blocks);
 
-  if (total_source_blocks+block_first-1 <= start_height)
+  if (block_stop < start_height)
   {
-    return false;
+    return 0;
+  }
+  if (source_last < block_stop)
+  {
+    MERROR("Source file does not contain the requested ending block " << block_stop);
+    return 2;
+  }
+  if (block_first > start_height)
+  {
+    MERROR("Source file starts after the next block to import");
+    return 2;
   }
 
   std::cout << ENDL;
@@ -457,7 +475,7 @@ int import_from_file(cryptonote::core& core, const std::string& import_file_path
   if (import_file.fail())
   {
     MFATAL("import_file.open() fail");
-    return false;
+    return 1;
   }
 
   // 4 byte magic + (currently) 1024 byte header structures
@@ -498,7 +516,7 @@ int import_from_file(cryptonote::core& core, const std::string& import_file_path
     bool q2 = false;
     import_file.seekg(pos);
     bytes_read = bootstrap.count_bytes(import_file, start_height-seek_height, h, q2);
-    if (q2)
+    if (q2 || h != start_height - seek_height)
     {
       quit = 2;
       goto quitting;
@@ -519,13 +537,18 @@ int import_from_file(cryptonote::core& core, const std::string& import_file_path
   }
   while (! quit)
   {
+    if (h > block_stop)
+    {
+      quit = 1;
+      break;
+    }
     uint32_t chunk_size;
     import_file.read(buffer1, sizeof(chunk_size));
     // TODO: bootstrap.read_chunk();
     if (! import_file) {
       std::cout << refresh_string;
-      MINFO("End of file reached");
-      quit = 1;
+      MERROR("Unexpected end of file or incomplete chunk header before requested ending block");
+      quit = 2;
       break;
     }
     bytes_read += sizeof(chunk_size);
@@ -555,8 +578,8 @@ int import_from_file(cryptonote::core& core, const std::string& import_file_path
       if (import_file.eof())
       {
         std::cout << refresh_string;
-        MINFO("End of file reached - file was truncated");
-        quit = 1;
+        MERROR("End of file reached - file was truncated");
+        quit = 2;
         break;
       }
       else
@@ -568,17 +591,6 @@ int import_from_file(cryptonote::core& core, const std::string& import_file_path
     }
     bytes_read += chunk_size;
     MDEBUG("Total bytes read: " << bytes_read);
-
-    if (h > block_stop)
-    {
-      std::cout << refresh_string << "block " << h-1
-        << " / " << block_stop
-        << "\r" << std::flush;
-      std::cout << ENDL << ENDL;
-      MINFO("Specified block number reached - stopping.  block: " << h-1 << "  total blocks: " << h);
-      quit = 1;
-      break;
-    }
 
     try
     {
@@ -728,6 +740,9 @@ int import_from_file(cryptonote::core& core, const std::string& import_file_path
 quitting:
   import_file.close();
 
+  if (quit > 1)
+    return 2;
+
   if (opt_verify)
   {
     int ret = check_flush(core, blocks, true);
@@ -749,6 +764,11 @@ quitting:
   }
 
   core.get_blockchain_storage().get_db().show_stats();
+  if (core.get_blockchain_storage().get_current_blockchain_height() <= block_stop)
+  {
+    MERROR("Import did not reach the requested canonical ending block " << block_stop);
+    return 2;
+  }
   MINFO("Number of blocks imported: " << num_imported);
   if (h > 0)
     // TODO: if there was an error, the last added block is probably at zero-based height h-2
@@ -960,13 +980,15 @@ int main(int argc, char* argv[])
     return 0;
   }
 
-  import_from_file(core, import_file_path, block_stop);
+  const int import_result = import_from_file(core, import_file_path, block_stop);
 
   // ensure db closed
   //   - transactions properly checked and handled
   //   - disk sync if needed
   //
   core.deinit();
+  if (import_result != 0)
+    return import_result;
   }
   catch (const DB_ERROR& e)
   {

@@ -39,6 +39,7 @@
 #include <memory>
 #include <vector>
 #include <sstream>
+#include <stdexcept>
 #include <boost/format.hpp>
 #include <boost/filesystem.hpp>
 
@@ -88,10 +89,12 @@ namespace Monero {
 
   bool YieldInfoImpl::update()
   {
-    boost::lock_guard<boost::mutex> guard(m_wallet.m_refreshMutex2);
+    boost::unique_lock<boost::mutex> guard(m_wallet.m_refreshMutex2, boost::try_to_lock);
     m_errorString.clear();
     try
     {
+      if (!guard.owns_lock())
+        throw std::runtime_error("Wallet refresh is busy");
       m_blockchain_height = m_wallet.m_wallet->get_blockchain_current_height();
       m_stake_lock_period = cryptonote::get_config(m_wallet.m_wallet->nettype()).STAKE_LOCK_PERIOD;
       if (m_wallet.m_wallet->get_yield_summary_info(m_burnt, m_supply, m_locked,

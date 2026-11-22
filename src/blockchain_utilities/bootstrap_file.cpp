@@ -393,8 +393,17 @@ uint64_t BootstrapFile::seek_to_first_chunk(std::ifstream& import_file, uint8_t 
   MINFO("bootstrap first block:" << bbi.block_first);
   MINFO("bootstrap last block:" << bbi.block_last);
 
-  uint64_t full_header_size = sizeof(file_magic) + bfi.header_size;
+  const uint64_t full_header_size = uint64_t{sizeof(file_magic)} + bfi.header_size;
+  const std::streampos metadata_end = import_file.tellg();
+  import_file.seekg(0, std::ios_base::end);
+  const std::streampos file_end = import_file.tellg();
+  if (!import_file || metadata_end < 0 || file_end < metadata_end ||
+      full_header_size < static_cast<uint64_t>(metadata_end) ||
+      full_header_size > static_cast<uint64_t>(file_end))
+    throw std::runtime_error("Invalid or truncated bootstrap header");
   import_file.seekg(full_header_size);
+  if (!import_file)
+    throw std::runtime_error("Error seeking to first bootstrap chunk");
 
   major_version = bfi.major_version;
   minor_version = bfi.minor_version;
@@ -410,14 +419,17 @@ uint64_t BootstrapFile::count_bytes(std::ifstream& import_file, uint64_t blocks,
   char buf1[sizeof(chunk_size)];
   std::string str1;
   h = 0;
-  while (1)
+  quit = false;
+  while (h < blocks)
   {
     import_file.read(buf1, sizeof(chunk_size));
     if (!import_file) {
-      std::cout << refresh_string;
-      MDEBUG("End of file reached");
-      quit = true;
-      break;
+      if (import_file.eof() && import_file.gcount() == 0)
+      {
+        quit = true;
+        break;
+      }
+      throw std::runtime_error("Truncated bootstrap chunk header or read error");
     }
     bytes_read += sizeof(chunk_size);
     str1.assign(buf1, sizeof(chunk_size));
@@ -443,14 +455,17 @@ uint64_t BootstrapFile::count_bytes(std::ifstream& import_file, uint64_t blocks,
       MDEBUG("ERROR: chunk_size " << chunk_size << " <= 0" << "  height: " << h-1 << ", offset " << bytes_read);
       throw std::runtime_error("Aborting");
     }
-    // skip to next expected block size value
-    import_file.seekg(chunk_size, std::ios_base::cur);
-    if (! import_file) {
+    // Seeking beyond EOF can succeed. Consume the body so the counting pass
+    // rejects incomplete chunks before any blocks are imported.
+    import_file.ignore(chunk_size);
+    if (!import_file || import_file.gcount() != chunk_size) {
       std::cout << refresh_string;
       MFATAL("ERROR: unexpected end of file: bytes read before error: "
           << import_file.gcount() << " of chunk_size " << chunk_size);
       throw std::runtime_error("Aborting");
     }
+    if (bytes_read > UINT64_MAX - chunk_size || h > UINT64_MAX - NUM_BLOCKS_PER_CHUNK)
+      throw std::runtime_error("Bootstrap chunk count overflow");
     bytes_read += chunk_size;
     h += NUM_BLOCKS_PER_CHUNK;
     if (h >= blocks)
@@ -494,6 +509,8 @@ uint64_t BootstrapFile::count_blocks(const std::string& import_file_path, std::s
   uint8_t major_version, minor_version;
   uint64_t block_last;
   full_header_size = seek_to_first_chunk(import_file, major_version, minor_version, block_first, block_last);
+  start_pos = import_file.tellg();
+  seek_height = block_first;
 
   MINFO("Scanning blockchain from bootstrap file...");
   bool quit = false;
@@ -502,13 +519,19 @@ uint64_t BootstrapFile::count_blocks(const std::string& import_file_path, std::s
 
   while (! quit)
   {
-    if (start_height && h + block_first + progress_interval >= start_height - 1)
+    if (h > UINT64_MAX - block_first)
+      throw std::runtime_error("Bootstrap block height overflow");
+    const uint64_t height = h + block_first;
+    if (start_height && (height >= start_height - 1 ||
+        start_height - 1 - height <= static_cast<uint64_t>(progress_interval)))
     {
       start_height = 0;
       start_pos = import_file.tellg();
-      seek_height = h + block_first;
+      seek_height = height;
     }
     bytes_read += count_bytes(import_file, progress_interval, blocks, quit);
+    if (h > UINT64_MAX - blocks)
+      throw std::runtime_error("Bootstrap block count overflow");
     h += blocks;
     std::cout << "\r" << "block height: " << h-1 <<
       "    \r" <<

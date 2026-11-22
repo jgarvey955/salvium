@@ -114,6 +114,10 @@ endif()
 add_subdirectory(api)
 
 if(SALVIUM_BUILD_LINEAGE_TESTS)
+  monero_add_minimal_executable(wallet_yield_tests ../../tests/unit_tests/wallet_yield.cpp
+    ../../tests/gtest/src/gtest-all.cc ../../tests/gtest/src/gtest_main.cc)
+  target_include_directories(wallet_yield_tests SYSTEM PRIVATE ../../tests/gtest/include ../../tests/gtest)
+  target_link_libraries(wallet_yield_tests PRIVATE ${CMAKE_THREAD_LIBS_INIT})
   monero_add_minimal_executable(wallet_audit_inventory_tests ../../tests/unit_tests/wallet_audit_inventory.cpp)
   target_link_libraries(wallet_audit_inventory_tests PRIVATE wallet ${CMAKE_THREAD_LIBS_INIT} ${EXTRA_LIBRARIES})
 endif()

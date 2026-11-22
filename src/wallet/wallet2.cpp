@@ -2452,6 +2452,13 @@ bool wallet2::get_yield_summary_info(uint64_t &total_burnt,
     return invalid_result();
   }
 
+  for (size_t index = 1; index < ybi_data.size(); ++index) {
+    if (ybi_data[index].block_height <= ybi_data[index - 1].block_height) {
+      MERROR("Daemon returned unordered or duplicate yield data");
+      return invalid_result();
+    }
+  }
+
   ybi_data_size = ybi_data.size();
 
   // Iterate over the transfers in our wallet
@@ -2514,7 +2521,8 @@ bool wallet2::get_yield_summary_info(uint64_t &total_burnt,
       for (auto &payout: payouts_active) {
 
         auto&[height,asset_type,total_burnt,total_accrued] = payout.second;
-        if (ybi_data[idx].block_height < height) continue; 
+        const uint64_t block_height = ybi_data[idx].block_height;
+        if (block_height <= height || block_height - height > cryptonote::get_config(m_nettype).STAKE_LOCK_PERIOD) continue;
         boost::multiprecision::uint128_t amount_128 = ybi_data[idx].slippage_total_this_block;
         amount_128 *= total_burnt;
         amount_128 /= ybi_data[idx].locked_coins_tally;

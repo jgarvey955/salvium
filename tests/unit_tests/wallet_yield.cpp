@@ -15,8 +15,8 @@ TEST(wallet_yield, empty_history_clears_totals)
 TEST(wallet_yield, totals_across_maturity_boundary)
 {
   const std::vector<tools::yield_payout> payouts{
-    {99, "completed", "SAL1", 100, 7},
-    {100, "matures-next", "SAL1", 200, 11},
+    {98, "completed", "SAL1", 100, 7},
+    {99, "matures-next", "SAL1", 200, 11},
     {110, "active", "SAL1", 300, 13}};
   tools::yield_totals totals;
   ASSERT_TRUE(tools::summarize_yield(payouts, 120, 20, totals));
@@ -33,7 +33,8 @@ TEST(wallet_yield, maturity_uses_network_period_and_handles_height_limits)
 {
   EXPECT_FALSE(tools::stake_completed(100, 121, 21600));
   EXPECT_FALSE(tools::stake_completed(100, 21700, 21600));
-  EXPECT_TRUE(tools::stake_completed(100, 21701, 21600));
+  EXPECT_FALSE(tools::stake_completed(100, 21701, 21600));
+  EXPECT_TRUE(tools::stake_completed(100, 21702, 21600));
   EXPECT_FALSE(tools::stake_completed(100, 50, 20));
   const auto max = std::numeric_limits<uint64_t>::max();
   EXPECT_FALSE(tools::stake_completed(max - 10, max, 20));

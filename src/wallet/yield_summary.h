@@ -24,7 +24,8 @@ struct yield_totals
 // before its payout is counted as completed. Subtraction avoids height overflow.
 inline bool stake_completed(uint64_t height, uint64_t wallet_height, uint64_t lock_period)
 {
-  return wallet_height > height && wallet_height - height > lock_period;
+  return wallet_height > height && wallet_height - height > lock_period &&
+      wallet_height - height - lock_period > 1;
 }
 
 inline bool summarize_yield(const std::vector<yield_payout>& payouts,
