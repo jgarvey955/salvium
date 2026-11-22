@@ -37,4 +37,20 @@ FIND_PATH(UNBOUND_INCLUDE_DIR
   /usr/
 )
 
-find_library(UNBOUND_LIBRARIES unbound)
+if(STATIC)
+  set(_UNBOUND_SAVED_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+  if(MSVC)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES .lib .a)
+  else()
+    set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
+  endif()
+endif()
+find_library(UNBOUND_LIBRARIES NAMES unbound
+  HINTS ${UNBOUND_ROOT} $ENV{UNBOUND_ROOT}
+  PATH_SUFFIXES lib lib64)
+if(STATIC)
+  set(CMAKE_FIND_LIBRARY_SUFFIXES ${_UNBOUND_SAVED_SUFFIXES})
+  if(NOT "${UNBOUND_LIBRARIES}" MATCHES "\\.(a|lib)$" OR "${UNBOUND_LIBRARIES}" MATCHES "\\.dll\\.a$")
+    message(FATAL_ERROR "Static builds require static Unbound linked to the selected OpenSSL SDK; set UNBOUND_ROOT or UNBOUND_LIBRARIES to that SDK")
+  endif()
+endif()

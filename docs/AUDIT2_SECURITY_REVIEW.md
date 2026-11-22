@@ -114,7 +114,16 @@ The post-update OSV submodule query retained one server-only MiniUPnP match and 
 
 ## Validation and limits
 
-Build with `make release-static builddir=build/audit topdir=../../..`. Tests use isolated fakechains, explicit empty configs, private temporary wallets and loopback ports. Production daemon startup/restart is never part of this work.
+Build with `make release-static builddir=build/audit topdir=../../..`. Static
+configuration requires OpenSSL 4.0.1 archives and static Unbound from the reviewed
+SDK. Use the dependency toolchain or configure `OPENSSL_ROOT_DIR` and
+`UNBOUND_ROOT`/`UNBOUND_LIBRARIES` before building. Older OpenSSL and shared
+OpenSSL/Unbound selections fail configuration, including stale cached shared
+paths. All three rejection cases and restoration of the reviewed SDK were
+checked against the actual core CMake configuration.
+
+Tests use isolated fakechains, explicit empty configs, private temporary wallets
+and loopback ports. Production daemon startup/restart is never part of this work.
 
 Final run results, hashes and durations are recorded in the local validation bundle.
 The static OpenSSL 4.0.1 build passed 212 current-format cryptographic tests, the
