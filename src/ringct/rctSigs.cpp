@@ -1,3 +1,6 @@
+#include "proof_validation.h"
+#include "misc_language.h"
+#include "memwipe.h"
 // Copyright (c) 2016, Monero Research Labs
 // Portions Copyright (c) 2023-2025, Salvium (author: SRCG)
 //
@@ -683,6 +686,7 @@ namespace rct {
 
         // Generate a random scalar for blinding
         rct::key r = rct::skGen();
+        auto wipe_r = epee::misc_utils::create_scope_leave_handler([&] { memwipe(r.bytes, sizeof(r.bytes)); });
         
         // Compute R = r * G
         proof.R = rct::scalarmultBase(r);
@@ -702,7 +706,9 @@ namespace rct {
         return proof;
     }
 
-    bool PRProof_Ver(const rct::key &C, const zk_proof &proof) {
+    bool PRProof_Ver(const rct::key &C, const zk_proof &proof, bool require_canonical) {
+      try {
+        if (require_canonical && !canonical_zk_proof(C, proof, true)) return false;
         // Compute challenge c = H_p(R)
         std::vector<rct::key> keys{proof.R, C};
         rct::key c = rct::hash_to_scalar(keys);
@@ -715,6 +721,7 @@ namespace rct {
 
         // Verify R' ?= R
         return rct::equalKeys(R_prime, proof.R);
+      } catch (const std::exception&) { return false; }
     }  
 
 
@@ -1388,6 +1395,7 @@ namespace rct {
         // Calculate a random r_x and r_y values and calculate a commitment R for it
         rct::key r_x = rct::skGen();
         rct::key r_y = rct::skGen();
+        auto wipe_nonce = epee::misc_utils::create_scope_leave_handler([&] { memwipe(r_x.bytes, sizeof(r_x.bytes)); memwipe(r_y.bytes, sizeof(r_y.bytes)); });
         rct::addKeys2(proof.R, r_x, r_y, rct::pk2rct(crypto::get_T()));
 
         // Make the domain separator into a key
@@ -1410,6 +1418,8 @@ namespace rct {
     }
 
     bool SAProof_Ver(const zk_proof &proof, const key &P) {
+      try {
+        if (!canonical_zk_proof(P, proof, false)) return false;
     
         // Sanity checks for inputs
         CHECK_AND_ASSERT_THROW_MES(crypto::check_key(rct::rct2pk(P)), "SAProof_Ver() failed - invalid public key encoding");
@@ -1440,6 +1450,7 @@ namespace rct {
         
         // All checks passed
         return true;
+      } catch (const std::exception&) { return false; }
     }
   
     //RingCT protocol
@@ -1907,6 +1918,7 @@ namespace rct {
     bool verRct(const rctSig & rv, bool semantics) {
         PERF_TIMER(verRct);
         CHECK_AND_ASSERT_MES(rv.type == RCTTypeFull, false, "verRct called on non-full rctSig");
+        CHECK_AND_ASSERT_MES(rv.p.MGs.size() == 1, false, "Full RingCT requires exactly one MG signature");
         if (semantics)
         {
           CHECK_AND_ASSERT_MES(rv.outPk.size() == rv.p.rangeSigs.size(), false, "Mismatched sizes of outPk and rv.p.rangeSigs");
@@ -2126,6 +2138,14 @@ namespace rct {
         else
           CHECK_AND_ASSERT_MES(rv.pseudoOuts.size() == rv.mixRing.size(), false, "Mismatched sizes of rv.pseudoOuts and mixRing");
 
+        CHECK_AND_ASSERT_MES(!rv.mixRing.empty() && !rv.outPk.empty(), false, "Empty RingCT input or output set");
+        if (is_rct_tclsag(rv.type)) {
+          CHECK_AND_ASSERT_MES(rv.p.TCLSAGs.size() == rv.mixRing.size() && rv.p.CLSAGs.empty() && rv.p.MGs.empty(), false, "TCLSAG signature count mismatch");
+        } else if (is_rct_clsag(rv.type)) {
+          CHECK_AND_ASSERT_MES(rv.p.CLSAGs.size() == rv.mixRing.size() && rv.p.TCLSAGs.empty() && rv.p.MGs.empty(), false, "CLSAG signature count mismatch");
+        } else {
+          CHECK_AND_ASSERT_MES(rv.p.MGs.size() == rv.mixRing.size() && rv.p.CLSAGs.empty() && rv.p.TCLSAGs.empty(), false, "MLSAG signature count mismatch");
+        }
         const size_t threads = std::max(rv.outPk.size(), rv.mixRing.size());
 
         std::deque<bool> results(threads);

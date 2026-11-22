@@ -931,10 +931,15 @@ std::optional<crypto::key_image> try_derive_enote_key_image(
     if (!enote_scan_info.subaddr_index)
         return std::nullopt;
 
+    if (enote_scan_info.subaddr_index->derive_type == carrot::AddressDeriveType::PreCarrot &&
+        acc.get_keys().m_spend_secret_key == crypto::null_skey)
+        return std::nullopt;
+
     // if we have a carrot return enote, we return already derived key image
     if (enote_scan_info.is_carrot && enote_scan_info.is_return)
     {
-        return acc.get_return_output_map_ref().at(enote_scan_info.return_address).key_image;
+        const auto image = acc.get_return_output_map_ref().at(enote_scan_info.return_address).key_image;
+        return image == crypto::key_image{} ? std::nullopt : std::optional<crypto::key_image>(image);
     }
 
     // k^j_subext

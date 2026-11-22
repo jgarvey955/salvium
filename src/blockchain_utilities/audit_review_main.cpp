@@ -221,6 +221,9 @@ int main(int argc, char** argv)
         if (item.decision.empty() && item.state != "CLEARED") continue;
         audit_clearance_certificate c;
         c.network = report.network; c.activation_height = activation;
+        bind_audit_clearance_policy(c);
+        require(item.canonical_height != UINT64_MAX, "Reprocess legacy evidence to establish the canonical output height");
+        if (item.canonical_height > c.historical_cutoff_height) continue;
         c.snapshot_height = report.snapshot_height;
         require(epee::string_tools::hex_to_pod(report.genesis, c.genesis) &&
             epee::string_tools::hex_to_pod(report.snapshot_hash, c.snapshot_hash) &&

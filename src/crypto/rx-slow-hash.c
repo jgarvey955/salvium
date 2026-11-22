@@ -48,6 +48,7 @@
 
 static CTHR_RWLOCK_TYPE main_dataset_lock = CTHR_RWLOCK_INIT;
 static CTHR_RWLOCK_TYPE main_cache_lock = CTHR_RWLOCK_INIT;
+static CTHR_RWLOCK_TYPE settings_lock = CTHR_RWLOCK_INIT;
 
 static randomx_dataset *main_dataset = NULL;
 static randomx_cache *main_cache = NULL;
@@ -98,39 +99,29 @@ static void hash2hex(const char* hash, char* hex) {
 
 static inline int disabled_flags(void) {
   static int flags = -1;
-
-  if (flags != -1) {
-    return flags;
-  }
-
-  const char *env = getenv("MONERO_RANDOMX_UMASK");
-  if (!env) {
+  CTHR_RWLOCK_LOCK_WRITE(settings_lock);
+  if (flags == -1) {
+    const char *env = getenv("MONERO_RANDOMX_UMASK");
     flags = 0;
-  }
-  else {
-    char* endptr;
-    long int value = strtol(env, &endptr, 0);
-    if (endptr != env && value >= 0 && value < INT_MAX) {
-      flags = value;
-    }
-    else {
-      flags = 0;
+    if (env) {
+      char* endptr;
+      long int value = strtol(env, &endptr, 0);
+      if (endptr != env && value >= 0 && value < INT_MAX)
+        flags = value;
     }
   }
-
-  return flags;
+  const int result = flags;
+  CTHR_RWLOCK_UNLOCK_WRITE(settings_lock);
+  return result;
 }
 
 static inline int enabled_flags(void) {
   static int flags = -1;
-
-  if (flags != -1) {
-    return flags;
-  }
-
-  flags = randomx_get_flags();
-
-  return flags;
+  CTHR_RWLOCK_LOCK_WRITE(settings_lock);
+  if (flags == -1) flags = randomx_get_flags();
+  const int result = flags;
+  CTHR_RWLOCK_UNLOCK_WRITE(settings_lock);
+  return result;
 }
 
 #define SEEDHASH_EPOCH_BLOCKS	2048	/* Must be same as BLOCKS_SYNCHRONIZING_MAX_COUNT in cryptonote_config.h */
@@ -141,39 +132,35 @@ static inline int is_power_of_2(uint64_t n) { return n && (n & (n-1)) == 0; }
 static int get_seedhash_epoch_lag(void)
 {
   static unsigned int lag = (unsigned int)-1;
-  if (lag != (unsigned int)-1)
-    return lag;
-  const char *e = getenv("SEEDHASH_EPOCH_LAG");
-  if (e)
-  {
-    lag = atoi(e);
-    if (lag > SEEDHASH_EPOCH_LAG || !is_power_of_2(lag))
-      lag = SEEDHASH_EPOCH_LAG;
-  }
-  else
-  {
+  CTHR_RWLOCK_LOCK_WRITE(settings_lock);
+  if (lag == (unsigned int)-1) {
     lag = SEEDHASH_EPOCH_LAG;
+    const char *e = getenv("SEEDHASH_EPOCH_LAG");
+    if (e) {
+      const unsigned int value = atoi(e);
+      if (value <= SEEDHASH_EPOCH_LAG && is_power_of_2(value)) lag = value;
+    }
   }
-  return lag;
+  const unsigned int result = lag;
+  CTHR_RWLOCK_UNLOCK_WRITE(settings_lock);
+  return result;
 }
 
 static unsigned int get_seedhash_epoch_blocks(void)
 {
   static unsigned int blocks = (unsigned int)-1;
-  if (blocks != (unsigned int)-1)
-    return blocks;
-  const char *e = getenv("SEEDHASH_EPOCH_BLOCKS");
-  if (e)
-  {
-    blocks = atoi(e);
-    if (blocks < 2 || blocks > SEEDHASH_EPOCH_BLOCKS || !is_power_of_2(blocks))
-      blocks = SEEDHASH_EPOCH_BLOCKS;
-  }
-  else
-  {
+  CTHR_RWLOCK_LOCK_WRITE(settings_lock);
+  if (blocks == (unsigned int)-1) {
     blocks = SEEDHASH_EPOCH_BLOCKS;
+    const char *e = getenv("SEEDHASH_EPOCH_BLOCKS");
+    if (e) {
+      const unsigned int value = atoi(e);
+      if (value >= 2 && value <= SEEDHASH_EPOCH_BLOCKS && is_power_of_2(value)) blocks = value;
+    }
   }
-  return blocks;
+  const unsigned int result = blocks;
+  CTHR_RWLOCK_UNLOCK_WRITE(settings_lock);
+  return result;
 }
 
 uint64_t rx_seedheight(const uint64_t height) {
@@ -196,7 +183,7 @@ static void rx_alloc_dataset(randomx_flags flags, randomx_dataset** dataset, int
   }
 
   if (disabled_flags() & RANDOMX_FLAG_FULL_MEM) {
-    static int shown = 0;
+    static THREADV int shown = 0;
     if (!shown) {
       shown = 1;
       minfo(RX_LOGCAT, "RandomX dataset is disabled by MONERO_RANDOMX_UMASK environment variable.");
@@ -240,10 +227,10 @@ static void rx_init_full_vm(randomx_flags flags, randomx_vm** vm)
 
   *vm = randomx_create_vm((flags | RANDOMX_FLAG_LARGE_PAGES | RANDOMX_FLAG_FULL_MEM) & ~disabled_flags(), NULL, main_dataset);
   if (!*vm) {
-    static int shown = 0;
+    static THREADV int shown = 0;
     if (!shown) {
         shown = 1;
-        alloc_err_msg("Couldn't allocate RandomX full VM using large pages (will print only once)");
+        alloc_err_msg("Couldn't allocate RandomX full VM using large pages (once per thread)");
     }
     *vm = randomx_create_vm((flags | RANDOMX_FLAG_FULL_MEM) & ~disabled_flags(), NULL, main_dataset);
     if (!*vm) {
@@ -267,10 +254,10 @@ static void rx_init_light_vm(randomx_flags flags, randomx_vm** vm, randomx_cache
 
   *vm = randomx_create_vm((flags | RANDOMX_FLAG_LARGE_PAGES) & ~disabled_flags(), cache, NULL);
   if (!*vm) {
-    static int shown = 0;
+    static THREADV int shown = 0;
     if (!shown) {
         shown = 1;
-        alloc_err_msg("Couldn't allocate RandomX light VM using large pages (will print only once)");
+        alloc_err_msg("Couldn't allocate RandomX light VM using large pages (once per thread)");
     }
     *vm = randomx_create_vm(flags & ~disabled_flags(), cache, NULL);
     if (!*vm) local_abort("Couldn't allocate RandomX light VM");
@@ -384,9 +371,10 @@ static CTHR_THREAD_RTYPE rx_set_main_seedhash_thread(void *arg) {
 
 void rx_set_main_seedhash(const char *seedhash, size_t max_dataset_init_threads) {
   // Early out if seedhash didn't change
-  if (is_main(seedhash)) {
-    return;
-  }
+  CTHR_RWLOCK_LOCK_READ(main_cache_lock);
+  const bool unchanged = is_main(seedhash);
+  CTHR_RWLOCK_UNLOCK_READ(main_cache_lock);
+  if (unchanged) return;
 
   // Update main cache and dataset in the background
   thread_info* info = malloc(sizeof(thread_info));
@@ -410,28 +398,25 @@ void rx_slow_hash(const char *seedhash, const void *data, size_t length, char *r
 
   // Fast path (seedhash == main_seedhash)
   // Multiple threads can run in parallel in fast or light mode, 1-2 ms or 10-15 ms per hash per thread
-  if (is_main(seedhash)) {
-    // If CTHR_RWLOCK_TRYLOCK_READ fails it means dataset is being initialized now, so use the light mode
-    if (main_dataset && CTHR_RWLOCK_TRYLOCK_READ(main_dataset_lock)) {
-      // Double check that main_seedhash didn't change
-      if (is_main(seedhash)) {
-        rx_init_full_vm(flags, &main_vm_full);
-        if (main_vm_full) {
-          randomx_calculate_hash(main_vm_full, data, length, result_hash);
-          success = 1;
-        }
-      }
-      CTHR_RWLOCK_UNLOCK_READ(main_dataset_lock);
-    } else {
-      CTHR_RWLOCK_LOCK_READ(main_cache_lock);
-      // Double check that main_seedhash didn't change
-      if (is_main(seedhash)) {
-        rx_init_light_vm(flags, &main_vm_light, main_cache);
-        randomx_calculate_hash(main_vm_light, data, length, result_hash);
+  // Observe the dataset and its seed only while holding the dataset lock.
+  if (CTHR_RWLOCK_TRYLOCK_READ(main_dataset_lock)) {
+    if (main_dataset && is_main(seedhash)) {
+      rx_init_full_vm(flags, &main_vm_full);
+      if (main_vm_full) {
+        randomx_calculate_hash(main_vm_full, data, length, result_hash);
         success = 1;
       }
-      CTHR_RWLOCK_UNLOCK_READ(main_cache_lock);
     }
+    CTHR_RWLOCK_UNLOCK_READ(main_dataset_lock);
+  }
+  if (!success) {
+    CTHR_RWLOCK_LOCK_READ(main_cache_lock);
+    if (main_cache && is_main(seedhash)) {
+      rx_init_light_vm(flags, &main_vm_light, main_cache);
+      randomx_calculate_hash(main_vm_light, data, length, result_hash);
+      success = 1;
+    }
+    CTHR_RWLOCK_UNLOCK_READ(main_cache_lock);
   }
 
   if (success) {
@@ -442,21 +427,6 @@ void rx_slow_hash(const char *seedhash, const void *data, size_t length, char *r
 
   // Slow path (seedhash != main_seedhash, but seedhash == secondary_seedhash)
   // Multiple threads can run in parallel in light mode, 10-15 ms per hash per thread
-  if (!secondary_cache) {
-    CTHR_RWLOCK_LOCK_WRITE(secondary_cache_lock);
-    if (!secondary_cache) {
-      hash2hex(seedhash, buf);
-      minfo(RX_LOGCAT, "RandomX new secondary seed hash is %s", buf);
-
-      rx_alloc_cache(flags, &secondary_cache);
-      randomx_init_cache(secondary_cache, seedhash, HASH_SIZE);
-      minfo(RX_LOGCAT, "RandomX secondary cache updated");
-      memcpy(secondary_seedhash, seedhash, HASH_SIZE);
-      secondary_seedhash_set = 1;
-    }
-    CTHR_RWLOCK_UNLOCK_WRITE(secondary_cache_lock);
-  }
-
   CTHR_RWLOCK_LOCK_READ(secondary_cache_lock);
   if (is_secondary(seedhash)) {
     rx_init_light_vm(flags, &secondary_vm_light, secondary_cache);
@@ -472,6 +442,7 @@ void rx_slow_hash(const char *seedhash, const void *data, size_t length, char *r
   // Slowest path (seedhash != main_seedhash, seedhash != secondary_seedhash)
   // Only one thread runs at a time and updates secondary_seedhash if needed, up to 200-500 ms per hash
   CTHR_RWLOCK_LOCK_WRITE(secondary_cache_lock);
+  rx_alloc_cache(flags, &secondary_cache);
   if (!is_secondary(seedhash)) {
     hash2hex(seedhash, buf);
     minfo(RX_LOGCAT, "RandomX new secondary seed hash is %s", buf);

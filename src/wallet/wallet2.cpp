@@ -33,6 +33,7 @@
 #include <numeric>
 #include <tuple>
 #include <queue>
+#include <charconv>
 #include <csignal>
 #include <boost/format.hpp>
 #include <boost/optional/optional.hpp>
@@ -91,6 +92,7 @@ using namespace epee;
 #include "common/notify.h"
 #include "common/perf_timer.h"
 #include "ringct/rctSigs.h"
+#include "ringct/proof_validation.h"
 #include "ringdb.h"
 #include "device/device_cold.hpp"
 #include "device_trezor/device_trezor.hpp"
@@ -2234,9 +2236,8 @@ bool wallet2::get_circulating_supply(std::vector<std::pair<std::string, std::str
   // Issue an RPC call to get the block header (and thus the pricing record) at the specified height
   cryptonote::COMMAND_RPC_GET_SUPPLY_INFO::request req = AUTO_VAL_INIT(req);
   cryptonote::COMMAND_RPC_GET_SUPPLY_INFO::response res = AUTO_VAL_INIT(res);
-  m_daemon_rpc_mutex.lock();
+  const boost::lock_guard<boost::recursive_mutex> lock(m_daemon_rpc_mutex);
   bool r = invoke_http_json_rpc("/json_rpc", "get_supply_info", req, res, rpc_timeout);
-  m_daemon_rpc_mutex.unlock();
   if (r && res.status == CORE_RPC_STATUS_OK)
   {
     // Got the supply data - convert to a meaningful format
@@ -2292,10 +2293,9 @@ bool wallet2::get_yield_info(std::vector<cryptonote::yield_block_info>& ybi_data
   // Issue an RPC call to get the block header (and thus the pricing record) at the specified height
   cryptonote::COMMAND_RPC_GET_YIELD_INFO::request req = AUTO_VAL_INIT(req);
   cryptonote::COMMAND_RPC_GET_YIELD_INFO::response res = AUTO_VAL_INIT(res);
-  m_daemon_rpc_mutex.lock();
+  const boost::lock_guard<boost::recursive_mutex> lock(m_daemon_rpc_mutex);
   req.include_raw_data = true;
   bool r = invoke_http_json_rpc("/json_rpc", "get_yield_info", req, res, rpc_timeout);
-  m_daemon_rpc_mutex.unlock();
   if (r && res.status == CORE_RPC_STATUS_OK)
   {
     ybi_data.clear();
@@ -2327,26 +2327,67 @@ bool wallet2::get_yield_summary_info(uint64_t &total_burnt,
                                      std::vector<yield_payout_t> &payouts
                                      )
 {
+  // The daemon response and cached transfer metadata are not trusted enough
+  // to leave caller-visible output partially initialized on an error.
+  total_burnt = 0;
+  total_supply = 0;
+  total_locked = 0;
+  total_yield = 0;
+  yield_per_stake = 0;
+  ybi_data_size = 0;
+  payouts.clear();
+  const auto invalid_result = [&]() noexcept {
+    total_burnt = 0;
+    total_supply = 0;
+    total_locked = 0;
+    total_yield = 0;
+    yield_per_stake = 0;
+    ybi_data_size = 0;
+    payouts.clear();
+    return false;
+  };
+
   // Get the total circulating supply of SALs
   std::vector<std::pair<std::string, std::string>> supply_amounts;
   if(!get_circulating_supply(supply_amounts)) {
-    return false;
+    return invalid_result();
   }
-  boost::multiprecision::uint128_t total_supply_128 = 0;
-  for (auto supply_asset: supply_amounts) {
+  bool found_sal1_supply = false;
+  for (const auto& supply_asset: supply_amounts) {
     if (supply_asset.first == "SAL1") {
-      boost::multiprecision::uint128_t supply_128(supply_asset.second);
-      total_supply_128 = supply_128;
+      const auto& amount = supply_asset.second;
+      const auto parsed = std::from_chars(amount.data(), amount.data() + amount.size(), total_supply);
+      if (parsed.ec != std::errc{} || parsed.ptr != amount.data() + amount.size())
+      {
+        MERROR("Daemon returned malformed or out-of-range SAL1 supply data");
+        return invalid_result();
+      }
+      found_sal1_supply = true;
       break;
     }
   }
-  total_supply = total_supply_128.convert_to<uint64_t>();
+  if (!found_sal1_supply)
+  {
+    MERROR("Daemon returned missing or out-of-range SAL1 supply data");
+    return invalid_result();
+  }
 
   // Get the yield data from the blockchain
   std::vector<cryptonote::yield_block_info> ybi_data;
   bool r = get_yield_info(ybi_data);
-  if (!r)
-    return false;
+  if (!r || ybi_data.empty())
+  {
+    if (r)
+      MERROR("Daemon returned empty yield data");
+    return invalid_result();
+  }
+
+  for (size_t index = 1; index < ybi_data.size(); ++index) {
+    if (ybi_data[index].block_height <= ybi_data[index - 1].block_height) {
+      MERROR("Daemon returned unordered or duplicate yield data");
+      return invalid_result();
+    }
+  }
 
   ybi_data_size = ybi_data.size();
 
@@ -2354,18 +2395,31 @@ bool wallet2::get_yield_summary_info(uint64_t &total_burnt,
   std::map<size_t, size_t> map_payouts;
   std::map<std::string, std::tuple<size_t, std::string, uint64_t, uint64_t>> payouts_active;
   if (m_transfers.size() > 0) {
-    for (size_t idx = m_transfers.size()-1; idx>0; --idx) {
+    for (size_t idx = m_transfers.size(); idx-- > 0;) {
       const tools::wallet2::transfer_details& td = m_transfers[idx];
       //if (td.m_block_height < ybi_data[0].block_height) break;
       if (td.m_tx.type == cryptonote::transaction_type::STAKE) {
         if (map_payouts.count(idx)) {
-          payouts.push_back(std::make_tuple(td.m_block_height, epee::string_tools::pod_to_hex(td.m_txid), td.asset_type, td.m_tx.amount_burnt, m_transfers[map_payouts[idx]].m_amount - td.m_tx.amount_burnt));
+          const auto& payout = m_transfers[map_payouts[idx]];
+          if (payout.m_amount < td.m_tx.amount_burnt)
+          {
+            MWARNING("Ignoring yield payout smaller than its recorded stake burn");
+            continue;
+          }
+          payouts.push_back(std::make_tuple(td.m_block_height,
+            epee::string_tools::pod_to_hex(td.m_txid), td.asset_type,
+            td.m_tx.amount_burnt, payout.m_amount - td.m_tx.amount_burnt));
         } else {
           //payouts.push_back(std::make_tuple(td.m_block_height, epee::string_tools::pod_to_hex(td.m_txid), td.m_tx.amount_burnt, 0));
           payouts_active[epee::string_tools::pod_to_hex(td.m_txid)] = std::make_tuple(td.m_block_height, td.asset_type, td.m_tx.amount_burnt, 0);
         }
       } else if (td.m_tx.type == cryptonote::transaction_type::PROTOCOL) {
         // Store list of reverse-lookup indices to tell YIELD TXs how much they earned
+        if (td.m_td_origin_idx >= m_transfers.size())
+        {
+          MWARNING("Ignoring yield protocol transfer with invalid origin index");
+          continue;
+        }
         if (m_transfers[td.m_td_origin_idx].m_tx.type == cryptonote::transaction_type::STAKE || m_transfers[td.m_td_origin_idx].m_tx.type == cryptonote::transaction_type::AUDIT)
           map_payouts[td.m_td_origin_idx] = idx;
       }
@@ -2373,24 +2427,41 @@ bool wallet2::get_yield_summary_info(uint64_t &total_burnt,
   }
   
   // Scan the entries we have received to gather the state (total yield over period captured)
-  total_burnt = 0;
-  total_yield = 0;
-  yield_per_stake = 0;
+  const auto checked_add = [](uint64_t& total, const uint64_t amount) {
+    if (amount > std::numeric_limits<uint64_t>::max() - total)
+      return false;
+    total += amount;
+    return true;
+  };
   for (size_t idx=1; idx<ybi_data.size(); ++idx) {
     if (ybi_data[idx].locked_coins_tally == 0) {
-      total_burnt += ybi_data[idx].slippage_total_this_block;
+      if (!checked_add(total_burnt, ybi_data[idx].slippage_total_this_block))
+      {
+        MERROR("Daemon yield burn total exceeds supported range");
+        return invalid_result();
+      }
     } else {
-      total_yield += ybi_data[idx].slippage_total_this_block;
+      if (!checked_add(total_yield, ybi_data[idx].slippage_total_this_block))
+      {
+        MERROR("Daemon yield total exceeds supported range");
+        return invalid_result();
+      }
 
       // EXPERIMENTAL - add up yield earned for active STAKE TXs
       for (auto &payout: payouts_active) {
 
         auto&[height,asset_type,total_burnt,total_accrued] = payout.second;
-        if (ybi_data[idx].block_height < height) continue; 
+        const uint64_t block_height = ybi_data[idx].block_height;
+        if (block_height <= height || block_height - height > cryptonote::get_config(m_nettype).STAKE_LOCK_PERIOD) continue;
         boost::multiprecision::uint128_t amount_128 = ybi_data[idx].slippage_total_this_block;
         amount_128 *= total_burnt;
         amount_128 /= ybi_data[idx].locked_coins_tally;
-        total_accrued += amount_128.convert_to<uint64_t>();
+        if (amount_128 > std::numeric_limits<uint64_t>::max() ||
+            !checked_add(total_accrued, amount_128.convert_to<uint64_t>()))
+        {
+          MERROR("Daemon yield payout exceeds supported range");
+          return invalid_result();
+        }
       }
     }
   }
@@ -2409,6 +2480,11 @@ bool wallet2::get_yield_summary_info(uint64_t &total_burnt,
     boost::multiprecision::uint128_t yield_per_stake_128 = ybi_data.back().slippage_total_this_block;
     yield_per_stake_128 *= COIN;
     yield_per_stake_128 /= ybi_data.back().locked_coins_tally;
+    if (yield_per_stake_128 > std::numeric_limits<uint64_t>::max())
+    {
+      MERROR("Daemon yield-per-stake value exceeds supported range");
+      return invalid_result();
+    }
     yield_per_stake = yield_per_stake_128.convert_to<uint64_t>();
   }
   
@@ -11823,7 +11899,9 @@ std::vector<wallet2::pending_tx> wallet2::create_token(const std::string& token_
 {
   // Make asset_type uppercase version of the token symbol
   std::string asset_type = token_ticker;
-  std::transform(asset_type.begin(), asset_type.end(), asset_type.begin(), ::toupper);
+  std::transform(asset_type.begin(), asset_type.end(), asset_type.begin(), [](unsigned char c) {
+    return static_cast<char>(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+  });
   THROW_WALLET_EXCEPTION_IF(asset_type.length() != 4, error::wallet_internal_error, tr("Invalid ticker: Must be exactly 4 characters."));
 
   // Validate characters
@@ -11862,16 +11940,18 @@ std::vector<wallet2::pending_tx> wallet2::create_token(const std::string& token_
 
     // Parse as JSON
     rapidjson::Document json;
-    THROW_WALLET_EXCEPTION_IF(json.Parse(metadata_blob.c_str()).HasParseError(), error::wallet_internal_error, tr("Metadata is not valid JSON"));
+    THROW_WALLET_EXCEPTION_IF(json.Parse<rapidjson::kParseValidateEncodingFlag>(metadata_blob.data(), metadata_blob.size()).HasParseError() ||
+        !json.IsObject() || metadata_blob.find('\0') != std::string::npos,
+        error::wallet_internal_error, tr("Metadata must be a valid JSON object"));
     if (json.HasMember("size") && json["size"].IsUint64())
       size = json["size"].GetUint64();
     if (json.HasMember("name") && json["name"].IsString())
-      name = json["name"].GetString();
+      name.assign(json["name"].GetString(), json["name"].GetStringLength());
     if (json.HasMember("url") && json["url"].IsString())
-      url = json["url"].GetString();
+      url.assign(json["url"].GetString(), json["url"].GetStringLength());
     if (json.HasMember("hash") && json["hash"].IsString()) {
-      hash = json["hash"].GetString();
-      epee::string_tools::hex_to_pod(hash, signature);
+      hash.assign(json["hash"].GetString(), json["hash"].GetStringLength());
+      THROW_WALLET_EXCEPTION_IF(!hash.empty() && !epee::string_tools::hex_to_pod(hash, signature), error::wallet_internal_error, tr("Invalid metadata hash"));
     }
   }
   
@@ -15185,6 +15265,8 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
   {
     THROW_WALLET_EXCEPTION_IF(!seen_key_images.insert(proof.key_image).second, error::wallet_internal_error, "Duplicate key image in reserve proof");
     THROW_WALLET_EXCEPTION_IF(!seen_outputs.emplace(epee::string_tools::pod_to_hex(proof.txid), proof.index_in_tx).second, error::wallet_internal_error, "Duplicate output in reserve proof");
+    THROW_WALLET_EXCEPTION_IF(!rct::canonical_spend_point(rct::ki2rct(proof.key_image)),
+      error::wallet_internal_error, "Invalid key image in reserve proof");
   }
 
   THROW_WALLET_EXCEPTION_IF(subaddr_spendkeys.count(address.m_spend_public_key) == 0, error::wallet_internal_error,

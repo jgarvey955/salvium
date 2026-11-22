@@ -1,4 +1,6 @@
 #include "tx_rules_engine.h"
+#include "ringct/proof_validation.h"
+#include "cryptonote_basic/cryptonote_format_utils.h"
 
 #include "cryptonote_basic/cryptonote_basic.h"
 
@@ -296,6 +298,26 @@ namespace cryptonote::txrules
     }
     else
     {
+      // An ordinary transaction cannot create a different output asset.
+      // HF13 occurs after the historical compatibility interval on mainnet;
+      // mempool policy never inherits a caller-supplied historical-height bypass.
+      if (env.mode == validation_mode::mempool || env.hf >= HF_VERSION_REJECT_POISONED_REFS) {
+        for (const auto& output : tx.vout) {
+          std::string asset;
+          if (!get_output_asset_type(output, asset) || asset != tx.source_asset_type) {
+            if (why) *why = "ordinary output asset must match its funded source asset";
+            return false;
+          }
+        }
+      }
+      // Canonical PR proof encoding is relay policy now and a rule of the
+      // proposed next fork. Historical block verification retains its rules.
+      if ((env.mode == validation_mode::mempool || env.hf >= 14) &&
+          (ctx.rct_type == rct::RCTTypeFullProofs || ctx.rct_type == rct::RCTTypeSalviumZero || ctx.rct_type == rct::RCTTypeSalviumOne) &&
+          !rct::canonical_zk_proof(tx.rct_signatures.p_r, tx.rct_signatures.salvium_data.pr_proof, true)) {
+        if (why) *why = "noncanonical remainder proof";
+        return false;
+      }
       // Prevent non-zero amounts on RCT outputs
       if (!check_rct_outputs_have_zero_clear_amounts(tx, env, why))
         return false;

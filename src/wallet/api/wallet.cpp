@@ -44,6 +44,8 @@
 #include "mnemonics/english.h"
 #include <boost/format.hpp>
 #include <sstream>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 #include <unordered_map>
 
 #include <boost/locale.hpp>
@@ -91,6 +93,26 @@ using namespace cryptonote;
   } while (0)
 
 namespace Monero {
+
+void WalletListener::onDevicePassphraseRequestSecure(bool& on_device,
+    const DevicePassphraseCallback& receive)
+{
+    // Preserve existing listener implementations, but erase the returned
+    // string even if allocation or the receiving callback throws.
+    auto passphrase = onDevicePassphraseRequest(on_device);
+    struct WipeReturnedPassphrase
+    {
+        optional<std::string>& value;
+        ~WipeReturnedPassphrase()
+        {
+            if (value && !(*value).empty())
+                memwipe(&(*value)[0], (*value).size());
+        }
+    } wipe{passphrase};
+    if (passphrase && !on_device)
+        receive((*passphrase).data(), (*passphrase).size());
+}
+
 
 namespace {
     // copy-pasted from simplewallet
@@ -274,15 +296,18 @@ struct Wallet2CallbackImpl : public tools::i_wallet2_callback
 
     virtual boost::optional<epee::wipeable_string> on_device_passphrase_request(bool & on_device)
     {
+      boost::optional<epee::wipeable_string> passphrase;
       if (m_listener) {
-        auto passphrase = m_listener->onDevicePassphraseRequest(on_device);
-        if (passphrase) {
-          return boost::make_optional(epee::wipeable_string((*passphrase).data(), (*passphrase).size()));
-        }
+        m_listener->onDevicePassphraseRequestSecure(on_device,
+          [&](const char* data, std::size_t size) {
+            passphrase.emplace();
+            if (size != 0)
+              passphrase->append(data, size);
+          });
       } else {
         on_device = true;
       }
-      return boost::none;
+      return on_device ? boost::none : std::move(passphrase);
     }
 
     virtual void on_device_progress(const hw::device_progress & event)
@@ -1657,8 +1682,15 @@ PendingTransaction *WalletImpl::createCreateTokenTransaction(const std::string &
       }
     }
     if (metadata.empty()) {
-      std::string json = (boost::format("{\"name\":\"%s\",\"size\":%d,\"hash\":\"%s\",\"url\":\"%s\"}") % name % size % hash % url).str();
-      token_metadata_hex = epee::string_tools::buff_to_hex_nodelimer(json);
+      rapidjson::StringBuffer buffer;
+      rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+      writer.StartObject();
+      writer.Key("name"); writer.String(name.data(), name.size());
+      writer.Key("size"); writer.Uint(size);
+      if (!hash.empty()) { writer.Key("hash"); writer.String(hash.data(), hash.size()); }
+      writer.Key("url"); writer.String(url.data(), url.size());
+      writer.EndObject();
+      token_metadata_hex = epee::string_tools::buff_to_hex_nodelimer(std::string(buffer.GetString(), buffer.GetSize()));
     } else {
       token_metadata_hex = metadata;
     }
@@ -1764,7 +1796,7 @@ std::string WalletImpl::exportAuditReview(uint64_t snapshot_height)
 {
     clearStatus();
     try {
-        RefreshLock refresh_lock(*this);
+        LOCK_REFRESH();
         m_wallet->refresh(trustedDaemon());
         epee::wipeable_string password(m_password);
         tools::wallet_keys_unlocker unlocker(*m_wallet, &password);
@@ -1776,7 +1808,7 @@ bool WalletImpl::importAuditReview(const std::string& result, const std::string&
 {
     clearStatus();
     try {
-        RefreshLock refresh_lock(*this);
+        LOCK_REFRESH();
         m_wallet->refresh(trustedDaemon());
         m_wallet->import_audit_review(result, developer_public_key);
         return true;
@@ -1788,7 +1820,7 @@ std::string WalletImpl::audit(bool status_only, bool all_accounts, uint32_t acco
 {
     clearStatus();
     try {
-        RefreshLock refresh_lock(*this);
+        LOCK_REFRESH();
         m_wallet->refresh(trustedDaemon());
         const auto result = m_wallet->audit(!status_only, all_accounts, account, subaddresses);
         return epee::serialization::store_t_to_json(result);
@@ -2772,7 +2804,11 @@ void WalletImpl::pendingTxPostProcess(PendingTransactionImpl * pending)
 
 bool WalletImpl::doInit(const string &daemon_address, const std::string &proxy_address, uint64_t upper_transaction_size_limit, bool ssl)
 {
-    if (!m_wallet->init(daemon_address, m_daemon_login, proxy_address, upper_transaction_size_limit))
+    const epee::net_utils::ssl_options_t ssl_options(
+        ssl ? epee::net_utils::ssl_support_t::e_ssl_support_enabled
+            : epee::net_utils::ssl_support_t::e_ssl_support_autodetect);
+    if (!m_wallet->init(daemon_address, m_daemon_login, proxy_address,
+                        upper_transaction_size_limit, true, ssl_options))
        return false;
 
     // in case new wallet, this will force fast-refresh (pulling hashes instead of blocks)
@@ -3088,7 +3124,8 @@ uint64_t WalletImpl::getBytesSent()
 YieldInfo * WalletImpl::getYieldInfo()
 {
   auto yi = new YieldInfoImpl(*this);
-  bool ok = m_wallet->get_yield_summary_info(yi->m_burnt, yi->m_supply, yi->m_locked, yi->m_yield, yi->m_yield_per_stake, yi->m_num_entries, yi->m_payouts);
+  if (!yi->update())
+    setStatusError(yi->errorString());
   return yi;
 }
 

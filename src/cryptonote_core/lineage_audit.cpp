@@ -1,4 +1,5 @@
 #include "lineage_audit.h"
+#include "ringct/proof_validation.h"
 #include "blockchain.h"
 #include "blockchain_db/blockchain_db.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
@@ -472,8 +473,9 @@ crypto::hash lineage_proof_message(const lineage_enrollment& enrollment, const l
 bool verify_lineage_output_proof(const lineage_enrollment& enrollment, const lineage_output_proof& proof,
     const crypto::public_key& key, const rct::key& commitment)
 {
-  if (proof.offset_mask > 1 || !rct::isInMainSubgroup(rct::ki2rct(proof.image)) ||
-      !rct::isInMainSubgroup(rct::pk2rct(key))) return false;
+  if (proof.offset_mask > 1 || !rct::canonical_spend_point(rct::ki2rct(proof.image)) ||
+      !rct::canonical_spend_point(rct::pk2rct(key)) ||
+      !rct::canonical_subgroup_point(commitment)) return false;
   auto signature = proof.signature;
   signature.I = rct::ki2rct(proof.image);
   return rct::verRctTCLSAGSimple(rct::hash2rct(lineage_proof_message(enrollment, proof)), signature,

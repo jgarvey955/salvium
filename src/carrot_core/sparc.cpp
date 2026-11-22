@@ -35,6 +35,9 @@
 
 //paired header
 #include "sparc.h"
+#include "ringct/proof_validation.h"
+#include "misc_language.h"
+#include "memwipe.h"
 
 //local headers
 #include "crypto/crypto.h"
@@ -80,9 +83,12 @@ namespace carrot {
   // Function to generate the zero-knowledge proof
   void make_sparc_spend_authority_proof(const rct::key &x, const rct::key &y, const rct::key &K_o, rct::zk_proof &proof_out) {
   
+    CHECK_AND_ASSERT_THROW_MES(sc_check(x.bytes) == 0 && sc_check(y.bytes) == 0 &&
+        rct::canonical_subgroup_point(K_o) && !(K_o == rct::identity()), "Invalid SPARC proof witness or statement");
     // Step 1: Generate random scalars r_x and r_y
     rct::key r_x = rct::skGen(); // Random scalar for G commitment
     rct::key r_y = rct::skGen(); // Random scalar for T commitment
+    auto wipe_nonce = epee::misc_utils::create_scope_leave_handler([&] { memwipe(r_x.bytes, sizeof(r_x.bytes)); memwipe(r_y.bytes, sizeof(r_y.bytes)); });
     
     // Step 2: Calculate commitment by summing terms for G and T
     rct::key commitment;
@@ -110,11 +116,13 @@ namespace carrot {
     // Step 6: Sanity checks
     rct::key resC = rct::addKeys(commitment, rct::scalarmultKey(K_o, challenge));    
     rct::key resZ = rct::addKeys(rct::scalarmultBase(response_x), rct::scalarmultKey(rct::pk2rct(crypto::get_T()), response_y));
-    if (!rct::equalKeys(resZ, resC)) assert(false);
+    CHECK_AND_ASSERT_THROW_MES(rct::equalKeys(resZ, resC), "SPARC proof witness does not match its statement");
   }
   
   // Function to verify the zero-knowledge proof
   bool verify_sparc_spend_authority_proof(const rct::zk_proof &proof, const rct::key &K_o) {
+    try {
+    if (!rct::canonical_zk_proof(K_o, proof, false)) return false;
     
     // Step 1: calculate the challenge
     std::vector<rct::key> keys{proof.R, K_o};
@@ -130,6 +138,7 @@ namespace carrot {
     
     // Step 4: verify z_xG + x_yT ?= R + cK_o
     return rct::equalKeys(resZ, resC);
+    } catch (const std::exception&) { return false; }
   }
 
 } // namespace carrot

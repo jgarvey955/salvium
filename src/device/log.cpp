@@ -36,10 +36,16 @@ namespace hw {
   #define MONERO_DEFAULT_LOG_CATEGORY "device"
 
   void buffer_to_str(char *to_buff,  size_t to_len, const char *buff, size_t len) {
-    CHECK_AND_ASSERT_THROW_MES(to_len > (len*2), "destination buffer too short. At least" << (len*2+1) << " bytes required");
+    CHECK_AND_ASSERT_THROW_MES(to_buff && to_len && len <= (to_len - 1) / 2,
+        "destination buffer too short");
+    CHECK_AND_ASSERT_THROW_MES(buff || len == 0, "source buffer is null");
+    static constexpr char hex[] = "0123456789abcdef";
     for (size_t i=0; i<len; i++) {
-      sprintf(to_buff+2*i, "%.02x", (unsigned char)buff[i]);
+      const auto byte = static_cast<unsigned char>(buff[i]);
+      to_buff[2*i] = hex[byte >> 4];
+      to_buff[2*i+1] = hex[byte & 15];
     }
+    to_buff[2*len] = '\0';
   }
 
   void log_hexbuffer(const std::string &msg,  const char* buff, size_t len) {

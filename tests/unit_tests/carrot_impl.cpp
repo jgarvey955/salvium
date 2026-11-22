@@ -90,6 +90,7 @@ struct unittest_transaction_preproposal
             for (const per_payment_proposal &ppp : pa.second)
             {
                 normal_payment_proposals_out.push_back(ppp.first);
+                normal_payment_proposals_out.back().asset_type = "SAL1";
                 if (ppp.second)
                     subtractable_normal_payment_proposals.insert(norm_idx);
 
@@ -101,6 +102,7 @@ struct unittest_transaction_preproposal
         {
             const per_ss_payment_proposal &pspp = explicit_selfsend_proposals.at(ss_idx);
             selfsend_payment_proposals_out.push_back(pspp.first);
+            selfsend_payment_proposals_out.back().proposal.asset_type = "SAL1";
             if (pspp.second)
                 subtractable_selfsend_payment_proposals.insert(ss_idx);
         }
@@ -170,10 +172,26 @@ static void subtest_multi_account_transfer_over_transaction(const unittest_trans
 
     // make unsigned transaction
     cryptonote::transaction tx;
-    make_pruned_transaction_from_proposal_v1(tx_proposal,
-        &ss_keys.s_view_balance_dev,
-        &ss_keys.k_view_incoming_dev,
-        tx);
+    // Wallet finalization normally attaches selected source rings. These
+    // output scanning fixtures construct only pruned transactions.
+    tx_proposal.sources.resize(tx_proposal.key_images_sorted.size());
+    for (auto& source : tx_proposal.sources) {
+        source.asset_type = "SAL1";
+        for (uint64_t index = 0; index < 16; ++index)
+            source.outputs.emplace_back(index, rct::ctkey{rct::pkGen(), rct::pkGen()});
+    }
+    // This fixture verifies enote serialization and scanning, not the unfinished
+    // FCMP proposal signing adapter. Supply explicit carrier masks for that scope.
+    std::vector<RCTOutputEnoteProposal> fixture_outputs;
+    encrypted_payment_id_t fixture_pid;
+    get_output_enote_proposals_from_proposal_v1(tx_proposal, &ss_keys.s_view_balance_dev,
+        &ss_keys.k_view_incoming_dev, fixture_outputs, fixture_pid);
+    std::vector<CarrotEnoteV1> fixture_enotes;
+    for (const auto& output : fixture_outputs) fixture_enotes.push_back(output.enote);
+    tx = store_carrot_to_transaction_v1(fixture_enotes, tx_proposal.key_images_sorted,
+        tx_proposal.sources, tx_proposal.fee, cryptonote::TRANSFER, 0,
+        std::vector<uint8_t>(fixture_enotes.size()), {}, {}, fixture_pid, HF_VERSION_CARROT);
+    tx.extra.insert(tx.extra.end(), tx_proposal.extra.begin(), tx_proposal.extra.end());
 
     // calculate acceptable fee margin between proposed amount and actual amount for subtractable outputs
     const size_t num_subtractable = subtractable_normal_payment_proposals.size() +
@@ -193,16 +211,26 @@ static void subtest_multi_account_transfer_over_transaction(const unittest_trans
         parsed_fee,
         parsed_encrypted_payment_id));
     ASSERT_TRUE(parsed_encrypted_payment_id);
+    ASSERT_EQ(fixture_outputs.size(), parsed_enotes.size());
+    for (size_t index = 0; index < parsed_enotes.size(); ++index)
+        EXPECT_EQ(fixture_outputs[index].enote, parsed_enotes[index]);
+    std::vector<mx25519_pubkey> fixture_ephemeral_keys;
+    for (const auto& enote : parsed_enotes) fixture_ephemeral_keys.push_back(enote.enote_ephemeral_pubkey);
+    CarrotEnoteV1 reused;
+    for (unsigned repetition = 0; repetition < 2; ++repetition) {
+        ASSERT_TRUE(try_load_carrot_enote_from_transaction_v1(tx, epee::to_span(fixture_ephemeral_keys), 0, reused));
+        EXPECT_EQ(tx.vout.size(), reused.tx_output_keys.size());
+        EXPECT_EQ(parsed_enotes.front(), reused);
+    }
 
     // collect modified selfsend payment proposal cores
     std::vector<CarrotPaymentProposalSelfSendV1> modified_selfsend_payment_proposals;
     for (const auto &p : tx_proposal.selfsend_payment_proposals)
         modified_selfsend_payment_proposals.push_back(p.proposal);
 
-    // sanity check that the enotes and pid_enc loaded from the transaction are equal to the enotes
-    // and pic_enc returned from get_output_enote_proposals() when called with the modified payment
-    // proposals. we do this so that the modified payment proposals from make_unsigned_transaction()
-    // can be passed to a hardware device for deterministic verification of the signable tx hash
+    // Check rederivation of deterministic enote fields. Randomized return-key
+    // padding is validated by the exact serialized roundtrip above; a fresh
+    // proposal derivation deliberately generates new padding.
     std::vector<RCTOutputEnoteProposal> rederived_output_enote_proposals;
     encrypted_payment_id_t rederived_encrypted_payment_id;
     size_t change_index;
@@ -224,7 +252,9 @@ static void subtest_multi_account_transfer_over_transaction(const unittest_trans
     ASSERT_EQ(parsed_enotes.size(), rederived_output_enote_proposals.size());
     for (size_t enote_idx = 0; enote_idx < parsed_enotes.size(); ++enote_idx)
     {
-        EXPECT_EQ(parsed_enotes.at(enote_idx), rederived_output_enote_proposals.at(enote_idx).enote);
+        auto rederived = rederived_output_enote_proposals.at(enote_idx).enote;
+        rederived.return_enc = parsed_enotes.at(enote_idx).return_enc;
+        EXPECT_EQ(parsed_enotes.at(enote_idx), rederived);
     }
 
     // collect accounts

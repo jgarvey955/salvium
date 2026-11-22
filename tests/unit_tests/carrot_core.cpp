@@ -36,6 +36,18 @@
 
 using namespace carrot;
 
+TEST(carrot_core, selfsend_optional_ephemeral_keys_compare_by_value)
+{
+    CarrotPaymentProposalSelfSendV1 a{}, b{};
+    EXPECT_TRUE(a == b);
+    a.enote_ephemeral_pubkey = mx25519_pubkey{};
+    EXPECT_FALSE(a == b);
+    b.enote_ephemeral_pubkey = *a.enote_ephemeral_pubkey;
+    EXPECT_TRUE(a == b);
+    b.enote_ephemeral_pubkey->data[31] = 1;
+    EXPECT_FALSE(a == b);
+}
+
 //---------------------------------------------------------------------------------------------------------------------
 TEST(carrot_core, ECDH_cryptonote_completeness)
 {
@@ -456,6 +468,7 @@ TEST(carrot_core, main_address_internal_scan_completeness)
 {
     carrot::carrot_and_legacy_account keys;
     keys.generate();
+    keys.generate_subaddress_map({0, 0});
 
     const CarrotDestinationV1 main_address = keys.cryptonote_address();
 
@@ -530,6 +543,7 @@ TEST(carrot_core, subaddress_internal_scan_completeness)
 {
     carrot::carrot_and_legacy_account keys;
     keys.generate();
+    keys.generate_subaddress_map({mock::MAX_SUBADDRESS_MAJOR_INDEX, mock::MAX_SUBADDRESS_MINOR_INDEX});
 
     const uint32_t j_major = crypto::rand_idx(mock::MAX_SUBADDRESS_MAJOR_INDEX);
     const uint32_t j_minor = crypto::rand_idx(mock::MAX_SUBADDRESS_MINOR_INDEX);

@@ -90,7 +90,7 @@ namespace rct {
     bool verRctTCLSAGSimple(const key &message, const tclsag &sig, const ctkeyV & pubs, const key & C_offset);
 
     zk_proof PRProof_Gen(const rct::key &difference);
-    bool PRProof_Ver(const rct::key &C, const zk_proof &proof);
+    bool PRProof_Ver(const rct::key &C, const zk_proof &proof, bool require_canonical = false);
   
     zk_proof SAProof_Gen(const key &P, const key &x_change, const key &y_change);
     bool SAProof_Ver(const zk_proof &proof, const key &P);

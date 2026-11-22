@@ -14,6 +14,13 @@ constexpr uint8_t fork_version = 14;
 constexpr uint64_t mainnet_height = SALVIUM_PRIVATE_AUDIT_MAINNET_HEIGHT;
 constexpr uint64_t testnet_height = SALVIUM_PRIVATE_AUDIT_TESTNET_HEIGHT;
 constexpr uint64_t stagenet_height = SALVIUM_PRIVATE_AUDIT_STAGENET_HEIGHT;
+// Pin the SHA256 of the exact approved policy document and its cutoff during
+// release review. Empty bindings disable certificate activation on real nets.
+constexpr uint32_t policy_version = 1;
+constexpr uint64_t mainnet_cutoff = 0, testnet_cutoff = 0, stagenet_cutoff = 0;
+constexpr const char* mainnet_policy_sha256 = "";
+constexpr const char* testnet_policy_sha256 = "";
+constexpr const char* stagenet_policy_sha256 = "";
 // A certificate confirmed in block H is usable in block H+1. Ordinary output
 // maturity and stake locks remain independent requirements.
 constexpr uint64_t confirmation_delay = 1;

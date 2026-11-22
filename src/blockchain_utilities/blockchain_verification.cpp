@@ -311,6 +311,15 @@ namespace
     return true;
   }
 
+  static uint64_t committed_burn_amount(const transaction& tx)
+  {
+    // Match consensus. An unused historical TRANSFER header field is not a
+    // commitment deduction and does not prove a reduction in supply.
+    return tx.type == BURN || tx.type == CONVERT || tx.type == STAKE ||
+        tx.type == AUDIT || tx.type == CREATE_TOKEN || tx.type == ROLLUP
+        ? tx.amount_burnt : 0;
+  }
+
   static bool verify_resolved_ringct(const cryptonote::BlockchainLMDB& db,
                                      const transaction& original,
                                      const uint8_t hf)
@@ -330,7 +339,7 @@ namespace
       }
       transaction expanded = original;
       return Blockchain::expand_transaction_2(expanded, get_transaction_prefix_hash(expanded), rings, hf) &&
-          rct::verRctSemanticsSimple(expanded.rct_signatures, expanded.amount_burnt,
+          rct::verRctSemanticsSimple(expanded.rct_signatures, committed_burn_amount(expanded),
                                     hf >= HF_VERSION_CARROT && expanded.source_asset_type != "SAL1") &&
           rct::verRctNonSemanticsSimple(expanded.rct_signatures, expanded.type);
     }
@@ -782,7 +791,7 @@ namespace
         finding.exact_input_amount = inputs_exact;
         finding.input_amount = exact_inputs;
         finding.fee = tx.rct_signatures.txnFee;
-        finding.burnt = tx.amount_burnt;
+        finding.burnt = committed_burn_amount(tx);
         if (finding.source_asset != "SAL1" && output_assets.count("SAL1"))
         {
           ++bad_sal1_origin_transactions;
@@ -994,7 +1003,12 @@ namespace
         std::vector<lineage_candidate> tx_candidates;
         for (const auto& item : evidence_by_origin)
         {
-          if (!item.second.seen)
+          // A partial match is a decoy reference, not a funding relationship.
+          // Never propagate it into a speculative ancestry graph. Even when
+          // every candidate is proven disqualified, authenticate the spending
+          // proof before claiming a relationship.
+          if (!item.second.seen || !item.second.proven ||
+              !verify_resolved_ringct(db, tx, blk.major_version))
             continue;
           const lineage_confidence confidence =
               item.second.proven ? lineage_confidence::PROVEN : lineage_confidence::POSSIBLE;
@@ -1309,6 +1323,8 @@ namespace
   }
 } // anonymous namespace
 
+#include "historical_chain_export.h"
+
 int main(int argc, const char* argv[])
 {
   TRY_ENTRY();
@@ -1318,6 +1334,9 @@ int main(int argc, const char* argv[])
   // ----------------------------
   // CLI args
   // ----------------------------
+  const command_line::arg_descriptor<std::string> arg_historical_records = {
+      "historical-records", "Export deterministic public historical inventory and accounting JSONL (read-only; no signing)", ""};
+
   const command_line::arg_descriptor<std::string> arg_db_path = {
       "db-path", "Path to the blockchain lmdb directory", ""};
 
@@ -1375,6 +1394,7 @@ int main(int argc, const char* argv[])
   po::options_description desc_cmd_only("Command line options");
   po::options_description desc_cmd_sett("Command line options and settings options");
   
+  command_line::add_arg(desc_cmd_sett, arg_historical_records);
   command_line::add_arg(desc_cmd_sett, arg_db_path);
   command_line::add_arg(desc_cmd_sett, arg_start_height);
   command_line::add_arg(desc_cmd_sett, arg_end_height);
@@ -1556,11 +1576,13 @@ int main(int argc, const char* argv[])
                       << " canonical_clear_amount=" << (known ? std::to_string(amount) : "UNKNOWN") << '\n';
           }
         }
+        const bool proof_ok = verify_resolved_ringct(db, tx, block.major_version);
+        std::cout << "INSPECT_CRYPTO_PROOF tx=" << pod_to_hex_string(hash)
+                  << " ringct_valid=" << (proof_ok ? "yes" : "no") << '\n';
         if (amounts_known)
         {
-          const bool proof_ok = verify_resolved_ringct(db, tx, block.major_version);
           const bool separate_fee = block.major_version >= HF_VERSION_CARROT && tx.source_asset_type != "SAL1";
-          const unsigned __int128 deductions = static_cast<unsigned __int128>(tx.amount_burnt) +
+          const unsigned __int128 deductions = static_cast<unsigned __int128>(committed_burn_amount(tx)) +
               (separate_fee ? 0 : tx.rct_signatures.txnFee);
           std::cout << "INSPECT_VALUE_PROOF tx=" << pod_to_hex_string(hash)
                     << " ringct_valid=" << (proof_ok ? "yes" : "no")
@@ -1587,6 +1609,12 @@ int main(int argc, const char* argv[])
     std::cerr << "Audit start-height exceeds end-height or chain tip\n";
     db.close();
     return 1;
+  }
+  const auto historical_records = command_line::get_arg(vm, arg_historical_records);
+  if (!historical_records.empty()) {
+    export_historical_chain(db, start_height, tip_height, audit_regtest ? FAKECHAIN : MAINNET, historical_records);
+    db.close();
+    return 0;
   }
   const uint64_t scan_blocks = tip_height - start_height + 1;
   const uint64_t first_output = first_output_id_at_height(db, start_height);

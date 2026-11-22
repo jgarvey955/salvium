@@ -353,13 +353,26 @@ void mock_scan_enote_set(const std::vector<CarrotEnoteV1> &enotes,
         }
     }
 
+    // Internal scans need the same initialized account and address catalog as
+    // the wallet. An empty account cannot authenticate a recovered address.
+    carrot::carrot_and_legacy_account account;
+    auto fixture_keys = keys.legacy_acb.get_keys();
+    fixture_keys.s_master = keys.s_master;
+    fixture_keys.k_prove_spend = keys.k_prove_spend;
+    fixture_keys.s_view_balance = keys.s_view_balance;
+    fixture_keys.k_view_incoming = fixture_keys.m_view_secret_key;
+    fixture_keys.k_generate_image = keys.k_generate_image;
+    fixture_keys.s_generate_address = keys.s_generate_address;
+    fixture_keys.m_carrot_account_address = {keys.carrot_account_spend_pubkey, keys.carrot_account_view_pubkey, true};
+    fixture_keys.m_carrot_main_address = fixture_keys.m_carrot_account_address;
+    account.set_keys(fixture_keys, true);
+    account.insert_subaddresses(keys.subaddress_map);
     // internal scans
     for (size_t output_index = 0; output_index < enotes.size(); ++output_index)
     {
         const CarrotEnoteV1 &enote = enotes.at(output_index);
 
         mock_scan_result_t scan_result{};
-        carrot::carrot_and_legacy_account account;
         crypto::public_key return_address_out;
         bool is_return_out;
         const bool r = try_scan_carrot_enote_internal_receiver(enote,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <iosfwd>
 
 #include "cryptonote_basic/cryptonote_basic.h"
 #include "cryptonote_core/lineage_audit_policy.h"
@@ -16,5 +17,6 @@ namespace cryptonote
       bool verbose,
       uint64_t lineage_activation = 0,
       uint64_t lineage_duration = lineage_policy::duration_blocks,
-      uint64_t start_height = 0);
+      uint64_t start_height = 0,
+      std::ostream* accounting = nullptr);
 }

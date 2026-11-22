@@ -7,6 +7,7 @@
 #include "carrot_impl/format_utils.h"
 #include "serialization/binary_utils.h"
 #include "ringct/rctSigs.h"
+#include "ringct/proof_validation.h"
 #include "string_tools.h"
 #include "common/util.h"
 #include <algorithm>
@@ -54,8 +55,9 @@ bool verify_audit_review_proof(const audit_review_package& p, const lineage_outp
     const crypto::public_key& key, const rct::key& commitment)
 {
   if (proof.offset_mask > 1 || proof.signature.sx.size() != 1 || proof.signature.sy.size() != 1 ||
-      rct::ki2rct(proof.image) == rct::identity() || rct::pk2rct(key) == rct::identity() ||
-      !rct::isInMainSubgroup(rct::ki2rct(proof.image)) || !rct::isInMainSubgroup(rct::pk2rct(key))) return false;
+      !rct::canonical_spend_point(rct::ki2rct(proof.image)) ||
+      !rct::canonical_spend_point(rct::pk2rct(key)) ||
+      !rct::canonical_subgroup_point(commitment)) return false;
   auto signature = proof.signature;
   signature.I = rct::ki2rct(proof.image);
   return rct::verRctTCLSAGSimple(rct::hash2rct(audit_review_proof_message(p, proof)), signature,
@@ -82,6 +84,7 @@ crypto::hash audit_review_report_hash(const audit_review_report& r)
     number(s, o.missing_inputs.size());
     for (const auto& image : o.missing_inputs) field(s, image);
     field(s, o.decision); field(s, o.decision_reason);
+    if (o.canonical_height != UINT64_MAX) { field(s, "canonical-output-height"); number(s, o.canonical_height); }
   }
   field(s, r.signer);
   if (!r.clearances.empty()) {
@@ -92,8 +95,7 @@ crypto::hash audit_review_report_hash(const audit_review_report& r)
 }
 bool authorized_audit_review_signer(network_type net, const crypto::public_key& key)
 {
-  if (!crypto::check_key(key) || rct::pk2rct(key) == rct::identity() ||
-      !rct::isInMainSubgroup(rct::pk2rct(key))) return false;
+  if (!crypto::check_key(key) || !rct::canonical_spend_point(rct::pk2rct(key))) return false;
   // Isolated fakechain fixtures use ephemeral test keys. Wallet callers must
   // verify their daemon really is fakechain before enabling that test mode.
   if (net == FAKECHAIN) return true;
@@ -267,6 +269,7 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
     node.funding_height = h;
     auto& item = node.item;
     item.transaction = hex(proof.transaction);
+    item.canonical_height = h;
     item.output_index = proof.output_index; item.stake = proof.stake_return; item.amount = proof.amount;
     auto& source = node.source;
     source.image = proof.image; source.origin = proof.transaction; source.output_height = h;
@@ -335,8 +338,7 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
         source.inputs = funding(tx, h, intrinsic_bad);
       }
     }
-    require(crypto::check_key(key) && !(rct::pk2rct(key) == rct::identity()) &&
-        rct::isInMainSubgroup(rct::pk2rct(key)) &&
+    require(crypto::check_key(key) && rct::canonical_spend_point(rct::pk2rct(key)) &&
         (!private_context || verify_audit_review_proof(*private_context, proof, key, commitment)),
         "Invalid private output ownership or amount proof");
     source.output_key = key; item.asset_type = source.asset;

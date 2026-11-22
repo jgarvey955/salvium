@@ -328,6 +328,9 @@ bool try_load_carrot_enote_from_transaction_v1(const cryptonote::transaction &tx
     const std::size_t local_output_index,
     CarrotEnoteV1 &enote_out)
 {
+    // The caller may reuse this result. No field or transaction output key
+    // may survive from a previous transaction.
+    enote_out = CarrotEnoteV1{};
     const rct::rctSigBase &rv = tx.rct_signatures;
 
     const size_t nins = tx.vin.size();
@@ -379,8 +382,17 @@ bool try_load_carrot_enote_from_transaction_v1(const cryptonote::transaction &tx
 
     //D_e
     enote_out.enote_ephemeral_pubkey = enote_ephemeral_pubkeys[ephemeral_pubkey_index];
+
+    if (tx.type != cryptonote::STAKE && tx.type != cryptonote::CREATE_TOKEN) {
+        CHECK_AND_ASSERT_MES(local_output_index < tx.return_address_list.size(), false,
+            "try_load_carrot_enote_from_transaction_v1: missing encrypted return key");
+        static_assert(sizeof(enote_out.return_enc) == sizeof(crypto::public_key));
+        memcpy(enote_out.return_enc.bytes, tx.return_address_list[local_output_index].data,
+            sizeof(enote_out.return_enc));
+    }
     
     // save all output keys in order to calculate Kr values.
+    enote_out.tx_output_keys.reserve(tx.vout.size());
     for (const auto& out: tx.vout) {
         const cryptonote::txout_to_carrot_v1 * const carrot_out = boost::strict_get<cryptonote::txout_to_carrot_v1>(&out.target);
         if (carrot_out) {

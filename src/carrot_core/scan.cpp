@@ -525,10 +525,17 @@ bool try_scan_carrot_enote_internal_receiver(const CarrotEnoteV1 &enote,
 
               crypto::secret_key sum_g;
               sc_add(to_bytes(sum_g), to_bytes(sender_extension_g_out), to_bytes(k_return));
-              crypto::key_image key_image = account.derive_key_image_view_only(address_spend_pubkey_out,
-                                                                               sum_g,
-                                                                               sender_extension_t_out,
-                                                                               K_r);
+              crypto::key_image key_image{};
+              const auto address = subaddress_map.find(address_spend_pubkey_out);
+              if (address->second.derive_type == AddressDeriveType::Carrot) {
+                key_image = account.derive_key_image_view_only(address_spend_pubkey_out,
+                    sum_g, sender_extension_t_out, K_r);
+              } else if (account.get_keys().m_spend_secret_key != crypto::null_skey) {
+                // Legacy addresses need the legacy spend key. They cannot use
+                // the CARROT view-balance key-image construction.
+                key_image = account.derive_key_image(address_spend_pubkey_out,
+                    sum_g, sender_extension_t_out, K_r);
+              }
 
               account.insert_return_output_info({{K_r, {input_context, output_key, enote.onetime_address, address_spend_pubkey_out, key_image, sum_g, sender_extension_t_out}}});
             }

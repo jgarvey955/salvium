@@ -198,11 +198,11 @@ namespace cryptonote
 
   class protocol_tx_data_t {
   public:
-    uint8_t version;
-    crypto::public_key return_address;
-    crypto::public_key return_pubkey;
-    carrot::view_tag_t return_view_tag;
-    carrot::encrypted_janus_anchor_t return_anchor_enc;
+    uint8_t version = 0;
+    crypto::public_key return_address{};
+    crypto::public_key return_pubkey{};
+    carrot::view_tag_t return_view_tag{};
+    carrot::encrypted_janus_anchor_t return_anchor_enc{};
 
     BEGIN_SERIALIZE_OBJECT()
       VARINT_FIELD(version)
@@ -215,11 +215,11 @@ namespace cryptonote
 
   struct erc_token_t
   {
-    uint8_t version;
+    uint8_t version = 0;
     std::string contract_address;
     std::string lockbox_address;
     std::string ticker;
-    uint64_t erc20_asset_id; // NOTE: this is NOT the Salvium `asset_type_id`!!!
+    uint64_t erc20_asset_id = 0; // NOTE: this is NOT the Salvium `asset_type_id`!!!
 
     BEGIN_SERIALIZE_OBJECT()
       VARINT_FIELD(version)
@@ -239,12 +239,12 @@ namespace cryptonote
 
   struct sal_token_t
   {
-    uint8_t version;
-    uint64_t supply;
-    uint64_t size;
+    uint8_t version = 0;
+    uint64_t supply = 0;
+    uint64_t size = 0;
     std::string name;
     std::string url;
-    crypto::hash signature;
+    crypto::hash signature{};
 
     BEGIN_SERIALIZE_OBJECT()
       VARINT_FIELD(version)
@@ -271,7 +271,7 @@ namespace cryptonote
   
   struct token_metadata_t
   {
-    uint8_t version;
+    uint8_t version = 0;
     std::string asset_type;
     token_v token;
 
@@ -284,9 +284,9 @@ namespace cryptonote
 
   class layer2_rollup_tx_t {
   public:
-    crypto::hash tx_prefix_hash;
-    crypto::key_image first_key_image;
-    uint64_t tx_fee;
+    crypto::hash tx_prefix_hash{};
+    crypto::key_image first_key_image{};
+    uint64_t tx_fee = 0;
 
     BEGIN_SERIALIZE_OBJECT()
       FIELD(tx_prefix_hash)
@@ -297,12 +297,12 @@ namespace cryptonote
 
   class layer2_rollup_data_t {
   public:
-    uint8_t version;
+    uint8_t version = 0;
     std::vector<layer2_rollup_tx_t> txs;
 
     BEGIN_SERIALIZE_OBJECT()
       VARINT_FIELD(version)
-      FIELD(txs)
+      CONTAINER_FIELD_CAPPED(txs, 256)
     END_SERIALIZE()
   };
 

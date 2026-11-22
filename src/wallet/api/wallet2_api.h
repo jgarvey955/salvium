@@ -39,6 +39,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstdint>
+#include <functional>
 
 //  Public interface for libwallet library
 namespace Monero {
@@ -89,7 +90,7 @@ struct YieldInfo
     Status_Error
   };
 
-  virtual ~YieldInfo() = 0;
+  virtual ~YieldInfo() = default;
   virtual int status() const = 0;
   virtual std::string errorString() const = 0;
   virtual bool update() = 0;
@@ -99,6 +100,11 @@ struct YieldInfo
   virtual uint64_t ybi_data_size() const = 0;
   virtual uint64_t yield() const = 0;
   virtual uint64_t yield_per_stake() const = 0;
+  virtual uint64_t total_accrued_from_past_completions() const = 0;
+  virtual uint64_t currently_staked() const = 0;
+  virtual uint64_t accrued_from_current_stake() const = 0;
+  virtual uint64_t blockchain_height() const = 0;
+  virtual uint64_t stake_lock_period() const = 0;
   virtual std::string period() const = 0;
   virtual std::vector<std::tuple<size_t, std::string, std::string, uint64_t, uint64_t>> payouts() const = 0;
 };
@@ -469,6 +475,11 @@ struct WalletListener
      * @brief If the listener is created before the wallet this enables to set created wallet object
      */
     virtual void onSetWallet(Wallet * wallet) { (void)wallet; };
+    // The receiver consumes host-entered bytes synchronously and must not
+    // retain the pointer. The default adapter preserves older listeners.
+    using DevicePassphraseCallback = std::function<void(const char*, std::size_t)>;
+    virtual void onDevicePassphraseRequestSecure(bool& on_device,
+        const DevicePassphraseCallback& receive);
 };
 
 

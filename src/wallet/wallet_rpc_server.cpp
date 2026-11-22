@@ -1408,7 +1408,9 @@ namespace tools
     }
 
     std::string asset_type = req.ticker;
-    std::transform(asset_type.begin(), asset_type.end(), asset_type.begin(), ::toupper);
+    std::transform(asset_type.begin(), asset_type.end(), asset_type.begin(), [](unsigned char c) {
+      return static_cast<char>(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+    });
     if (asset_type.length() != 4) {
       er.code = WALLET_RPC_ERROR_CODE_DENIED;
       er.message = "Asset type must be exactly 4 characters long.";
@@ -1452,7 +1454,7 @@ namespace tools
     }
 
     // Verify supply amount is acceptable
-    if (req.supply < 1 || req.supply > MONEY_SUPPLY)
+    if (req.supply < 1 || req.supply > MONEY_SUPPLY / COIN)
     {
       er.code = WALLET_RPC_ERROR_CODE_DENIED;
       er.message = "Supply amount must be between 1 and MONEY_SUPPLY.";
@@ -1472,7 +1474,13 @@ namespace tools
 
     std::string token_metadata_hex;
     if (req.token_metadata_hex.empty()) {
-      std::string json = (boost::format("{\"name\":\"%s\",\"size\":%d,\"hash\":\"%s\",\"url\":\"%s\"}") % req.name % req.size % req.hash % req.url).str();
+      epee::serialization::portable_storage metadata;
+      metadata.set_value("name", std::string(req.name), nullptr);
+      metadata.set_value("size", uint64_t(req.size), nullptr);
+      metadata.set_value("hash", std::string(req.hash), nullptr);
+      metadata.set_value("url", std::string(req.url), nullptr);
+      std::string json;
+      metadata.dump_as_json(json, 0, false);
       token_metadata_hex = epee::string_tools::buff_to_hex_nodelimer(json);
     } else {
       token_metadata_hex = req.token_metadata_hex;

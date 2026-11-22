@@ -130,3 +130,7 @@ __pycache__/
 
 # Local audit configuration can contain private viewing evidence.
 /audit-config*.json
+
+# Local generated audit test and device files
+/tests/data/wallet_SaLvTyL.unportable
+/src/device_trezor/trezor/messages/
