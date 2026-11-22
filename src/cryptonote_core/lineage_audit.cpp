@@ -11,6 +11,7 @@
 #include "carrot_impl/format_utils.h"
 #include "serialization/binary_utils.h"
 #include "string_tools.h"
+#include <boost/multiprecision/cpp_int.hpp>
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -22,6 +23,8 @@ bool is_lineage_audit_asset(const std::string& asset)
   return asset == "SAL1" || (is_asset_type_token(asset) && is_valid_custom_asset_type(asset));
 }
 namespace {
+using boost::multiprecision::uint128_t;
+
 void require(bool value, const char* error)
 {
   if (!value) throw std::runtime_error(error);
@@ -130,12 +133,12 @@ bool lineage_audit::valid_miner_origin(const BlockchainDB& db, network_type net,
     bool valid = get_block_reward(median, weight, history.generated, reward, b.major_version);
     const auto* generation = b.miner_tx.vin.size() == 1 ? boost::get<txin_gen>(&b.miner_tx.vin.front()) : nullptr;
     valid &= generation && generation->height == height;
-    unsigned __int128 fees = 0;
+    uint128_t fees = 0;
     for (const auto& id : b.tx_hashes) {
       const auto tx = db.get_tx(id);
       if (tx.version > 1) fees += tx.rct_signatures.txnFee;
       else {
-        unsigned __int128 inputs = 0, outputs = 0;
+        uint128_t inputs = 0, outputs = 0;
         for (const auto& in : tx.vin) {
           const auto* key = boost::get<txin_to_key>(&in);
           if (!key) valid = false; else inputs += key->amount;
@@ -144,9 +147,9 @@ bool lineage_audit::valid_miner_origin(const BlockchainDB& db, network_type net,
         if (inputs < outputs) valid = false; else fees += inputs - outputs;
       }
     }
-    const unsigned __int128 total = fees + reward;
+    const uint128_t total = fees + reward;
     const auto& scheduled = get_config(net).TREASURY_SAL1_MINT_OUTPUT_DATA;
-    unsigned __int128 issued = b.miner_tx.amount_burnt;
+    uint128_t issued = b.miner_tx.amount_burnt;
     bool treasury_mint = !scheduled.count(height);
     for (const auto& out : b.miner_tx.vout) {
       issued += out.amount;
@@ -159,8 +162,8 @@ bool lineage_audit::valid_miner_origin(const BlockchainDB& db, network_type net,
             out.amount == TREASURY_SAL1_MINT_AMOUNT) treasury_mint = true;
       }
     }
-    const unsigned __int128 treasury = b.major_version >= HF_VERSION_ENABLE_TOKENS ? total * BLOCK_REWARD_TREASURY_PCT / 100 : 0;
-    const unsigned __int128 staker = !height ? 0 : b.major_version >= HF_VERSION_ENABLE_TOKENS ?
+    const uint128_t treasury = b.major_version >= HF_VERSION_ENABLE_TOKENS ? total * BLOCK_REWARD_TREASURY_PCT / 100 : 0;
+    const uint128_t staker = !height ? 0 : b.major_version >= HF_VERSION_ENABLE_TOKENS ?
         (total - treasury) * BLOCK_REWARD_STAKER_PCT / 100 : total / 5;
     valid &= total <= std::numeric_limits<uint64_t>::max() && treasury_mint &&
         issued == total + (scheduled.count(height) ? TREASURY_SAL1_MINT_AMOUNT : 0) && b.miner_tx.amount_burnt == staker;
@@ -284,7 +287,7 @@ bool lineage_audit::historical_stake_payout(const BlockchainDB& db, network_type
       yield_block_info info{};
       if (db.get_yield_block_info(h, info) != 0) return false;
       if (!info.locked_coins_tally || !info.slippage_total_this_block) continue;
-      const unsigned __int128 yield = static_cast<unsigned __int128>(info.slippage_total_this_block) *
+      const uint128_t yield = uint128_t(info.slippage_total_this_block) *
           stake.amount_burnt / info.locked_coins_tally;
       if (yield > std::numeric_limits<uint64_t>::max() - amount) return false;
       amount += static_cast<uint64_t>(yield);
