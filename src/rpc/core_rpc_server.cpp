@@ -37,6 +37,7 @@
 using namespace epee;
 
 #include "core_rpc_server.h"
+#include "rpc_request_limits.h"
 #include "common/command_line.h"
 #include "common/updates.h"
 #include "common/download.h"
@@ -3787,6 +3788,14 @@ namespace cryptonote
   bool core_rpc_server::on_get_output_distribution(const COMMAND_RPC_GET_OUTPUT_DISTRIBUTION::request& req, COMMAND_RPC_GET_OUTPUT_DISTRIBUTION::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx)
   {
     RPC_TRACKER(get_output_distribution);
+    std::vector<uint64_t> amounts;
+    if (!normalize_distribution_amounts(req.amounts, amounts))
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+      error_resp.message = "Too many amounts requested";
+      return false;
+    }
+
     bool r = false;
     if (use_bootstrap_daemon_if_necessary<COMMAND_RPC_GET_OUTPUT_DISTRIBUTION>(invoke_http_mode::JON_RPC, "get_output_distribution", req, res, r))
       return r;
@@ -3800,7 +3809,7 @@ namespace cryptonote
     }
 
     size_t n_0 = 0, n_non0 = 0;
-    for (uint64_t amount: req.amounts)
+    for (uint64_t amount: amounts)
       if (amount) ++n_non0; else ++n_0;
     CHECK_PAYMENT_MIN1(req, res, n_0 * COST_PER_OUTPUT_DISTRIBUTION_0 + n_non0 * COST_PER_OUTPUT_DISTRIBUTION, false);
 
@@ -3808,7 +3817,7 @@ namespace cryptonote
     {
       // 0 is placeholder for the whole chain
       const uint64_t req_to_height = req.to_height ? req.to_height : (m_core.get_current_blockchain_height() - 1);
-      for (uint64_t amount: req.amounts)
+      for (uint64_t amount: amounts)
       {
         auto data = rpc::RpcHandler::get_output_distribution([this](uint64_t amount, std::string asset_type, uint64_t from, uint64_t to, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base, uint64_t &num_spendable_global_outs) { 
           return m_core.get_output_distribution(amount, asset_type, from, to, start_height, distribution, base, num_spendable_global_outs); }, amount, req.rct_asset_type, req.from_height, req_to_height, [this](uint64_t height) { return m_core.get_blockchain_storage().get_db().get_block_hash_from_height(height); }, req.cumulative, m_core.get_current_blockchain_height());
@@ -3837,6 +3846,13 @@ namespace cryptonote
   {
     RPC_TRACKER(get_output_distribution_bin);
 
+    std::vector<uint64_t> amounts;
+    if (!normalize_distribution_amounts(req.amounts, amounts))
+    {
+      res.status = "Too many amounts requested";
+      return false;
+    }
+
     bool r = false;
     if (use_bootstrap_daemon_if_necessary<COMMAND_RPC_GET_OUTPUT_DISTRIBUTION>(invoke_http_mode::BIN, "/get_output_distribution.bin", req, res, r))
       return r;
@@ -3849,7 +3865,7 @@ namespace cryptonote
     }
 
     size_t n_0 = 0, n_non0 = 0;
-    for (uint64_t amount: req.amounts)
+    for (uint64_t amount: amounts)
       if (amount) ++n_non0; else ++n_0;
     CHECK_PAYMENT_MIN1(req, res, n_0 * COST_PER_OUTPUT_DISTRIBUTION_0 + n_non0 * COST_PER_OUTPUT_DISTRIBUTION, false);
 
@@ -3864,7 +3880,7 @@ namespace cryptonote
     {
       // 0 is placeholder for the whole chain
       const uint64_t req_to_height = req.to_height ? req.to_height : (m_core.get_current_blockchain_height() - 1);
-      for (uint64_t amount: req.amounts)
+      for (uint64_t amount: amounts)
       {
         auto data = rpc::RpcHandler::get_output_distribution([this](uint64_t amount, std::string asset_type, uint64_t from, uint64_t to, uint64_t &start_height, std::vector<uint64_t> &distribution, uint64_t &base, uint64_t &num_spendable_global_outs) { 
           return m_core.get_output_distribution(amount, asset_type, from, to, start_height, distribution, base, num_spendable_global_outs); }, amount, req.rct_asset_type, req.from_height, req_to_height, [this](uint64_t height) { return m_core.get_blockchain_storage().get_db().get_block_hash_from_height(height); }, req.cumulative, m_core.get_current_blockchain_height());

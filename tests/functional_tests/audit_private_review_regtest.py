@@ -94,20 +94,26 @@ def main():
         assert public_case["public_outputs_checked"] > 0
         # Recent locked decoys can make public provenance insufficient to prove
         # actual funding maturity. Exact owner proofs below resolve that ambiguity.
-        assert all(r["state"] in ("CLEARED", "REVIEW_REQUIRED") for r in public_case["outputs"]), public_case
-        assert all(r["reason"] in ("ALL_RING_CANDIDATES_VERIFIED", "MISSING_FUNDING_EVIDENCE")
+        assert all(r["state"] == "CLEARED" for r in public_case["outputs"]), public_case
+        assert all(r["reason"] in ("ALL_RING_CANDIDATES_VERIFIED", "OWNERSHIP_VERIFIED_NO_PROVEN_ILLICIT_ORIGIN")
             for r in public_case["outputs"]), public_case
         pending = run_case("bob-alone", evidence[2:], secret)
         case = json.loads((pending / "case.json").read_text())
-        assert case["outputs"] and all(r["state"] == "REVIEW_REQUIRED" for r in case["outputs"])
-        assert all(r["reason"] == "MISSING_FUNDING_EVIDENCE" and r["recommendation"] == "DENY" for r in case["outputs"])
+        assert case["outputs"] and all(r["state"] == "CLEARED" for r in case["outputs"])
+        assert all(r["reason"] == "OWNERSHIP_VERIFIED_NO_PROVEN_ILLICIT_ORIGIN" and r["recommendation"] == "CLEAR" for r in case["outputs"])
         bob = chain.wallets[2]
         for path in receipts(pending):
             bob.call("audit", {"review_result": path.read_text(), "developer_public_key": public})
-        request = json.loads((pending / "review-queue.json").read_text())
-        for item in request["decisions"]:
-            item["action"] = "CLEAR"
-            item["reason"] = "Controlled test: developer verified independent purchase records"
+        no_history = bob.call("audit", {"status_only": True})["outputs"]
+        assert all(r["state"] == "CLEARED" for r in no_history)
+        assert not json.loads((pending / "review-queue.json").read_text()).get("decisions", [])
+        # Explicit dispositions remain testable, but no missing-history owner
+        # needs this optional manual decision to clear.
+        request = {"report_hash": command("--report", pending / "case.json", "--verify-key", public).split()[-1],
+            "decisions": [dict(package_id=r["package_id"], transaction=r["transaction"],
+                output_index=r["output_index"], stake=r["stake"], action="CLEAR",
+                reason="Controlled test: optional disposition after automatic missing-history clearance")
+                for r in case["outputs"]]}
         decisions = root / "decisions.json"
         decisions.write_text(json.dumps(request))
         manual = root / "manual"
@@ -118,7 +124,10 @@ def main():
             forged["outputs"][0]["amount"] += 1
             must_fail(lambda: bob.call("audit", {"review_result": json.dumps(forged), "developer_public_key": public}))
             bob.call("audit", {"review_result": path.read_text(), "developer_public_key": public})
-        assert all(r["state"] == "CLEARED_BY_DEVELOPER" for r in bob.call("audit", {"status_only": True})["outputs"])
+        history_unavailable = bob.call("audit", {"status_only": True})["outputs"]
+        assert all(r["state"] == "CLEARED_BY_DEVELOPER" for r in history_unavailable)
+        assert all(r["reason"] == "OWNERSHIP_VERIFIED_NO_PROVEN_ILLICIT_ORIGIN" for r in history_unavailable)
+        assert all("optional disposition" in r["decision_reason"] for r in history_unavailable)
         for path in receipts(pending):
             must_fail(lambda: bob.call("audit", {"review_result": path.read_text(), "developer_public_key": public}))
         complete = run_case("all-owners", evidence, secret)
@@ -214,7 +223,7 @@ def main():
         new_hash = chain.daemon.call("get_block_header_by_height", {"height": snapshot})["block_header"]["hash"]
         assert old_hash != new_hash
         revoked = bob.call("audit", {"status_only": True})
-        assert all(r["state"] == "REVIEW" for r in revoked["outputs"]), revoked
+        assert all(r["state"] == "VERIFICATION_PENDING" for r in revoked["outputs"]), revoked
         for path in owned_receipts(newer, bob):
             must_fail(lambda: bob.call("audit", {"review_result": path.read_text(), "developer_public_key": public}))
         bob.call("close_wallet")
@@ -242,7 +251,7 @@ def main():
             (root / "cli-import-output.txt").write_text(result.stdout + result.stderr)
             assert result.returncode == 0 and "CLEARED" in result.stdout, result.stdout + result.stderr
         summary = dict(status="PRIVATE_AUDIT_WALLET_PASS", snapshot=snapshot,
-            checks=["native_rpc_private_exports", "cross_wallet_all_funding_clearance", "missing_owner_review",
+            checks=["exchange_refused_history_clears_automatically_without_manual_decision", "native_rpc_private_exports", "cross_wallet_all_funding_clearance", "missing_owner_automatic_clearance",
                 "immature_stake_review", "signed_developer_clearance", "forgery_rejection", "stale_revision_rejection",
                 "recipient_isolation", "wallet_reopen_and_native_cli", "reorg_revokes_all_decisions",
                 "native_nonkyc_signature_reconciliation", "native_cli_owner_export_and_signed_import",

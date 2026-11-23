@@ -284,7 +284,7 @@ cryptonote::transaction store_carrot_to_transaction_v1(const std::vector<CarrotE
         tx.rct_signatures.outPk.push_back(rct::ctkey{rct::key{}, enote.amount_commitment});
 
         //K_return
-        if (tx_type != cryptonote::transaction_type::STAKE && tx_type != cryptonote::transaction_type::CREATE_TOKEN) {
+        if (tx.type == cryptonote::transaction_type::TRANSFER) {
             crypto::public_key K_return;
             memcpy(K_return.data, enote.return_enc.bytes, sizeof(crypto::public_key));
             tx.return_address_list.push_back(K_return);
@@ -383,7 +383,7 @@ bool try_load_carrot_enote_from_transaction_v1(const cryptonote::transaction &tx
     //D_e
     enote_out.enote_ephemeral_pubkey = enote_ephemeral_pubkeys[ephemeral_pubkey_index];
 
-    if (tx.type != cryptonote::STAKE && tx.type != cryptonote::CREATE_TOKEN) {
+    if (tx.type == cryptonote::transaction_type::TRANSFER) {
         CHECK_AND_ASSERT_MES(local_output_index < tx.return_address_list.size(), false,
             "try_load_carrot_enote_from_transaction_v1: missing encrypted return key");
         static_assert(sizeof(enote_out.return_enc) == sizeof(crypto::public_key));

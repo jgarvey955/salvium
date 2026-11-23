@@ -109,47 +109,30 @@ def main():
                 capture_output=True, text=True, timeout=180)
             assert (result.returncode == 0) == success, result.stdout + result.stderr
             return result.stdout
-        # A purchase can resolve otherwise incomplete funding automatically,
-        # but only after the main operator authenticates the exact ledger.
-        pending = root / "exchange-pending"
+        # An exchange's unavailable ledger is not illicit-creation evidence.
+        # Verify ownership with the funding owner absent and no manual decisions.
+        pending = root / "exchange-history-unavailable"
         command("--data-dir", root / "chain/fake", "--network", "fakechain", "--opening", "0",
             "--activation-height", chain.activation, "--clearance-authority", public,
             "--input", *evidence[1:], "--public-work-limit", "0", "--sign-key", secret, "--outdir", pending)
         pending_case = json.loads((pending / "case.json").read_text())
-        alice_rows = chain.wallets[1].call("audit", {"status_only": True})["outputs"]
-        alice_keys = {(r["transaction"], r["output_index"], r["stake"]) for r in alice_rows}
-        custody = {r["package_id"] for r in pending_case["outputs"]
-            if (r["transaction"], r["output_index"], r["stake"]) in alice_keys}
-        reserve = sum(r["amount"] for r in pending_case["outputs"] if r["package_id"] in custody and not r["spent"])
-        withdrawal = next(r for r in pending_case["outputs"] if r["transaction"] == onward["tx_hash"]
-            and not r["stake"] and r["amount"] == 10 * COIN and r["package_id"] not in custody)
-        assert withdrawal["state"] == "REVIEW_REQUIRED" and withdrawal["amount"] == 10 * COIN
-        amount = withdrawal["amount"]
+        assert pending_case["outputs"] and all(r["state"] == "CLEARED" and not r["decision"]
+            for r in pending_case["outputs"])
+        assert any(r["reason"] == "OWNERSHIP_VERIFIED_NO_PROVEN_ILLICIT_ORIGIN"
+            for r in pending_case["outputs"])
+        assert not json.loads((pending / "review-queue.json").read_text()).get("decisions", [])
         ledger = {k: pending_case[k] for k in ("network", "genesis", "snapshot_height", "snapshot_hash")}
-        ledger.update(version=1, scope_complete=True, assets_in_scope=["SAL1"], custody_package_ids=sorted(custody),
-            balances=[dict(account="seller", asset="SAL1", opening_atomic=str(reserve + amount), closing_atomic=str(reserve)),
-                      dict(account="buyer", asset="SAL1", opening_atomic="0", closing_atomic="0")],
-            events=[dict(id="sell", group="trade", kind="trade", account="seller", asset="SAL1", delta_atomic=str(-amount)),
-                    dict(id="buy", group="trade", kind="trade", account="buyer", asset="SAL1", delta_atomic=str(amount)),
-                    dict(id="withdraw", kind="withdrawal", account="buyer", asset="SAL1", delta_atomic=str(-amount),
-                         transaction=withdrawal["transaction"], output_index=withdrawal["output_index"], acquisition="market_purchase")])
-        ledger_file = root / "operator-ledger.json"; ledger_file.write_text(json.dumps(ledger))
+        ledger.update(version=1, scope_complete=False, assets_in_scope=["SAL1"],
+            custody_package_ids=[], balances=[], events=[])
+        ledger_file = root / "unavailable-ledger.json"; ledger_file.write_text(json.dumps(ledger))
         adapter = Path(__file__).resolve().parents[2] / "utils/reconcile_nonkyc_audit.py"
-        purchase = root / "automatic-purchase"
-        adapter_args = [sys.executable, str(adapter), "--case", str(pending / "case.json"), "--ledger", str(ledger_file),
-            "--verifier", str(tool), "--developer-public-key", public, "--sign-key", str(secret),
-            "--activation-height", str(chain.activation), "--daemon-address", chain.daemon.url,
-            "--rpc-login-file", str(rpc_login_file)]
-        invalid = subprocess.run(adapter_args + ["--output", str(root / "unapproved.json"), "--outdir", str(root / "unapproved"),
-            "--approved-ledger-sha256", "0" * 64], capture_output=True, text=True, timeout=60)
-        assert invalid.returncode != 0 and not (root / "unapproved").exists()
-        subprocess.run(adapter_args + ["--output", str(root / "purchase-reconciliation.json"), "--outdir", str(purchase),
-            "--approved-ledger-sha256", hashlib.sha256(ledger_file.read_bytes()).hexdigest()], check=True, timeout=180)
-        purchased_case = json.loads((purchase / "case.json").read_text())
-        purchased_row = next(r for r in purchased_case["outputs"] if r["transaction"] == withdrawal["transaction"]
-            and r["output_index"] == withdrawal["output_index"] and r["package_id"] == withdrawal["package_id"] and not r["stake"])
-        assert purchased_row["decision"] == "CLEAR" and purchased_row["reason"] == withdrawal["reason"]
-        checks.append("authenticated exchange purchase signs and publishes automatically; unapproved ledger rejected; finding retained")
+        incomplete = subprocess.run([sys.executable, str(adapter), "--case", str(pending / "case.json"),
+            "--ledger", str(ledger_file), "--verifier", str(tool), "--developer-public-key", public,
+            "--output", str(root / "missing-history-reconciliation.json")], capture_output=True, text=True, timeout=60)
+        assert incomplete.returncode != 0
+        reconciliation = json.loads((root / "missing-history-reconciliation.json").read_text())
+        assert reconciliation["errors"] and not reconciliation["developer_decisions"]["decisions"]
+        checks.append("exchange refuses history: verified ownership clears automatically; incomplete ledger cannot create denial")
         print(publish(complete), flush=True)
         public_manifest = json.loads((complete / "clearances.public").read_text())
         queue = next((root / "chain").rglob("audit-clearance-queue-v4"))

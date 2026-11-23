@@ -1,6 +1,10 @@
 // Native wallet inventory regression. The injected HTTP client performs no
 // network I/O and no wallet/chain/ring database is opened or written.
 #include "wallet/wallet2.h"
+#include "wallet/output_distribution.h"
+#include "carrot_impl/format_utils.h"
+#include "carrot_impl/input_selection.h"
+#include <thread>
 #include "cryptonote_core/lineage_audit.h"
 #include "cryptonote_basic/tx_extra.h"
 #include "serialization/binary_utils.h"
@@ -22,6 +26,7 @@ std::string rpc_tip_hash;
 size_t rpc_key_image_queries = 0;
 std::string rpc_nettype = "fakechain";
 std::string rpc_supply = "1000000";
+std::vector<cryptonote::COMMAND_RPC_GET_TRANSACTIONS::entry> rpc_tx_entries;
 std::vector<cryptonote::COMMAND_RPC_GET_YIELD_INFO::yield_data_t> rpc_yield_data;
 void check(bool condition, const char* message)
 {
@@ -45,7 +50,16 @@ public:
   {
     rapidjson::Document request;
     request.Parse(body.data(), body.size());
-    check(!request.HasParseError() && request.HasMember("method"), "Invalid native RPC request");
+    check(!request.HasParseError() && request.IsObject(), "Invalid native RPC request");
+    if (request.HasMember("txs_hashes")) {
+      cryptonote::COMMAND_RPC_GET_TRANSACTIONS::response txs{};
+      txs.status = "OK"; txs.txs = rpc_tx_entries;
+      response_.m_response_code = 200;
+      response_.m_body = epee::serialization::store_t_to_json(txs);
+      *output = &response_;
+      return true;
+    }
+    check(request.HasMember("method"), "Invalid native RPC method");
     const std::string method = request["method"].GetString();
     std::string result;
     if (method == "get_info") {
@@ -60,7 +74,22 @@ public:
     } else if (method == "get_yield_info") {
       cryptonote::COMMAND_RPC_GET_YIELD_INFO::response yield{};
       yield.status = "OK";
-      yield.yield_data = rpc_yield_data;
+      const auto& params = request["params"];
+      const uint64_t from = params.HasMember("from_height") ? params["from_height"].GetUint64() : 0;
+      const uint64_t to = params.HasMember("to_height") ? params["to_height"].GetUint64() : 0;
+      bool duplicate = false;
+      for (size_t i = 1; i < rpc_yield_data.size(); ++i)
+        duplicate |= rpc_yield_data[i].block_height <= rpc_yield_data[i - 1].block_height;
+      if (!rpc_yield_data.empty() && from && to && !duplicate) {
+        check(to >= from && to - from < 1000, "Yield request exceeded page limit");
+        for (uint64_t height = from; height <= to; ++height) {
+          cryptonote::COMMAND_RPC_GET_YIELD_INFO::yield_data_t entry{};
+          entry.block_height = height;
+          for (const auto& value : rpc_yield_data)
+            if (value.block_height == height) entry = value;
+          yield.yield_data.push_back(entry);
+        }
+      } else yield.yield_data = rpc_yield_data;
       result = epee::serialization::store_t_to_json(yield);
     } else if (method == "get_lineage_audit_status" || method == "get_private_audit_status") {
       cryptonote::COMMAND_RPC_LINEAGE_AUDIT_STATUS::response status{};
@@ -110,9 +139,86 @@ public:
 class wallet_accessor_test
 {
 public:
+  static void hostile_rpc_checks(tools::wallet2& wallet)
+  {
+    for (unsigned method = 0; method < 3; ++method) {
+      bool rejected = false;
+      try {
+        if (method == 0) wallet.get_token_info("salTEST");
+        if (method == 1) { std::vector<std::string> tokens; wallet.get_tokens("", tokens); }
+        if (method == 2) { oracle::pricing_record price; wallet.get_pricing_record(price, 1); }
+      } catch (const std::exception&) { rejected = true; }
+      check(rejected, "Throwing RPC transport was unexpectedly accepted");
+      bool unlocked = false;
+      std::thread contender([&] {
+        unlocked = wallet.m_daemon_rpc_mutex.try_lock();
+        if (unlocked) wallet.m_daemon_rpc_mutex.unlock();
+      });
+      contender.join();
+      check(unlocked, "RPC failure stranded the wallet mutex");
+    }
+    cryptonote::block genesis;
+    const auto& config = cryptonote::get_config(cryptonote::MAINNET);
+    check(cryptonote::generate_genesis_block(genesis, config.GENESIS_TX, config.GENESIS_NONCE),
+        "Cannot create public transaction response fixture");
+    const auto id = cryptonote::get_transaction_hash(genesis.miner_tx);
+    cryptonote::COMMAND_RPC_GET_TRANSACTIONS::entry entry{};
+    entry.tx_hash = epee::string_tools::pod_to_hex(id);
+    entry.as_hex = epee::string_tools::buff_to_hex_nodelimer(cryptonote::tx_to_blob(genesis.miner_tx));
+    rpc_tx_entries = {entry};
+    check(wallet.get_tx_entries({id}).tx_entries.size() == 1, "Matching daemon transaction rejected");
+    bool rejected = false;
+    try { wallet.get_tx_entries({crypto::rand<crypto::hash>()}); }
+    catch (const std::exception&) { rejected = true; }
+    check(rejected, "Daemon substituted an unrequested transaction");
+    rpc_tx_entries.clear();
+    std::vector<uint64_t> counts{2, 3};
+    check(tools::accumulate_output_distribution(counts, 7, 4, 12) &&
+        counts == std::vector<uint64_t>({9, 12}), "Distribution omitted its base");
+    for (const auto& values : {std::vector<uint64_t>{}, {UINT64_MAX, 1}, {1, UINT64_MAX}}) {
+      auto changed = values;
+      check(!tools::accumulate_output_distribution(changed, 0, 0, 0) && changed == values,
+          "Invalid distribution changed caller data");
+    }
+    bool no_recent_outputs = false;
+    const std::vector<uint64_t> stagnant(86400 * 365 / DIFFICULTY_TARGET_V2 + 1, 1);
+    try { tools::gamma_picker picker(stagnant); }
+    catch (const std::exception&) { no_recent_outputs = true; }
+    check(no_recent_outputs, "Decoy picker accepted an empty consideration window");
+    counts = {1};
+    check(!tools::accumulate_output_distribution(counts, UINT64_MAX, 0, 0) && counts[0] == 1,
+        "Distribution base overflow accepted");
+    check(!tools::accumulate_output_distribution(counts, 0, UINT64_MAX, 0) && counts[0] == 1,
+        "Distribution height overflow accepted");
+    check(!tools::accumulate_output_distribution(counts, 0, 0, 2) && counts[0] == 1,
+        "Impossible spendable output count accepted");
+  }
+  static void subaddress_bounds(tools::wallet2& wallet)
+  {
+    const auto labels = wallet.m_subaddress_labels;
+    const auto major = wallet.m_subaddress_lookahead_major;
+    const auto minor = wallet.m_subaddress_lookahead_minor;
+    wallet.m_subaddress_labels = {{"main"}};
+    wallet.m_subaddress_lookahead_major = 2;
+    wallet.m_subaddress_lookahead_minor = 3;
+    check(wallet.should_expand({1, 2}), "Valid future-account lookahead rejected");
+    check(!wallet.should_expand({1, 3}), "Future account exceeded minor lookahead");
+    check(!wallet.should_expand({1, UINT32_MAX}), "Unbounded imported minor index accepted");
+    check(!wallet.should_expand({3, 0}), "Account exceeded major lookahead");
+    check(wallet.should_expand({0, 3}) && !wallet.should_expand({0, 4}),
+        "Existing-account minor boundary is incorrect");
+    wallet.m_subaddress_labels.clear();
+    check(wallet.should_expand({1, 2}) && !wallet.should_expand({2, 0}),
+        "Empty account catalog exceeded lookahead");
+    wallet.m_subaddress_labels = labels;
+    wallet.m_subaddress_lookahead_major = major;
+    wallet.m_subaddress_lookahead_minor = minor;
+  }
   static void yield_summary_checks(tools::wallet2& wallet)
   {
     const auto original = wallet.m_transfers;
+    const auto original_height = rpc_candidate_height;
+    rpc_candidate_height = 103;
     wallet.m_transfers.clear();
     tools::wallet2::transfer_details stake{};
     stake.m_tx.type = cryptonote::STAKE;
@@ -130,11 +236,13 @@ public:
     uint64_t burnt, supply, locked, accrued, per_stake, size;
     std::vector<tools::wallet2::yield_payout_t> payouts;
     const auto read = [&] {
+      wallet.m_node_rpc_proxy.invalidate();
       return wallet.get_yield_summary_info(burnt, supply, locked, accrued, per_stake, size, payouts);
     };
     check(read() && payouts.size() == 1 && std::get<4>(payouts[0]) == 10,
         "Stake at wallet transfer index zero was omitted");
     wallet.m_transfers[1].m_td_origin_idx = std::numeric_limits<size_t>::max();
+    rpc_candidate_height = 21701;
     rpc_yield_data = {{99, 0, 0, 1000, 100}, {100, 999, 0, 1000, 100},
         {101, 7, 0, 1000, 100}, {21700, 3, 0, 1000, 100}, {21701, 999, 0, 1000, 100}};
     check(read() && payouts.size() == 1 && std::get<4>(payouts[0]) == 10,
@@ -148,12 +256,15 @@ public:
     rpc_supply = "1000000";
     rpc_yield_data = {{100, 0, 0, 1000, 100}, {100, 7, 0, 1000, 100}};
     check(!read() && payouts.empty(), "Duplicate daemon yield rows were accepted");
+    rpc_candidate_height = 103;
     rpc_yield_data = {{99, 0, 0, 1, 100},
         {100, std::numeric_limits<uint64_t>::max(), 0, 1, 100}, {101, 1, 0, 1, 100}};
     check(!read() && accrued == 0 && payouts.empty(), "Daemon yield totals overflowed");
     rpc_yield_data.clear();
     check(!read() && payouts.empty(), "Empty daemon yield history was accepted");
     wallet.m_transfers = original;
+    rpc_candidate_height = original_height;
+    wallet.m_node_rpc_proxy.invalidate();
     std::cout << "WALLET_YIELD_PASS: first stake, origin bounds, accrual window, malformed supply and empty history\n";
   }
   static void inventory(tools::wallet2& wallet)
@@ -197,10 +308,12 @@ public:
   {
     wallet.m_transfers[2].m_spent_height = height;
   }
-  static void signing_mode(tools::wallet2& wallet, bool watch, bool multisig)
+  static void signing_mode(tools::wallet2& wallet, bool watch, bool multisig,
+      hw::device::device_type device = hw::device::SOFTWARE)
   {
     wallet.m_watch_only = watch;
     wallet.m_multisig = multisig;
+    wallet.m_key_device_type = device;
   }
   static void conversion_review(tools::wallet2& wallet)
   {
@@ -270,10 +383,10 @@ public:
     token.asset_type = "OTHER";
     wallet.m_transfers.push_back(token);
     const auto prepared = wallet.audit(true, true, 0, {}, true);
-    check(prepared.state == "REVIEW_REQUIRED" && prepared.outputs.size() == 3 && prepared.proofs.empty(),
+    check(prepared.state == "VERIFICATION_PENDING" && prepared.outputs.size() == 3 && prepared.proofs.empty(),
         "Private conversion review omitted receipts or created public ownership proofs");
     for (const auto& output : prepared.outputs)
-      check(output.state == "REVIEW" && output.key_image.empty(),
+      check(output.state == "VERIFICATION_PENDING" && output.key_image.empty(),
           "Private conversion review exported a key image or automatic verdict");
     check(prepared.outputs[1].subaddress == 1 && prepared.outputs[2].account == 1,
         "Conversion review scope lost exchange account/subaddress");
@@ -290,7 +403,7 @@ public:
     token.m_amount = 1700000000;
     wallet.m_transfers.push_back(token);
     const auto pending = wallet.audit(false);
-    check(pending.state == "REVIEW_REQUIRED" && pending.good == 0 && pending.unresolved == 1500000000 &&
+    check(pending.state == "VERIFICATION_PENDING" && pending.good == 0 && pending.unresolved == 1500000000 &&
         pending.outputs.size() == 4 && pending.balances.size() == 2,
         "Token inventory omitted, mixed into SAL1 units, or ignored by overall state");
     const auto& balance = pending.balances.back();
@@ -301,7 +414,7 @@ public:
     wallet.update_lineage_audit_status();
     check(wallet.is_transfer_unlocked(wallet.m_transfers.back()), "Cleared mature token remained locked");
     const auto good = wallet.audit(false);
-    check(good.state == "REVIEW_REQUIRED" && good.unresolved == pending.unresolved &&
+    check(good.state == "VERIFICATION_PENDING" && good.unresolved == pending.unresolved &&
         good.balances.back().unresolved == token.m_amount && good.outputs.back().asset_type == "salYAHU" &&
         good.outputs.back().key_image.empty(), "Review-only token was not reported privately and separately from SAL1");
     rpc_candidate_height = 101;
@@ -316,6 +429,51 @@ public:
 int main()
 {
   try {
+    std::map<size_t, rct::xmr_amount> token_fees;
+    for (size_t count = 1; count <= 64; ++count) token_fees[count] = 1000000 + count * 100;
+    const std::vector<carrot::input_selection_policy_t> policies{&carrot::ispolicy::select_greedy_aging};
+    for (const auto amount : {uint64_t(1), uint64_t(10000000000)}) {
+      const std::vector<carrot::InputCandidate> candidates{
+          {{0, crypto::rand<crypto::key_image>()}, false, true, 1},
+          {{amount, crypto::rand<crypto::key_image>()}, false, true, 2}};
+      for (unsigned round = 0; round < 128; ++round) {
+        auto select = carrot::make_single_transfer_input_selector(epee::to_span(candidates), epee::to_span(policies),
+            carrot::InputSelectionFlags::IS_TOKEN_TRANSFER |
+            carrot::InputSelectionFlags::ALLOW_EXTERNAL_INPUTS_IN_NORMAL_TRANSFERS, nullptr);
+        std::vector<carrot::CarrotSelectedInput> selected;
+        select(amount, token_fees, 1, 1, selected);
+        check(selected.size() == 1 && selected.front().amount == amount,
+            "Zero change or SAL1 fee units prevented a funded token spend");
+      }
+    }
+    {
+      const std::vector<carrot::InputCandidate> candidates{
+          {{10, crypto::rand<crypto::key_image>()}, false, true, 1},
+          {{100, crypto::rand<crypto::key_image>()}, false, true, 10}};
+      std::set<size_t> chosen;
+      carrot::ispolicy::select_greedy_aging(epee::to_span(candidates), {0, 1}, 1, 5, chosen);
+      check(chosen == std::set<size_t>{0}, "Input aging searched index numbers instead of sorted amounts");
+      carrot::ispolicy::select_greedy_aging(epee::to_span(candidates), {0, 1}, 1, 20, chosen);
+      check(chosen == std::set<size_t>{1}, "Input aging replaced a funded input with insufficient money");
+    }
+    // Only TRANSFER serializes per-output encrypted return keys. Fee rollups,
+    // burns and protocol authorizations still have ordinary spendable change.
+    cryptonote::transaction change;
+    change.vin.push_back(cryptonote::txin_to_key{});
+    change.vout.push_back({0, cryptonote::txout_to_carrot_v1{}});
+    change.rct_signatures.ecdhInfo.resize(1);
+    change.rct_signatures.outPk.resize(1);
+    std::vector<mx25519_pubkey> ephemeral(1);
+    carrot::CarrotEnoteV1 enote;
+    for (const auto type : {cryptonote::transaction_type::STAKE, cryptonote::transaction_type::BURN,
+                           cryptonote::transaction_type::CREATE_TOKEN, cryptonote::transaction_type::ROLLUP}) {
+      change.type = type;
+      check(carrot::try_load_carrot_enote_from_transaction_v1(change, epee::to_span(ephemeral), 0, enote),
+          "A serialized authorization change output required an unavailable encrypted return key");
+    }
+    change.type = cryptonote::transaction_type::TRANSFER;
+    check(!carrot::try_load_carrot_enote_from_transaction_v1(change, epee::to_span(ephemeral), 0, enote),
+        "A malformed transfer without an encrypted return key was accepted");
     // Legacy watch-only accounts must leave key images unknown, including
     // CARROT-encoded returns sent to their pre-CARROT addresses.
     carrot::carrot_and_legacy_account watch_account;
@@ -335,6 +493,8 @@ int main()
     tools::wallet2 wallet(cryptonote::MAINNET, 1, true,
         std::unique_ptr<epee::net_utils::http::http_client_factory>(new audit_status_factory()));
     wallet.set_ring_database("");
+    wallet_accessor_test::subaddress_bounds(wallet);
+    wallet_accessor_test::hostile_rpc_checks(wallet);
     wallet_accessor_test::yield_summary_checks(wallet);
     wallet.set_lineage_regtest_height(10);
     cryptonote::block genesis;
@@ -347,7 +507,7 @@ int main()
     check(wallet.is_transfer_unlocked(wallet.get_transfer_details(3)),
         "Review-only inventory was isolated before its first status refresh");
     const auto all = wallet.audit(false);
-    check(all.state == "REVIEW_REQUIRED" && all.outputs.size() == 4, "Complete private inventory failed");
+    check(all.state == "VERIFICATION_PENDING" && all.outputs.size() == 4, "Complete private inventory failed");
     check(all.good == 0 && all.unresolved == 1600000000 && all.unresolved_count == 3 && !all.bad_count,
         "Review inventory control failed");
     for (const auto& output : all.outputs) check(output.key_image.empty(), "Private inventory exported a key image");
@@ -355,7 +515,7 @@ int main()
     wallet.set_lineage_regtest_height(0);
     rpc_activation_height = 0;
     const auto unscheduled = wallet.audit(true, true, 0, {}, true);
-    check(unscheduled.activation_height == 0 && unscheduled.state == "REVIEW_REQUIRED" &&
+    check(unscheduled.activation_height == 0 && unscheduled.state == "VERIFICATION_PENDING" &&
         unscheduled.proofs.empty(), "Local review incorrectly required an enrollment epoch or decoded a saved v2 proof");
     wallet.set_lineage_regtest_height(10);
     rpc_activation_height = 10;
@@ -372,7 +532,7 @@ int main()
     const auto legacy = wallet.audit(false, false, 0, {0});
     check(legacy.unresolved == 1100000000 && legacy.good == 0 && legacy.outputs.size() == 3, "Legacy scope failed");
     const auto carrot = wallet.audit(false, false, 1, {0});
-    check(carrot.state == "REVIEW_REQUIRED" && carrot.unresolved == 500000000 && carrot.good == 0 && carrot.outputs.size() == 1,
+    check(carrot.state == "VERIFICATION_PENDING" && carrot.unresolved == 500000000 && carrot.good == 0 && carrot.outputs.size() == 1,
         "Supported account control failed");
     wallet.update_lineage_audit_status();
     check(wallet.is_transfer_unlocked(wallet.get_transfer_details(3)), "Refreshed good output control remained locked");
@@ -404,14 +564,24 @@ int main()
     wallet.update_lineage_audit_status();
     for (bool watch : {false, true}) {
       wallet_accessor_test::signing_mode(wallet, watch, !watch);
-      check(wallet.audit(false).state == "REVIEW_REQUIRED", "Read-only wallet review unavailable");
+      check(wallet.audit(false).state == "VERIFICATION_PENDING", "Read-only wallet review unavailable");
       const auto prepared = wallet.audit(false, true, 0, {}, true);
       check(prepared.proofs.empty(), "Wallet without full signing keys created ownership proofs");
+    }
+    for (const auto device : {hw::device::LEDGER, hw::device::TREZOR}) {
+      wallet_accessor_test::signing_mode(wallet, false, false, device);
+      check(wallet.audit(false).state == "VERIFICATION_PENDING", "Hardware-mode inventory unavailable");
+      bool rejected_export = false;
+      try { wallet.export_audit_review(99); }
+      catch (const std::exception& error) {
+        rejected_export = std::string(error.what()).find("full software wallet") != std::string::npos;
+      }
+      check(rejected_export, "Hardware-mode ownership export fabricated an unsupported signature");
     }
     wallet_accessor_test::signing_mode(wallet, false, false);
     wallet_accessor_test::long_lock(wallet);
     const auto locked = wallet.audit(false);
-    check(locked.state == "REVIEW_REQUIRED" && locked.immature == 400000000, "Custom output maturity was ignored");
+    check(locked.state == "VERIFICATION_PENDING" && locked.immature == 400000000, "Custom output maturity was ignored");
     wallet_accessor_test::incomplete(wallet);
     const auto incomplete = wallet.audit(false);
     check(incomplete.state == "BAD_ORIGIN_FOUND" && incomplete.outputs.size() == 5, "Incomplete stake inventory disappeared");

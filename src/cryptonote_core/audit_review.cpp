@@ -408,6 +408,19 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
   struct public_node { checked inspected; std::vector<member> parents; uint8_t state = 1; };
   std::unordered_map<std::string, public_node> public_nodes;
   bool public_limit_hit = false;
+  // A disabled or exhausted positive-ancestry search must never suppress
+  // conclusive historical creation defects in the ring being inspected.
+  std::unordered_map<crypto::hash, bool> direct_origin_cache;
+  const auto direct_bad_origin = [&](const member& ref) {
+    auto found = direct_origin_cache.find(ref.transaction);
+    if (found == direct_origin_cache.end()) {
+      const auto tx = db.get_tx(ref.transaction);
+      found = direct_origin_cache.emplace(ref.transaction,
+          tx.type != transaction_type::MINER && tx.type != transaction_type::PROTOCOL &&
+          (lineage_audit::has_bad_asset_origin(tx) || tx_has_cleartext_confidential_amount(tx))).first;
+    }
+    return found->second;
+  };
   const auto public_identity = [](const member& m) { return hex(m.transaction) + ":" + std::to_string(m.output); };
   const auto public_good = [&](const member& first) {
     std::vector<member> stack{first};
@@ -504,7 +517,7 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
         for (const auto& member : dep.ring) {
           public_good(member);
           const auto found = public_nodes.find(public_identity(member));
-          all_bad &= found != public_nodes.end() && found->second.state == 4;
+          all_bad &= direct_bad_origin(member) || (found != public_nodes.end() && found->second.state == 4);
         }
         adverse |= all_bad;
       }
@@ -538,7 +551,7 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
           node.item.reason = "PREMATURE_FUNDING";
           break;
         }
-        input_complete = parent.verdict != 0 && mature;
+        input_complete = parent.verdict == 1 && mature;
         exposure |= parent.verdict == 2 || parent.verdict == 3;
         break;
       }
@@ -549,7 +562,7 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
         for (const auto& possible : dep.ring) {
           input_complete &= possible.unlock_height <= node.funding_height && public_good(possible);
           const auto found = public_nodes.find(public_identity(possible));
-          all_bad &= found != public_nodes.end() && found->second.state == 4;
+          all_bad &= direct_bad_origin(possible) || (found != public_nodes.end() && found->second.state == 4);
         }
         exposure |= all_bad;
         if (!input_complete && public_limit_hit && public_work_limit)
@@ -564,6 +577,15 @@ audit_review_report audit_review_verifier::verify(const BlockchainDB& db, networ
     else if (complete) {
       node.source.verdict = 1; node.item.state = "CLEARED"; node.item.recommendation = "CLEAR";
       if (!node.root) node.item.reason = public_path ? "ALL_RING_CANDIDATES_VERIFIED" : "ALL_FUNDING_VERIFIED";
+    } else if (!node.missing_authorization) {
+      // Ownership and amounts were authenticated above. An unavailable prior
+      // owner, exchange ledger, or mixed ring is not evidence of illicit creation.
+      // Keep incomplete ancestry distinct from a fully verified funding path;
+      // later descendants must still propagate any positive adverse evidence.
+      node.source.verdict = 4;
+      node.item.state = "CLEARED";
+      node.item.recommendation = "CLEAR";
+      node.item.reason = "OWNERSHIP_VERIFIED_NO_PROVEN_ILLICIT_ORIGIN";
     }
   }
   // Inspect canonical spends through the requested snapshot, not the database's

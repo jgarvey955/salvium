@@ -174,7 +174,10 @@ def ingest(path, db):
                 print(f"INGEST records={number} outputs={counts['outputs']}", flush=True)
     if not context or not complete:
         raise ValueError("Native scan incomplete: no complete context and terminal marker")
-    if any(complete[k] != counts[k] for k in ("transactions", "outputs")):
+    if (type(complete.get("scan_end_height")) is not int or
+            complete["scan_end_height"] != context["scan_end_height"]):
+        raise ValueError("Native completion endpoint differs from bound context")
+    if any(type(complete.get(k)) is not int or complete[k] != counts[k] for k in ("transactions", "outputs")):
         raise ValueError("Native completion counts do not match evidence")
     if counts["blocks"] != context["scan_end_height"] + 1 or counts["accounting"] != counts["blocks"]:
         raise ValueError("Historical accounting or inventory coverage incomplete")
@@ -187,23 +190,27 @@ def ingest(path, db):
     if db.execute("SELECT COUNT(*) FROM outputs o LEFT JOIN transactions t ON t.id=o.tx WHERE t.id IS NULL").fetchone()[0]:
         raise ValueError("Inventory contains orphan output rows")
     if db.execute("""SELECT COUNT(*) FROM transactions t LEFT JOIN blocks b ON b.height=t.height
-        WHERE b.height IS NULL OR json_extract(t.data,'$.block_hash')!=b.hash""").fetchone()[0]:
+        WHERE b.height IS NULL OR json_extract(t.data,'$.block_hash') IS NOT b.hash""").fetchone()[0]:
         raise ValueError("Transaction belongs to a noncanonical block")
     if db.execute("""SELECT COUNT(*) FROM accounting a JOIN blocks b ON b.height=a.height
-        WHERE json_extract(a.data,'$.block_hash')!=b.hash""").fetchone()[0]:
+        WHERE json_extract(a.data,'$.block_hash') IS NOT b.hash""").fetchone()[0]:
         raise ValueError("Accounting belongs to a noncanonical block")
     if db.execute("""SELECT COUNT(*) FROM outputs o JOIN transactions t ON t.id=o.tx JOIN blocks b ON b.height=o.height
-        WHERE o.height!=t.height OR json_extract(o.data,'$.block_hash')!=b.hash
-        OR o.category!=json_extract(t.data,'$.category')""").fetchone()[0]:
+        WHERE o.height!=t.height OR json_extract(o.data,'$.block_hash') IS NOT b.hash
+        OR o.category IS NOT json_extract(t.data,'$.category')""").fetchone()[0]:
         raise ValueError("Output belongs to a different transaction or canonical block")
     if db.execute("""SELECT COUNT(*) FROM payouts p LEFT JOIN outputs o ON o.tx=p.tx AND o.idx=p.idx
         LEFT JOIN transactions s ON s.id=p.source_tx
         WHERE o.tx IS NULL OR s.id IS NULL OR o.category!='PROTOCOL' OR s.height>o.height
-        OR (s.height=o.height AND NOT(json_extract(p.data,'$.source_type')=9
-            AND json_extract(s.data,'$.category')='CREATE_TOKEN'))
-        OR json_extract(p.data,'$.height')!=o.height OR json_extract(p.data,'$.asset')!=o.asset
-        OR json_extract(p.data,'$.source_height')!=s.height""").fetchone()[0]:
+        OR (s.height=o.height AND NOT(json_extract(p.data,'$.source_type') IS 9
+            AND json_extract(s.data,'$.category') IS 'CREATE_TOKEN'))
+        OR json_extract(p.data,'$.height') IS NOT o.height OR json_extract(p.data,'$.asset') IS NOT o.asset
+        OR json_extract(p.data,'$.source_height') IS NOT s.height""").fetchone()[0]:
         raise ValueError("Payout authorization contains noncanonical output or source")
+    if db.execute("""SELECT authorization FROM payouts
+        WHERE json_extract(data,'$.verification')='PASS'
+        GROUP BY authorization HAVING COUNT(*)>1 LIMIT 1""").fetchone():
+        raise ValueError("Payout authorization was accepted more than once")
     for data, output in db.execute("SELECT p.data,o.data FROM payouts p JOIN outputs o ON o.tx=p.tx AND o.idx=p.idx"):
         payout, output = load(data), load(output)
         if amount(payout["actual_atomic"]) != amount(output["public_amount_atomic"]):
@@ -211,7 +218,11 @@ def ingest(path, db):
         if payout["verification"] == "PASS" and amount(payout["expected_atomic"]) != amount(payout["actual_atomic"]):
             raise ValueError("Verified payout does not equal its authorization")
     if db.execute("""SELECT COUNT(*) FROM proven_inputs p LEFT JOIN outputs o ON o.tx=p.parent AND o.idx=p.parent_idx
-        LEFT JOIN transactions t ON t.id=p.child WHERE o.tx IS NULL OR t.id IS NULL OR o.height>=t.height""").fetchone()[0]:
+        LEFT JOIN transactions t ON t.id=p.child WHERE o.tx IS NULL OR t.id IS NULL OR o.height>=t.height
+        OR json_extract(p.data,'$.source_height') IS NOT o.height
+        OR json_extract(p.data,'$.height') IS NOT t.height
+        OR json_extract(p.data,'$.asset') IS NOT o.asset
+        OR json_extract(t.data,'$.crypto_status') IS NOT 'PASS' """).fetchone()[0]:
         raise ValueError("Funding proof contains noncanonical or forward output")
     db.commit()
     return context, complete, counts, hasher.hexdigest()

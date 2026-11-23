@@ -87,10 +87,17 @@ void append(audit_review_package& p, const lineage_output_proof& proof) {
 }
 struct owned_output { transaction tx; size_t index; rct::key secret, mask; uint64_t amount; };
 owned_output transfer(review_db& db, const owned_output& parent, uint64_t height,
-    const std::vector<size_t>& ring, size_t real_member) {
+    const std::vector<size_t>& ring, size_t real_member,
+    transaction_type type = transaction_type::TRANSFER, uint64_t principal = 0) {
   const auto secret = rct::skGen(), dest = rct::scalarmultBase(secret);
   transaction tx;
-  tx.version = 2; tx.type = transaction_type::TRANSFER;
+  tx.version = 2; tx.type = type;
+  check(principal < parent.amount, "Stake fixture principal exceeds its funding");
+  tx.amount_burnt = principal;
+  if (type == transaction_type::STAKE) {
+    tx.return_address = rct::rct2pk(dest);
+    tx.return_pubkey = rct::rct2pk(rct::pkGen());
+  }
   tx.source_asset_type = tx.destination_asset_type = "SAL1";
   crypto::public_key parent_key;
   check(get_output_public_key(parent.tx.vout[parent.index], parent_key), "Parent key missing");
@@ -115,13 +122,13 @@ owned_output transfer(review_db& db, const owned_output& parent, uint64_t height
   rct::RCTConfig config{rct::RangeProofPaddedBulletproof, 4};
   rct::salvium_data_t data{};
   tx.rct_signatures = rct::genRctSimple(rct::hash2rct(get_transaction_prefix_hash(tx)),
-      sources, {dest}, tx.type, "SAL1", {"SAL1"}, {parent.amount}, {parent.amount}, 0,
+      sources, {dest}, tx.type, "SAL1", {"SAL1"}, {parent.amount}, {parent.amount - principal}, 0,
       rings, {rct::skGen()}, {static_cast<unsigned>(real_member)}, out_secrets, config,
       hw::get_device("default"), data);
   tx.invalidate_hashes();
   db.txs[get_transaction_hash(tx)] = {tx, height};
   db.indices.emplace_back(get_transaction_hash(tx), 0);
-  return {tx, 0, secret, out_secrets.at(0).mask, parent.amount};
+  return {tx, 0, secret, out_secrets.at(0).mask, parent.amount - principal};
 }
 }
 
@@ -176,11 +183,18 @@ int main(int argc, char** argv) {
     for (const auto* out : {&illicit_child, &illicit_grandchild, &decoy_only})
       append(peers, prove(peers, out->tx, 0, out->secret, out->mask, out->amount));
     const auto missing = audit_review_verifier::verify(db, FAKECHAIN, {peers}, 2);
-    for (const auto& item : missing.outputs)
-      check(item.state == "REVIEW_REQUIRED", "Missing upstream owner silently cleared");
+    check(missing.outputs[0].state == "REVIEW_REQUIRED" && missing.outputs[1].state == "REVIEW_REQUIRED",
+        "Proven historical illicit creation did not require review");
+    check(missing.outputs[2].state == "CLEARED" &&
+        missing.outputs[2].reason == "OWNERSHIP_VERIFIED_NO_PROVEN_ILLICIT_ORIGIN",
+        "An unavailable upstream owner or illicit decoy required manual clearance");
     check(missing.outputs[0].reason == "PROVEN_ILLICIT_FUNDING_REQUIRES_REVIEW" &&
         missing.outputs[1].reason == "PROVEN_ILLICIT_FUNDING_REQUIRES_REVIEW",
         "Conclusive public ring sets failed to identify illicit transfers without owner cooperation");
+    const auto no_history = audit_review_verifier::verify(db, FAKECHAIN, {peers}, 2, 0);
+    check(no_history.outputs[0].state == "REVIEW_REQUIRED" &&
+        no_history.outputs[1].state == "REVIEW_REQUIRED" && no_history.outputs[2].state == "CLEARED",
+        "Unavailable history hid conclusive illicit creation or blamed an innocent decoy");
     const auto paths = audit_review_verifier::verify(db, FAKECHAIN, {peers, roots, p}, 2);
     check(paths.outputs[0].reason == "PROVEN_ILLICIT_FUNDING_REQUIRES_REVIEW" &&
         paths.outputs[1].reason == "PROVEN_ILLICIT_FUNDING_REQUIRES_REVIEW",
@@ -191,6 +205,42 @@ int main(int argc, char** argv) {
         opening_with_adverse.outputs[1].state == "REVIEW_REQUIRED" &&
         opening_with_adverse.outputs[2].state == "CLEARED",
         "Trusted opening erased positive illicit funding evidence or blamed an innocent decoy");
+    // Stake ownership does not erase provenance. Use valid funding proofs
+    // for an illicit principal and for a legitimate principal whose ring also
+    // contains the same illicit decoy; both have genuine return-key proofs.
+    review_db principal_db;
+    principal_db.txs[get_transaction_hash(rekeyed)] = {rekeyed, 80};
+    for (size_t i = 0; i < rekeyed.vout.size(); ++i)
+      principal_db.indices.emplace_back(get_transaction_hash(rekeyed), i);
+    principal_db.txs[get_transaction_hash(reward)] = {reward, 1};
+    principal_db.indices.emplace_back(get_transaction_hash(reward), 0);
+    const auto illicit_principal = transfer(principal_db, illicit, 100, {0}, 0,
+        transaction_type::STAKE, 12);
+    const auto legitimate_principal = transfer(principal_db, legitimate, 110, {0, 2}, 1,
+        transaction_type::STAKE, 12);
+    auto principal_request = context(principal_db), principal_roots = context(principal_db);
+    for (const auto* output : {&illicit_principal, &legitimate_principal})
+      append(principal_request, prove(principal_request, output->tx, 0,
+          output->secret, rct::identity(), 12, true, true));
+    append(principal_roots, prove(principal_roots, reward, 0, secret, rct::identity(), 100, true));
+    const auto principal_review = audit_review_verifier::verify(principal_db, FAKECHAIN,
+        {principal_request, principal_roots}, 2);
+    check(principal_review.outputs[0].stake && principal_review.outputs[0].amount == 12 &&
+        !principal_review.outputs[0].spent && principal_review.outputs[0].state == "REVIEW_REQUIRED" &&
+        principal_review.outputs[0].reason == "PROVEN_ILLICIT_FUNDING_REQUIRES_REVIEW",
+        "A valid stake return-key proof erased salYAHU funding");
+    check(principal_review.outputs[1].stake && principal_review.outputs[1].amount == 12 &&
+        !principal_review.outputs[1].spent && principal_review.outputs[1].state == "CLEARED",
+        "An illicit decoy contaminated legitimate stake principal ownership");
+    auto forged_principal = principal_request;
+    std::string forged_binary;
+    lineage_output_proof forged_proof;
+    check(epee::string_tools::parse_hexstr_to_binbuff(forged_principal.proofs.front(), forged_binary) &&
+        serialization::parse_binary(forged_binary, forged_proof), "Cannot decode stake fixture proof");
+    ++forged_proof.amount;
+    forged_principal.proofs.front() = epee::string_tools::buff_to_hex_nodelimer(t_serializable_object_to_blob(forged_proof));
+    rejected([&] { audit_review_verifier::verify(principal_db, FAKECHAIN, {forged_principal, principal_roots}, 2); });
+    std::cout << "SALYAHU_STAKE_OWNERSHIP_PASS valid principal funding, return ownership, innocent decoy and amount forgery\n";
     transaction accepted = reward;
     accepted.type = transaction_type::PROTOCOL;
     const auto accepted_secret = rct::skGen();
@@ -207,7 +257,10 @@ int main(int argc, char** argv) {
         automatic.outputs.front().reason == "ALL_RING_CANDIDATES_VERIFIED",
         "Publicly provable funding unnecessarily required the earlier owner");
     const auto bounded = audit_review_verifier::verify(db, FAKECHAIN, {alone}, 2, 0);
-    check(bounded.outputs.front().state == "REVIEW_REQUIRED", "Work limit approved unchecked ancestry");
+    check(bounded.outputs.front().state == "CLEARED" &&
+        bounded.outputs.front().reason == "OWNERSHIP_VERIFIED_NO_PROVEN_ILLICIT_ORIGIN" &&
+        !bounded.outputs.front().missing_inputs.empty(),
+        "Missing funding history required manual clearance or claimed verified ancestry");
     auto locked_decoy = accepted;
     boost::get<txout_to_carrot_v1>(locked_decoy.vout[0].target).key = rct::rct2pk(rct::pkGen());
     // A valid accepted root can still be an immature candidate in a later ring.
@@ -222,8 +275,9 @@ int main(int argc, char** argv) {
         mixed_maturity.secret, mixed_maturity.mask, mixed_maturity.amount));
     // Opening 150 accepts both roots; only the exact real source establishes maturity.
     const auto maturity_public = audit_review_verifier::verify(db, FAKECHAIN, {maturity_request}, 150);
-    check(maturity_public.outputs[0].state == "REVIEW_REQUIRED",
-        "A public ring with an immature possible source cleared without an exact funding proof");
+    check(maturity_public.outputs[0].state == "CLEARED" &&
+        maturity_public.outputs[0].reason == "OWNERSHIP_VERIFIED_NO_PROVEN_ILLICIT_ORIGIN",
+        "An unproven immature decoy required manual clearance");
     auto maturity_parent = context(db);
     append(maturity_parent, prove(maturity_parent, accepted, 0, accepted_secret, rct::identity(), 100, true));
     const auto maturity_exact = audit_review_verifier::verify(db, FAKECHAIN, {maturity_request, maturity_parent}, 150);

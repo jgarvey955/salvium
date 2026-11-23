@@ -1,4 +1,5 @@
 #include "ringct/rctSigs.h"
+#include "blockchain_utilities/audit_amounts.h"
 #include "ringct/proof_validation.h"
 #include "carrot_core/sparc.h"
 #include "crypto/generators.h"
@@ -45,6 +46,30 @@ void parsing_and_file_checks() {
   require(epee::file_io_utils::load_file_to_string(target.string(), contents) && contents == "original",
       "Rejected private file write modified the original");
 #endif
+}
+void accounting_checks() {
+  using namespace cryptonote::historical_audit;
+  const auto maximum = std::numeric_limits<uint64_t>::max();
+  require(checked_amount_sum(maximum - 1, 1) == maximum, "Maximum audit amount rejected");
+  require(checked_locked_balance(maximum, maximum, 12) == 12, "Stake principal replacement overflowed");
+  require(checked_amount_fraction(maximum, maximum, maximum) == maximum, "Wide stake calculation lost precision");
+  require(checked_amount_fraction(7, 3, 2) == 10, "Proportional reward did not round down");
+  require(checked_penalized_reward(maximum, uint64_t(1) << 63, maximum) == 3,
+      "Large reward-weight product lost precision");
+  require(checked_penalized_reward(100, 100, 150) == 75 &&
+      checked_penalized_reward(100, 100, 200) == 0, "Reward penalty boundaries changed");
+  for (unsigned variant = 0; variant < 6; ++variant) {
+    bool rejected = false;
+    try {
+      if (variant == 0) checked_amount_sum(maximum, 1);
+      if (variant == 1) checked_locked_balance(10, 11, 12);
+      if (variant == 2) checked_amount_fraction(maximum, maximum, 1);
+      if (variant == 3) checked_amount_fraction(1, 1, 0);
+      if (variant == 4) checked_penalized_reward(1, 0, 1);
+      if (variant == 5) checked_penalized_reward(100, 100, 201);
+    } catch (const std::exception&) { rejected = true; }
+    require(rejected, "Invalid historical amount silently wrapped or clamped");
+  }
 }
 void device_log_checks() {
   char text[7] = {'x'};
@@ -168,7 +193,7 @@ void asset_checks(const char* fixture) {
 int main(int argc, char** argv) {
   try {
     require(argc == 2, "Supply public historical transaction fixture");
-    proof_checks(); asset_checks(argv[1]); device_log_checks(); parsing_and_file_checks();
+    proof_checks(); asset_checks(argv[1]); accounting_checks(); device_log_checks(); parsing_and_file_checks();
     std::cout << "PASS: PR remainder, current/legacy SPARC, malformed proof vectors and historical mint rejection regressions\n";
     return 0;
   } catch (const std::exception& error) {

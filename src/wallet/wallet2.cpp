@@ -54,6 +54,7 @@ using namespace epee;
 #include "cryptonote_core/tx_sanity_check.h"
 #include "wallet_rpc_helpers.h"
 #include "wallet2.h"
+#include "output_distribution.h"
 #include "wallet_args.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "net/parse.h"
@@ -1070,6 +1071,7 @@ gamma_picker::gamma_picker(const std::vector<uint64_t> &rct_offsets, double shap
   end = rct_offsets.data() + rct_offsets.size() - (std::max(1, CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE) - 1);
   num_rct_outputs = *(end - 1);
   THROW_WALLET_EXCEPTION_IF(num_rct_outputs == 0, error::wallet_internal_error, "No rct outputs");
+  THROW_WALLET_EXCEPTION_IF(outputs_to_consider == 0, error::wallet_internal_error, "No outputs in consideration window");
   average_output_time = DIFFICULTY_TARGET_V2 * blocks_to_consider / static_cast<double>(outputs_to_consider); // this assumes constant target over the whole rct range
 };
 
@@ -1648,14 +1650,13 @@ void wallet2::add_subaddress(uint32_t index_major, const std::string& label)
 //----------------------------------------------------------------------------------------------------
 bool wallet2::should_expand(const cryptonote::subaddress_index &index) const
 {
-  const uint32_t last_major = m_subaddress_labels.size() - 1 > (std::numeric_limits<uint32_t>::max() - m_subaddress_lookahead_major) ? std::numeric_limits<uint32_t>::max()  : (m_subaddress_labels.size() + m_subaddress_lookahead_major - 1);
-  if (index.major > last_major)
+  // A new account has zero existing minor indices. Avoid subtracting one
+  // from that count, which otherwise turns its lookahead into UINT32_MAX.
+  const uint64_t major_end = uint64_t(m_subaddress_labels.size()) + m_subaddress_lookahead_major;
+  if (uint64_t(index.major) >= major_end)
     return false;
-  const size_t nsub = index.major < m_subaddress_labels.size() ? m_subaddress_labels[index.major].size() : 0;
-  const uint32_t last_minor = nsub - 1 > (std::numeric_limits<uint32_t>::max() - m_subaddress_lookahead_minor) ? std::numeric_limits<uint32_t>::max()  : (nsub + m_subaddress_lookahead_minor - 1);
-  if (index.minor > last_minor)
-    return false;
-  return true;
+  const uint64_t nsub = index.major < m_subaddress_labels.size() ? m_subaddress_labels[index.major].size() : 0;
+  return uint64_t(index.minor) < nsub + m_subaddress_lookahead_minor;
 }
 //----------------------------------------------------------------------------------------------------
 void wallet2::expand_subaddresses(const cryptonote::subaddress_index& index)
@@ -1731,6 +1732,7 @@ wallet2::tx_entry_data wallet2::get_tx_entries(const std::unordered_set<crypto::
     req.prune = true;
 
     size_t ntxes = slice + SLICE_SIZE > txids.size() ? txids.size() - slice : SLICE_SIZE;
+    const auto expected_txid_begin = it;
     for (size_t i = slice; i < slice + ntxes; ++i)
     {
       req.txs_hashes.push_back(epee::string_tools::pod_to_hex(*it));
@@ -1745,6 +1747,7 @@ wallet2::tx_entry_data wallet2::get_tx_entries(const std::unordered_set<crypto::
       THROW_WALLET_EXCEPTION_IF(res.txs.size() != req.txs_hashes.size(), error::wallet_internal_error, "Failed to get transaction from daemon");
     }
 
+    auto expected_txid = expected_txid_begin;
     for (auto& tx_info : res.txs)
     {
       if (!tx_info.in_pool)
@@ -1756,6 +1759,8 @@ wallet2::tx_entry_data wallet2::get_tx_entries(const std::unordered_set<crypto::
       cryptonote::transaction tx;
       crypto::hash tx_hash;
       THROW_WALLET_EXCEPTION_IF(!get_pruned_tx(tx_info, tx, tx_hash), error::wallet_internal_error, "Failed to get transaction from daemon");
+      THROW_WALLET_EXCEPTION_IF(tx_hash != *expected_txid, error::wallet_internal_error, "Failed to get the right transaction from daemon");
+      ++expected_txid;
       tx_entries.tx_entries.emplace_back(process_tx_entry_t{ std::move(tx_info), std::move(tx), std::move(tx_hash) });
     }
   }
@@ -2205,10 +2210,12 @@ bool wallet2::get_pricing_record(oracle::pricing_record& pr, const uint64_t heig
   // Issue an RPC call to get the block header (and thus the pricing record) at the specified height
   cryptonote::COMMAND_RPC_GET_BLOCK_HEADER_BY_HEIGHT::request req = AUTO_VAL_INIT(req);
   cryptonote::COMMAND_RPC_GET_BLOCK_HEADER_BY_HEIGHT::response res = AUTO_VAL_INIT(res);
-  m_daemon_rpc_mutex.lock();
   req.height = height;
-  bool r = invoke_http_json_rpc("/json_rpc", "getblockheaderbyheight", req, res, rpc_timeout);
-  m_daemon_rpc_mutex.unlock();
+  bool r;
+  {
+    const boost::lock_guard<boost::recursive_mutex> lock(m_daemon_rpc_mutex);
+    r = invoke_http_json_rpc("/json_rpc", "getblockheaderbyheight", req, res, rpc_timeout);
+  }
   if (r && res.status == CORE_RPC_STATUS_OK)
   {
     // Got the block header - verify the pricing record
@@ -2258,10 +2265,12 @@ bool wallet2::get_tokens(const std::string& filter, std::vector<std::string> &to
   // Issue an RPC call to get the block header (and thus the pricing record) at the specified height
   cryptonote::COMMAND_RPC_GET_TOKENS::request req = AUTO_VAL_INIT(req);
   cryptonote::COMMAND_RPC_GET_TOKENS::response res = AUTO_VAL_INIT(res);
-  m_daemon_rpc_mutex.lock();
   req.filter = filter;
-  bool r = invoke_http_json_rpc("/json_rpc", "get_tokens", req, res, rpc_timeout);
-  m_daemon_rpc_mutex.unlock();
+  bool r;
+  {
+    const boost::lock_guard<boost::recursive_mutex> lock(m_daemon_rpc_mutex);
+    r = invoke_http_json_rpc("/json_rpc", "get_tokens", req, res, rpc_timeout);
+  }
   if (r && res.status == CORE_RPC_STATUS_OK)
   {
     // Got the token data
@@ -2280,9 +2289,11 @@ cryptonote::token_metadata_t wallet2::get_token_info(const std::string& asset_ty
   cryptonote::COMMAND_RPC_GET_TOKEN_INFO::request req = AUTO_VAL_INIT(req);
   cryptonote::COMMAND_RPC_GET_TOKEN_INFO::response res = AUTO_VAL_INIT(res);
   req.asset_type = asset_type;
-  m_daemon_rpc_mutex.lock();
-  bool r = invoke_http_json_rpc("/json_rpc", "get_token_info", req, res, rpc_timeout);
-  m_daemon_rpc_mutex.unlock();
+  bool r;
+  {
+    const boost::lock_guard<boost::recursive_mutex> lock(m_daemon_rpc_mutex);
+    r = invoke_http_json_rpc("/json_rpc", "get_token_info", req, res, rpc_timeout);
+  }
   THROW_WALLET_EXCEPTION_IF(!r, error::wallet_internal_error, "Failed to connect to daemon");
   THROW_WALLET_EXCEPTION_IF(res.status != CORE_RPC_STATUS_OK, error::wallet_internal_error, res.status);
   return res.token;
@@ -2290,16 +2301,57 @@ cryptonote::token_metadata_t wallet2::get_token_info(const std::string& asset_ty
 //----------------------------------------------------------------------------------------------------
 bool wallet2::get_yield_info(std::vector<cryptonote::yield_block_info>& ybi_data)
 {
-  // Issue an RPC call to get the block header (and thus the pricing record) at the specified height
-  cryptonote::COMMAND_RPC_GET_YIELD_INFO::request req = AUTO_VAL_INIT(req);
-  cryptonote::COMMAND_RPC_GET_YIELD_INFO::response res = AUTO_VAL_INIT(res);
-  const boost::lock_guard<boost::recursive_mutex> lock(m_daemon_rpc_mutex);
-  req.include_raw_data = true;
-  bool r = invoke_http_json_rpc("/json_rpc", "get_yield_info", req, res, rpc_timeout);
-  if (r && res.status == CORE_RPC_STATUS_OK)
+  static constexpr uint64_t max_yield_blocks_per_request = 1000;
+  ybi_data.clear();
+
+  std::string err;
+  const uint64_t daemon_height = get_daemon_blockchain_height(err);
+  if (!err.empty() || daemon_height <= 1)
   {
-    ybi_data.clear();
+    MERROR("Failed to retrieve daemon height for yield info: " << err);
+    return false;
+  }
+
+  // The daemon retains only the current stake-lock window of raw YBI data.
+  const uint64_t cache_size = std::min(daemon_height, get_config(m_nettype).STAKE_LOCK_PERIOD + 1);
+  const uint64_t first_height = std::max<uint64_t>(1, daemon_height - cache_size);
+  const uint64_t last_height = daemon_height - 1;
+
+  ybi_data.clear();
+  for (uint64_t from_height = first_height; from_height <= last_height;)
+  {
+    cryptonote::COMMAND_RPC_GET_YIELD_INFO::request req = AUTO_VAL_INIT(req);
+    cryptonote::COMMAND_RPC_GET_YIELD_INFO::response res = AUTO_VAL_INIT(res);
+    req.include_raw_data = true;
+    req.from_height = from_height;
+    req.to_height = from_height + std::min(last_height - from_height, max_yield_blocks_per_request - 1);
+
+    bool r;
+    {
+      const boost::lock_guard<boost::recursive_mutex> lock(m_daemon_rpc_mutex);
+      r = invoke_http_json_rpc("/json_rpc", "get_yield_info", req, res, rpc_timeout);
+    }
+    if (!r || res.status != CORE_RPC_STATUS_OK)
+    {
+      MERROR("Failed to retrieve yield info from daemon: " << (r ? res.status : "connection failed"));
+      ybi_data.clear();
+      return false;
+    }
+
+    if (res.yield_data.size() != req.to_height - req.from_height + 1)
+    {
+      MERROR("Daemon returned incomplete or oversized yield data");
+      ybi_data.clear();
+      return false;
+    }
+    uint64_t expected_height = req.from_height;
     for (const auto& entry: res.yield_data) {
+      if (entry.block_height != expected_height++)
+      {
+        MERROR("Daemon returned yield data outside the requested block sequence");
+        ybi_data.clear();
+        return false;
+      }
       // Create a YBI
       cryptonote::yield_block_info ybi;
       ybi.block_height = entry.block_height;
@@ -2309,13 +2361,16 @@ bool wallet2::get_yield_info(std::vector<cryptonote::yield_block_info>& ybi_data
       ybi.network_health_percentage = entry.network_health_percentage;
       ybi_data.push_back(ybi);
     }
-    return true;
+
+    from_height = req.to_height + 1;
   }
-  else
+
+  if (ybi_data.empty())
   {
-    MERROR("Failed to retrieve yield info from daemon");
+    MERROR("Daemon returned no yield info");
     return false;
   }
+  return true;
 }
 //----------------------------------------------------------------------------------------------------
 bool wallet2::get_yield_summary_info(uint64_t &total_burnt,
@@ -4693,9 +4748,14 @@ bool wallet2::get_rct_distribution(const bool use_global_outs, const std::string
     MWARNING("Failed to request output distribution: results are not for amount 0");
     return false;
   }
-  num_spendable_global_outs = res.distributions[0].data.num_spendable_global_outs;
-  for (size_t i = 1; i < res.distributions[0].data.distribution.size(); ++i)
-    res.distributions[0].data.distribution[i] += res.distributions[0].data.distribution[i-1];
+  auto& data = res.distributions[0].data;
+  if (!accumulate_output_distribution(data.distribution, data.base, data.start_height,
+      data.num_spendable_global_outs))
+  {
+    MWARNING("Rejecting invalid daemon output distribution");
+    return false;
+  }
+  num_spendable_global_outs = data.num_spendable_global_outs;
   start_height = res.distributions[0].data.start_height;
   distribution = std::move(res.distributions[0].data.distribution);
   return true;
@@ -8154,7 +8214,8 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
           td.m_tx.type != cryptonote::transaction_type::PROTOCOL;
       // transfer_details retains only the transaction prefix, so it cannot
       // prove a RingCT cleartext-amount defect. Leave that to the full-chain
-      // forensic pass and classify uncertain wallet evidence as REVIEW.
+      // forensic pass. Unchecked inventory is pending verification, not a
+      // finding that the owner needs manual clearance.
       bool bad_origin = false;
       if (inspect_origin && !stake) {
         std::string output_asset;
@@ -8163,10 +8224,10 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
       } else if (inspect_origin && stake) {
         bad_origin = td.m_tx.source_asset_type != "SAL1";
       }
-      row.state = bad_origin ? "BAD" : "REVIEW";
-      row.recommendation = "DENY";
+      row.state = bad_origin ? "BAD" : "VERIFICATION_PENDING";
+      row.recommendation = bad_origin ? "DENY" : "VERIFY";
       row.reason = bad_origin ? "CONFIRMED_MALFORMED_ORIGIN" :
-          !return_context ? "MISSING_RETURN_CONTEXT" : !known_image ? "KEY_IMAGE_UNAVAILABLE" : "FUNDING_NOT_YET_VERIFIED";
+          !return_context ? "MISSING_RETURN_CONTEXT" : !known_image ? "KEY_IMAGE_UNAVAILABLE" : "OWNERSHIP_NOT_YET_VERIFIED";
       // The wallet may use the image internally to determine spent state, but
       // the audit result must not export or pre-publish it.
       row.key_image.clear();
@@ -8351,7 +8412,10 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
       result.unresolved_count = balance.unresolved_count; result.spent_count = balance.spent_count;
     }
   }
-  result.state = bad ? "BAD_ORIGIN_FOUND" : unresolved ? "REVIEW_REQUIRED" :
+  const bool requires_manual_review = std::any_of(result.outputs.begin(), result.outputs.end(),
+      [](const audit_output& output) { return output.state == "REVIEW_REQUIRED"; });
+  result.state = bad ? "BAD_ORIGIN_FOUND" : unresolved ?
+      (private_review && !requires_manual_review ? "VERIFICATION_PENDING" : "REVIEW_REQUIRED") :
       result.outputs.empty() ? "EMPTY" : immature ? "MATURING" : "AUDIT_PASSED";
   if (std::any_of(result.outputs.begin(), result.outputs.end(), [](const audit_output& output) {
       return !output.spent && output.state == "DENIED_BY_DEVELOPER"; })) result.state = "DENIED_BY_DEVELOPER";
