@@ -3981,6 +3981,14 @@ namespace cryptonote
   bool core_rpc_server::on_get_output_distribution(const COMMAND_RPC_GET_OUTPUT_DISTRIBUTION::request& req, COMMAND_RPC_GET_OUTPUT_DISTRIBUTION::response& res, epee::json_rpc::error& error_resp, const connection_context *ctx)
   {
     RPC_TRACKER(get_output_distribution);
+    std::vector<uint64_t> amounts;
+    if (!normalize_distribution_amounts(req.amounts, amounts))
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
+      error_resp.message = "Too many amounts requested";
+      return false;
+    }
+
     bool r = false;
     if (use_bootstrap_daemon_if_necessary<COMMAND_RPC_GET_OUTPUT_DISTRIBUTION>(invoke_http_mode::JON_RPC, "get_output_distribution", req, res, r))
       return r;
@@ -3990,14 +3998,6 @@ namespace cryptonote
     {
       error_resp.code = CORE_RPC_ERROR_CODE_RESTRICTED;
       error_resp.message = "Restricted RPC can only get output distribution for rct outputs. Use your own node.";
-      return false;
-    }
-
-    std::vector<uint64_t> amounts;
-    if (!normalize_distribution_amounts(req.amounts, amounts))
-    {
-      error_resp.code = CORE_RPC_ERROR_CODE_WRONG_PARAM;
-      error_resp.message = "Too many amounts requested";
       return false;
     }
 
@@ -4039,6 +4039,13 @@ namespace cryptonote
   {
     RPC_TRACKER(get_output_distribution_bin);
 
+    std::vector<uint64_t> amounts;
+    if (!normalize_distribution_amounts(req.amounts, amounts))
+    {
+      res.status = "Too many amounts requested";
+      return false;
+    }
+
     bool r = false;
     if (use_bootstrap_daemon_if_necessary<COMMAND_RPC_GET_OUTPUT_DISTRIBUTION>(invoke_http_mode::BIN, "/get_output_distribution.bin", req, res, r))
       return r;
@@ -4047,13 +4054,6 @@ namespace cryptonote
     if (restricted && req.amounts != std::vector<uint64_t>(1, 0))
     {
       res.status = "Restricted RPC can only get output distribution for rct outputs. Use your own node.";
-      return false;
-    }
-
-    std::vector<uint64_t> amounts;
-    if (!normalize_distribution_amounts(req.amounts, amounts))
-    {
-      res.status = "Too many amounts requested";
       return false;
     }
 

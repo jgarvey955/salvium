@@ -2217,10 +2217,12 @@ bool wallet2::get_pricing_record(oracle::pricing_record& pr, const uint64_t heig
   // Issue an RPC call to get the block header (and thus the pricing record) at the specified height
   cryptonote::COMMAND_RPC_GET_BLOCK_HEADER_BY_HEIGHT::request req = AUTO_VAL_INIT(req);
   cryptonote::COMMAND_RPC_GET_BLOCK_HEADER_BY_HEIGHT::response res = AUTO_VAL_INIT(res);
-  m_daemon_rpc_mutex.lock();
   req.height = height;
-  bool r = invoke_http_json_rpc("/json_rpc", "getblockheaderbyheight", req, res, rpc_timeout);
-  m_daemon_rpc_mutex.unlock();
+  bool r;
+  {
+    const boost::lock_guard<boost::recursive_mutex> lock(m_daemon_rpc_mutex);
+    r = invoke_http_json_rpc("/json_rpc", "getblockheaderbyheight", req, res, rpc_timeout);
+  }
   if (r && res.status == CORE_RPC_STATUS_OK)
   {
     // Got the block header - verify the pricing record
@@ -2270,10 +2272,12 @@ bool wallet2::get_tokens(const std::string& filter, std::vector<std::string> &to
   // Issue an RPC call to get the block header (and thus the pricing record) at the specified height
   cryptonote::COMMAND_RPC_GET_TOKENS::request req = AUTO_VAL_INIT(req);
   cryptonote::COMMAND_RPC_GET_TOKENS::response res = AUTO_VAL_INIT(res);
-  m_daemon_rpc_mutex.lock();
   req.filter = filter;
-  bool r = invoke_http_json_rpc("/json_rpc", "get_tokens", req, res, rpc_timeout);
-  m_daemon_rpc_mutex.unlock();
+  bool r;
+  {
+    const boost::lock_guard<boost::recursive_mutex> lock(m_daemon_rpc_mutex);
+    r = invoke_http_json_rpc("/json_rpc", "get_tokens", req, res, rpc_timeout);
+  }
   if (r && res.status == CORE_RPC_STATUS_OK)
   {
     // Got the token data
@@ -2297,9 +2301,10 @@ cryptonote::token_metadata_t wallet2::get_token_info(const std::string& asset_ty
   bool r = false;
   for (size_t attempt = 0; attempt < max_attempts; ++attempt)
   {
-    m_daemon_rpc_mutex.lock();
-    r = invoke_http_json_rpc("/json_rpc", "get_token_info", req, res, rpc_timeout);
-    m_daemon_rpc_mutex.unlock();
+    {
+      const boost::lock_guard<boost::recursive_mutex> lock(m_daemon_rpc_mutex);
+      r = invoke_http_json_rpc("/json_rpc", "get_token_info", req, res, rpc_timeout);
+    }
 
     if (!r)
       continue;
@@ -8505,7 +8510,8 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
           td.m_tx.type != cryptonote::transaction_type::PROTOCOL;
       // transfer_details retains only the transaction prefix, so it cannot
       // prove a RingCT cleartext-amount defect. Leave that to the full-chain
-      // forensic pass and classify uncertain wallet evidence as REVIEW.
+      // forensic pass. Unchecked inventory is pending verification, not a
+      // finding that the owner needs manual clearance.
       bool bad_origin = false;
       if (inspect_origin && !stake) {
         std::string output_asset;
@@ -8514,10 +8520,10 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
       } else if (inspect_origin && stake) {
         bad_origin = td.m_tx.source_asset_type != "SAL1";
       }
-      row.state = bad_origin ? "BAD" : "REVIEW";
-      row.recommendation = "DENY";
+      row.state = bad_origin ? "BAD" : "VERIFICATION_PENDING";
+      row.recommendation = bad_origin ? "DENY" : "VERIFY";
       row.reason = bad_origin ? "CONFIRMED_MALFORMED_ORIGIN" :
-          !return_context ? "MISSING_RETURN_CONTEXT" : !known_image ? "KEY_IMAGE_UNAVAILABLE" : "FUNDING_NOT_YET_VERIFIED";
+          !return_context ? "MISSING_RETURN_CONTEXT" : !known_image ? "KEY_IMAGE_UNAVAILABLE" : "OWNERSHIP_NOT_YET_VERIFIED";
       // The wallet may use the image internally to determine spent state, but
       // the audit result must not export or pre-publish it.
       row.key_image.clear();
@@ -8702,7 +8708,10 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
       result.unresolved_count = balance.unresolved_count; result.spent_count = balance.spent_count;
     }
   }
-  result.state = bad ? "BAD_ORIGIN_FOUND" : unresolved ? "REVIEW_REQUIRED" :
+  const bool requires_manual_review = std::any_of(result.outputs.begin(), result.outputs.end(),
+      [](const audit_output& output) { return output.state == "REVIEW_REQUIRED"; });
+  result.state = bad ? "BAD_ORIGIN_FOUND" : unresolved ?
+      (private_review && !requires_manual_review ? "VERIFICATION_PENDING" : "REVIEW_REQUIRED") :
       result.outputs.empty() ? "EMPTY" : immature ? "MATURING" : "AUDIT_PASSED";
   if (std::any_of(result.outputs.begin(), result.outputs.end(), [](const audit_output& output) {
       return !output.spent && output.state == "DENIED_BY_DEVELOPER"; })) result.state = "DENIED_BY_DEVELOPER";
@@ -12500,8 +12509,10 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryp
       // Store the rollup data
       tx_proposals_rollup[0].layer2_rollup_data = rollup_data;
       
+      // Return the fee authorization before the transfers that depend on it.
+      // RPC clients may relay and confirm each returned transaction in order.
       for (const auto &tx_proposal_rollup : tx_proposals_rollup)
-        ptx_vector.push_back(tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
+        ptx_vector.insert(ptx_vector.begin(), tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
     }
 
     return ptx_vector;
@@ -13410,8 +13421,10 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_all(uint64_t below
       // Store the rollup data
       tx_proposals_rollup[0].layer2_rollup_data = rollup_data;
       
+      // Return the fee authorization before the transfers that depend on it.
+      // RPC clients may relay and confirm each returned transaction in order.
       for (const auto &tx_proposal_rollup : tx_proposals_rollup)
-        ptx_vector.push_back(tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
+        ptx_vector.insert(ptx_vector.begin(), tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
     }
 
     return ptx_vector;
@@ -13746,8 +13759,10 @@ std::vector<wallet2::pending_tx> wallet2::create_transactions_return(std::vector
       // Store the rollup data
       tx_proposals_rollup[0].layer2_rollup_data = rollup_data;
       
+      // Return the fee authorization before the transfers that depend on it.
+      // RPC clients may relay and confirm each returned transaction in order.
       for (const auto &tx_proposal_rollup : tx_proposals_rollup)
-        ptx_vector.push_back(tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
+        ptx_vector.insert(ptx_vector.begin(), tools::wallet::finalize_all_proofs_from_transfer_details_as_pending_tx(tx_proposal_rollup, *this));
     }
 
     return ptx_vector;

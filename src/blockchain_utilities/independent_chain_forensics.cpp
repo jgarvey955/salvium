@@ -1,5 +1,6 @@
 #include "independent_chain_forensics.h"
 #include "historical_audit_records.h"
+#include "audit_amounts.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -26,6 +27,10 @@ namespace cryptonote
 {
 namespace
 {
+  using historical_audit::checked_amount_sum;
+  using historical_audit::checked_amount_fraction;
+  using historical_audit::checked_locked_balance;
+
   struct rolling_median
   {
     explicit rolling_median(size_t capacity): capacity(capacity) {}
@@ -51,7 +56,7 @@ namespace
     {
       if (lower.empty()) return 0;
       if (lower.size() != upper.size()) return *lower.rbegin();
-      return (*lower.rbegin() + *upper.begin()) / 2;
+      return *lower.rbegin() + (*upper.begin() - *lower.rbegin()) / 2;
     }
 
     size_t size() const { return values.size(); }
@@ -148,18 +153,7 @@ namespace
         version < 2 ? CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V1
                     : CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V5;
     median_weight = std::max<uint64_t>(median_weight, full_zone);
-    if (current_weight <= median_weight) return base;
-    if (current_weight > 2 * median_weight)
-    {
-      valid = false;
-      return 0;
-    }
-    const unsigned __int128 multiplicand =
-        static_cast<unsigned __int128>(2 * median_weight - current_weight)
-        * current_weight;
-    return static_cast<uint64_t>(
-        (static_cast<unsigned __int128>(base) * multiplicand)
-        / median_weight / median_weight);
+    return historical_audit::checked_penalized_reward(base, median_weight, current_weight);
   }
 
   bool output_fields(
@@ -332,7 +326,7 @@ int run_independent_chain_forensics(
       const uint64_t weight = db.get_block_weight(height);
       const uint64_t median = std::max<uint64_t>(CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V5, long_weights.median());
       short_weights.push(weight);
-      long_weights.push(std::min<uint64_t>(weight, median * 17 / 10));
+      long_weights.push(std::min<uint64_t>(weight, checked_amount_fraction(median, 17, 10)));
     }
     uint64_t context_window = stake_lock + 1;
     for (const auto& rule : config.AUDIT_HARD_FORKS)
@@ -501,12 +495,12 @@ int run_independent_chain_forensics(
     const bool split_treasury =
         blk.major_version >= HF_VERSION_ENABLE_TOKENS;
     const uint64_t expected_treasury_reward =
-        split_treasury ? total_reward * BLOCK_REWARD_TREASURY_PCT / 100 : 0;
+        split_treasury ? checked_amount_fraction(total_reward, BLOCK_REWARD_TREASURY_PCT, 100) : 0;
     const uint64_t expected_stake_reward =
         height == 0 ? 0 :
         (split_treasury
-             ? (total_reward - expected_treasury_reward)
-                   * BLOCK_REWARD_STAKER_PCT / 100
+             ? checked_amount_fraction(total_reward - expected_treasury_reward,
+                   BLOCK_REWARD_STAKER_PCT, 100)
              : total_reward / 5);
     const uint64_t scheduled_treasury_mint =
         config.TREASURY_SAL1_MINT_OUTPUT_DATA.count(height)
@@ -533,12 +527,12 @@ int run_independent_chain_forensics(
       if (asset == "SAL1")
       {
         miner_uses_sal1 = true;
-        miner_sal1_outputs += out.amount;
+        miner_sal1_outputs = checked_amount_sum(miner_sal1_outputs, out.amount);
         actual_sal1_outputs += out.amount;
       }
     }
     const uint64_t expected_miner_value =
-        total_reward + scheduled_treasury_mint;
+        checked_amount_sum(total_reward, scheduled_treasury_mint);
     const bool miner_value_ok =
         !miner_overflow && miner_value == expected_miner_value;
     const bool stake_split_ok =
@@ -592,9 +586,8 @@ int run_independent_chain_forensics(
             for (uint64_t index = matured_height + 1; index < height; ++index)
             {
               if (slippage[index] == 0 || locked_tally[index] == 0) continue;
-              const uint64_t yield = static_cast<uint64_t>(
-                  static_cast<unsigned __int128>(slippage[index])
-                      * source.amount / locked_tally[index]);
+              const uint64_t yield = checked_amount_fraction(
+                  slippage[index], source.amount, locked_tally[index]);
               if (!add_checked(payout, yield))
               {
                 ++findings;
@@ -612,7 +605,7 @@ int run_independent_chain_forensics(
             deferred_stakes.emplace(source.source_tx, expected_output{source, payout});
           else
             expected_protocol.push_back({source, payout});
-          matured_locked += source.amount;
+          matured_locked = checked_amount_sum(matured_locked, source.amount);
         }
         stakes.erase(it);
       }
@@ -723,9 +716,9 @@ int run_independent_chain_forensics(
     for (size_t index = 0; index < expected_protocol.size(); ++index)
       if (expected_protocol[index].source.destination_asset == "SAL1")
       {
-        expected_protocol_sal1 += expected_protocol[index].amount;
+        expected_protocol_sal1 = checked_amount_sum(expected_protocol_sal1, expected_protocol[index].amount);
         if (expected_protocol[index].source.source_asset != "SAL1")
-          expected_new_protocol_sal1 += expected_protocol[index].amount;
+          expected_new_protocol_sal1 = checked_amount_sum(expected_new_protocol_sal1, expected_protocol[index].amount);
       }
     for (size_t index = 0; index < blk.protocol_tx.vout.size(); ++index)
     {
@@ -734,7 +727,7 @@ int run_independent_chain_forensics(
       if (output_fields(blk.protocol_tx.vout[index], asset, ignored) &&
           asset == "SAL1")
       {
-        actual_protocol_sal1 += blk.protocol_tx.vout[index].amount;
+        actual_protocol_sal1 = checked_amount_sum(actual_protocol_sal1, blk.protocol_tx.vout[index].amount);
         actual_sal1_outputs += blk.protocol_tx.vout[index].amount;
         if (index >= expected_protocol.size() ||
             expected_protocol[index].source.source_asset != "SAL1")
@@ -821,12 +814,12 @@ int run_independent_chain_forensics(
 
     if (miner_uses_sal1)
     {
-      expected_sal1_emission += base_reward + scheduled_treasury_mint;
+      expected_sal1_emission += static_cast<unsigned __int128>(base_reward) + scheduled_treasury_mint;
       if (miner_value >= block_fees)
         actual_sal1_issuance += miner_value - block_fees;
     }
     expected_sal1_emission += expected_new_protocol_sal1;
-    expected_generated += base_reward;
+    expected_generated = checked_amount_sum(expected_generated, base_reward);
     prior_stored_generated = stored_generated;
 
     uint64_t current_staked = 0;
@@ -840,30 +833,28 @@ int run_independent_chain_forensics(
       if (tx.type == transaction_type::STAKE)
       {
         stakes[height].push_back(source);
-        current_staked += tx.amount_burnt;
+        current_staked = checked_amount_sum(current_staked, tx.amount_burnt);
       }
       else
         audits[height].push_back(source);
     }
 
-    locked_tally[height] =
-        prior_locked_tally >= matured_locked
-            ? prior_locked_tally - matured_locked + current_staked
-            : current_staked;
+    locked_tally[height] = checked_locked_balance(
+        prior_locked_tally, matured_locked, current_staked);
     prior_locked_tally = locked_tally[height];
 
     if (blk.major_version < HF_VERSION_ENABLE_CONVERT)
       slippage[height] = expected_stake_reward;
     else
     {
-      std::map<std::string, __int128_t> residuals;
+      std::map<std::string, boost::multiprecision::int256_t> residuals;
       for (const transaction& tx : transactions)
         if (tx.type == transaction_type::CONVERT)
           residuals[tx.destination_asset_type] += tx.amount_burnt;
       for (const expected_output& output : expected_protocol)
         residuals[output.source.destination_asset] -= output.amount;
 
-      __int128_t sal_total = 0;
+      boost::multiprecision::int256_t sal_total = 0;
       bool prices_valid = true;
       for (const auto& residual : residuals)
       {
@@ -900,7 +891,7 @@ int run_independent_chain_forensics(
         std::max<uint64_t>(CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE_V5,
                            long_weights.median());
     uint64_t long_weight = std::min<uint64_t>(
-        block_weight, effective_long_median * 17 / 10);
+        block_weight, checked_amount_fraction(effective_long_median, 17, 10));
     short_weights.push(block_weight);
     long_weights.push(long_weight);
     next_global_output_id +=

@@ -469,7 +469,9 @@ select_inputs_func_t make_single_transfer_input_selector(
                 std::set<std::size_t> candidate_subset_filtered = input_candidate_subset;
                 if (!(flags & ALLOW_DUST))
                 {
-                    const rct::xmr_amount dust_threshold = fee_by_input_count.at(n_inputs)
+                    // Token units cannot be compared with a fee paid in SAL1.
+                    // Exclude zero-value change while retaining tiny token inputs.
+                    const rct::xmr_amount dust_threshold = is_token_transfer ? 0 : fee_by_input_count.at(n_inputs)
                         - (n_inputs > CARROT_MIN_TX_INPUTS ? fee_by_input_count.at(n_inputs - 1) : 0);
                     for (auto it = candidate_subset_filtered.cbegin(); it != candidate_subset_filtered.cend();)
                     {
@@ -479,6 +481,13 @@ select_inputs_func_t make_single_transfer_input_selector(
                             ++it;
                     }
                 }
+
+                // Filtering can remove inputs included in the earlier money
+                // estimate. Try another count instead of failing a funded wallet.
+                const auto filtered_money = input_count_for_max_usable_money(input_candidates,
+                    candidate_subset_filtered, n_inputs, fee_by_input_count, is_token_transfer);
+                if (filtered_money.first != n_inputs || filtered_money.second < required_money)
+                    continue;
 
                 // For each input selection policy...
                 for (const input_selection_policy_t &policy : policies)
@@ -584,7 +593,10 @@ void select_greedy_aging(const epee::span<const InputCandidate> input_candidates
         const rct::xmr_amount lowest_replacement_amount = (currently_selected_amount > surplus)
             ? boost::numeric_cast<rct::xmr_amount>(currently_selected_amount - surplus) : 0;
         const auto lower_amount_it = std::lower_bound(selectable_inputs_by_amount.cbegin(),
-            selectable_inputs_by_amount.cend(), lowest_replacement_amount);
+            selectable_inputs_by_amount.cend(), lowest_replacement_amount,
+            [&](const std::size_t index, const rct::xmr_amount amount) {
+                return input_candidates[index].core.amount < amount;
+            });
         for (auto amount_it = lower_amount_it; amount_it != selectable_inputs_by_amount.cend(); ++amount_it)
         {
             const std::size_t potential_replacement_idx = *amount_it;

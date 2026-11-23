@@ -876,7 +876,7 @@ namespace tools
     std::vector<std::string> assets_in_wallet = m_wallet->list_asset_types();
     std::string asset_type = canonicalize_transfer_asset_type(req.asset_type.empty() ? "SAL1" : req.asset_type);
     // verify that the asset is in the list of in-wallet assets
-    if (!wallet_has_asset_index_for_spend(m_wallet, asset_type)) {
+    if (!req.all_assets && !wallet_has_asset_index_for_spend(m_wallet, asset_type)) {
       er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
       er.message = std::string("Source asset '") + asset_type + "' not found in wallet"; 
       return false;
@@ -2004,7 +2004,12 @@ namespace tools
         er.message = "Multiple transactions are created, which is not supposed to happen.";
         return false;
       }
-      if (ptx_vector[0].selected_transfers.size() != transfers_indices.size())
+      // A token return is preceded by its independently funded SAL1 fee.
+      // Match the return's actual inputs, regardless of the fee input count.
+      const auto& returned_inputs = ptx_vector.back().selected_transfers;
+      if (returned_inputs.size() != transfers_indices.size() ||
+          std::set<size_t>(returned_inputs.begin(), returned_inputs.end()) !=
+          std::set<size_t>(transfers_indices.begin(), transfers_indices.end()))
       {
         er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE;
         er.message = tr("The transaction uses incorrect number of inputs, which is not supposed to happen");

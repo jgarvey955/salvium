@@ -55,6 +55,39 @@ class Reconciliation(unittest.TestCase):
         self.assertTrue(result["errors"])
         self.assertEqual(result["developer_decisions"]["decisions"][0]["action"], "DENY")
 
+    def test_exchange_refuses_history_does_not_manufacture_purchase(self):
+        self.ledger["scope_complete"] = False
+        self.ledger["events"] = []
+        self.ledger["balances"] = []
+        original = copy.deepcopy(self.case)
+        result = self.run_case()
+        self.assertTrue(result["errors"])
+        self.assertFalse(any(d["action"] == "CLEAR" for d in result["developer_decisions"]["decisions"]))
+        self.assertEqual(self.case, original)
+        self.assertEqual(self.case["outputs"][1]["state"], "REVIEW_REQUIRED")
+        self.assertEqual(self.case["outputs"][1]["reason"], "MISSING_FUNDING_EVIDENCE")
+
+    def test_missing_ledger_cannot_deny_automatically_cleared_owner(self):
+        self.case["outputs"][1].update(state="CLEARED", reason="OWNERSHIP_VERIFIED_NO_PROVEN_ILLICIT_ORIGIN")
+        self.ledger.update(scope_complete=False, events=[], balances=[])
+        result = self.run_case()
+        self.assertTrue(result["errors"])
+        self.assertEqual(result["developer_decisions"]["decisions"], [])
+        self.assertEqual(self.case["outputs"][1]["state"], "CLEARED")
+
+    def test_token_purchase_keeps_asset_units_separate(self):
+        for row in self.case["outputs"]:
+            row["asset_type"] = "salYAHU"
+        self.ledger["assets_in_scope"] = ["salYAHU"]
+        for row in self.ledger["balances"] + self.ledger["events"]:
+            row["asset"] = "salYAHU"
+        result = self.run_case()
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["developer_decisions"]["decisions"][0]["action"], "CLEAR")
+        self.ledger["events"][-1]["asset"] = "SAL1"
+        with self.assertRaises(ValueError):
+            self.run_case()
+
     def test_duplicate_deposit_credit(self):
         self.ledger["balances"][0]["closing_atomic"] = "300"
         for number in (1, 2):

@@ -109,6 +109,22 @@ class HistoricalAudit(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.ingest(damaged)
 
+    def test_duplicate_accepted_payout_authorization_rejected(self):
+        rows = self.records()
+        rows[-3]["category"] = "CREATE_TOKEN"
+        rows[-2]["category"] = "CREATE_TOKEN"
+        protocol = dict(rows[-3], transaction="e" * 64, category="PROTOCOL")
+        first = dict(self.output, transaction="e" * 64, category="PROTOCOL",
+                     public_amount_atomic=100, global_output_id=1)
+        second = dict(first, output_index=1, global_output_id=2)
+        payout = dict(record_type="payout", transaction="e" * 64, output_index=0,
+            height=1, asset="SAL1", source_transaction="d" * 64, source_height=1,
+            source_type=9, expected_atomic=100, actual_atomic=100, verification="PASS",
+            authorization="one-obligation")
+        rows[-1:-1] = [protocol, first, second, payout, dict(payout, output_index=1)]
+        rows[-1].update(transactions=2, outputs=3)
+        with self.assertRaises(ValueError): self.ingest(rows)
+
     def test_arbitrary_precision_and_no_transfer_or_denial_supply_creation(self):
         value = 2**80 + 17
         self.assertEqual(m.amount(str(value)), value)
@@ -211,6 +227,37 @@ class HistoricalAudit(unittest.TestCase):
             authorization="missing", source_transaction="d" * 64, source_height=1,
             height=2, asset="SAL1", expected_atomic=1, actual_atomic=1, verification="PASS")
         with self.assertRaises(ValueError): self.ingest(rows[:-1] + [orphan] + rows[-1:])
+
+    def test_missing_or_null_canonical_references_rejected(self):
+        for kind in ("transaction", "output", "accounting_block"):
+            for value in (None, "missing"):
+                rows = self.records()
+                row = next(r for r in rows if r["record_type"] == kind)
+                if value == "missing": del row["block_hash"]
+                else: row["block_hash"] = value
+                with self.subTest(kind=kind, value=value), self.assertRaises(ValueError):
+                    self.ingest(rows)
+
+    def test_completion_must_name_the_same_endpoint(self):
+        rows = self.records()
+        rows[-1]["scan_end_height"] = 1
+        with self.assertRaises(ValueError): self.ingest(rows)
+
+    def test_funding_proof_context_must_match_canonical_records(self):
+        rows = self.records()
+        child = dict(rows[-3], transaction="9" * 64, height=2, block_hash="c" * 64)
+        output = dict(self.output, transaction=child["transaction"], height=2,
+                      block_hash="c" * 64, global_output_id=1)
+        proof = dict(record_type="proven_input", transaction=child["transaction"], input_index=0,
+            source_transaction=self.output["transaction"], source_output_index=0,
+            source_height=1, height=2, asset="SAL1", verification="ONE_MEMBER_RING_CRYPTOGRAPHICALLY_VERIFIED")
+        rows[-1:-1] = [child, output, proof]
+        rows[-1].update(transactions=2, outputs=2)
+        self.ingest(rows)
+        for field, value in (("source_height", 0), ("height", 3), ("asset", "SAL")):
+            damaged = copy.deepcopy(rows)
+            next(r for r in damaged if r["record_type"] == "proven_input")[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError): self.ingest(damaged)
 
     def test_atomic_values_and_ambiguous_json_rejected(self):
         for value in (True, -1, 1.0, "01", "+1", "1e3", "１"):
