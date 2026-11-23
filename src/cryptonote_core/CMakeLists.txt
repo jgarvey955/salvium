@@ -77,10 +77,31 @@ target_link_libraries(cryptonote_core
 
 option(SALVIUM_BUILD_LINEAGE_TESTS "Build isolated lineage state regression executable" OFF)
 if(SALVIUM_BUILD_LINEAGE_TESTS)
+  add_library(audit_test_gtest STATIC ../../tests/gtest/src/gtest-all.cc ../../tests/gtest/src/gtest_main.cc)
+  target_include_directories(audit_test_gtest SYSTEM PUBLIC ../../tests/gtest/include PRIVATE ../../tests/gtest)
+  target_link_libraries(audit_test_gtest PRIVATE ${CMAKE_THREAD_LIBS_INIT})
+  monero_add_minimal_executable(audit_crypto_tests
+    ../../tests/unit_tests/carrot_core.cpp ../../tests/unit_tests/carrot_impl.cpp
+    ../../tests/unit_tests/carrot_legacy.cpp ../../tests/unit_tests/carrot_return_index.cpp
+    ../../tests/unit_tests/carrot_sparc.cpp ../../tests/unit_tests/carrot_transcript_fixed.cpp
+    ../../tests/unit_tests/carrot_tx_proof.cpp ../../tests/unit_tests/carrot_mock_helpers.cpp
+    ../../tests/unit_tests/bulletproofs.cpp ../../tests/unit_tests/bulletproofs_plus.cpp
+    ../../tests/unit_tests/ringct.cpp ../../tests/unit_tests/protocol_tx.cpp
+    ../../tests/unit_tests/canonical_amounts.cpp ../../tests/unit_tests/epee_utils.cpp
+    ../../tests/unit_tests/wallet_yield.cpp)
+  target_link_libraries(audit_crypto_tests PRIVATE audit_test_gtest cryptonote_core net ${CMAKE_THREAD_LIBS_INIT} ${EXTRA_LIBRARIES})
+  monero_add_minimal_executable(audit_http_security_tests ../../tests/unit_tests/epee_http_server.cpp)
+  target_compile_definitions(audit_http_security_tests PRIVATE SALVIUM_STANDALONE_HTTP_TEST=1)
+  target_link_libraries(audit_http_security_tests PRIVATE cryptonote_core ${CMAKE_THREAD_LIBS_INIT} ${EXTRA_LIBRARIES})
+  monero_add_minimal_executable(audit_security_tests ../../tests/unit_tests/audit_security.cpp)
+  target_link_libraries(audit_security_tests PRIVATE cryptonote_core ${CMAKE_THREAD_LIBS_INIT} ${EXTRA_LIBRARIES})
   monero_add_minimal_executable(audit_clearance_tests ../../tests/unit_tests/audit_clearance.cpp)
   target_link_libraries(audit_clearance_tests PRIVATE cryptonote_core ${CMAKE_THREAD_LIBS_INIT} ${EXTRA_LIBRARIES})
   monero_add_minimal_executable(audit_review_tests ../../tests/unit_tests/audit_review.cpp)
   target_link_libraries(audit_review_tests PRIVATE cryptonote_core ${CMAKE_THREAD_LIBS_INIT} ${EXTRA_LIBRARIES})
   monero_add_minimal_executable(lineage_audit_tests ../../tests/unit_tests/lineage_audit.cpp)
   target_link_libraries(lineage_audit_tests PRIVATE cryptonote_core ${CMAKE_THREAD_LIBS_INIT} ${EXTRA_LIBRARIES})
+  monero_add_minimal_executable(audit_randomx_tests ../../tests/unit_tests/audit_randomx.cpp)
+  target_include_directories(audit_randomx_tests PRIVATE ${RANDOMX_INCLUDE})
+  target_link_libraries(audit_randomx_tests PRIVATE cncrypto ${CMAKE_THREAD_LIBS_INIT} ${EXTRA_LIBRARIES})
 endif()

@@ -6,6 +6,7 @@
 #include "carrot_impl/format_utils.h"
 #include "serialization/binary_utils.h"
 #include "string_tools.h"
+#include "ringct/proof_validation.h"
 #include <algorithm>
 #include <limits>
 #include <set>
@@ -18,11 +19,21 @@ namespace
 void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
 audit_clearance_registry::identity certificate_identity(const audit_clearance_certificate& c)
 { return {epee::string_tools::pod_to_hex(c.transaction), c.output_index, c.stake}; }
+bool intrinsic_output_clearable(const transaction& tx, size_t index)
+{
+  if (index >= tx.vout.size()) return false;
+  if (tx.type == transaction_type::MINER || tx.type == transaction_type::PROTOCOL) return true;
+  std::string asset;
+  return get_output_asset_type(tx.vout[index], asset) && asset == tx.source_asset_type &&
+      (tx.version <= 1 || tx.vout[index].amount == 0);
+}
 bool valid_fields(const audit_clearance_certificate& c)
 {
   return c.version == 4 && c.network <= uint8_t(FAKECHAIN) && c.genesis != crypto::null_hash &&
       c.activation_height && c.snapshot_height >= c.activation_height &&
       c.snapshot_height < UINT64_MAX - 1 && c.snapshot_hash != crypto::null_hash &&
+      c.policy_version && c.policy_digest != crypto::null_hash &&
+      c.historical_cutoff_height < c.activation_height && c.historical_cutoff_height <= c.snapshot_height &&
       c.transaction != crypto::null_hash && c.revision && (c.decision == 1 || c.decision == 2) &&
       (!c.stake || c.output_index == 0);
 }
@@ -100,12 +111,36 @@ crypto::hash audit_clearance_message(const audit_clearance_certificate& c)
   field(std::to_string(c.version)); field(std::to_string(c.network));
   field(epee::string_tools::pod_to_hex(c.genesis)); field(std::to_string(c.activation_height));
   field(std::to_string(c.snapshot_height)); field(epee::string_tools::pod_to_hex(c.snapshot_hash));
+  field(std::to_string(c.policy_version)); field(std::to_string(c.historical_cutoff_height));
+  field(epee::string_tools::pod_to_hex(c.policy_digest));
   field(epee::string_tools::pod_to_hex(c.transaction)); field(std::to_string(c.output_index));
   field(c.stake ? "1" : "0"); field(std::to_string(c.revision)); field(std::to_string(c.decision));
   return crypto::cn_fast_hash(message.data(), message.size());
 }
+void bind_audit_clearance_policy(audit_clearance_certificate& c)
+{
+  require(c.activation_height && c.network <= uint8_t(FAKECHAIN), "Invalid policy epoch or network");
+  c.policy_version = private_audit_policy::policy_version;
+  if (c.network == uint8_t(FAKECHAIN)) {
+    c.historical_cutoff_height = c.activation_height - 1;
+    const std::string fixture = "Salvium isolated historical amnesty policy v1:" + std::to_string(c.activation_height);
+    c.policy_digest = crypto::cn_fast_hash(fixture.data(), fixture.size());
+  } else {
+    c.historical_cutoff_height = c.network == uint8_t(MAINNET) ? private_audit_policy::mainnet_cutoff :
+        c.network == uint8_t(TESTNET) ? private_audit_policy::testnet_cutoff : private_audit_policy::stagenet_cutoff;
+    const char* digest = c.network == uint8_t(MAINNET) ? private_audit_policy::mainnet_policy_sha256 :
+        c.network == uint8_t(TESTNET) ? private_audit_policy::testnet_policy_sha256 : private_audit_policy::stagenet_policy_sha256;
+    require(epee::string_tools::hex_to_pod(digest, c.policy_digest) && c.policy_digest != crypto::null_hash,
+        "No developer-approved historical policy is configured");
+  }
+  require(c.historical_cutoff_height < c.activation_height, "Historical amnesty cutoff must precede activation");
+}
 void sign_audit_clearance(audit_clearance_certificate& c, const crypto::secret_key& secret)
 {
+  auto policy = c;
+  bind_audit_clearance_policy(policy);
+  require(c.policy_version == policy.policy_version && c.historical_cutoff_height == policy.historical_cutoff_height &&
+      c.policy_digest == policy.policy_digest, "Signing requires the configured historical policy");
   crypto::public_key key;
   require(valid_fields(c) && crypto::secret_key_to_public_key(secret, key) &&
       authorized_audit_review_signer(static_cast<network_type>(c.network), key),
@@ -121,16 +156,24 @@ bool verify_audit_clearance(const audit_clearance_certificate& c, const crypto::
   static_assert(sizeof(crypto::signature) == 2 * sizeof(crypto::ec_scalar) + 1, "Unexpected audit signature layout");
   return valid_fields(c) && crypto::check_key(authority) &&
       reinterpret_cast<const unsigned char*>(&c.signature)[sizeof(crypto::signature) - 1] == 0 &&
-      !(rct::pk2rct(authority) == rct::identity()) && rct::isInMainSubgroup(rct::pk2rct(authority)) &&
+      rct::canonical_spend_point(rct::pk2rct(authority)) &&
       crypto::check_signature(audit_clearance_message(c), authority, c.signature);
 }
 
 void audit_clearance_registry::configure(network_type net, uint64_t activation, const crypto::public_key& key)
 {
   require(net <= FAKECHAIN && (!activation || (crypto::check_key(key) &&
-      !(rct::pk2rct(key) == rct::identity()) && rct::isInMainSubgroup(rct::pk2rct(key)) &&
+      rct::canonical_spend_point(rct::pk2rct(key)) &&
       authorized_audit_review_signer(net, key))), "Activation requires the designated audit authority");
   network_ = net; activation_ = activation; authority_ = key;
+  policy_version_ = 0; historical_cutoff_ = 0; policy_digest_ = crypto::null_hash;
+  if (activation) {
+    audit_clearance_certificate policy;
+    policy.network = uint8_t(net); policy.activation_height = activation;
+    bind_audit_clearance_policy(policy);
+    policy_version_ = policy.policy_version; historical_cutoff_ = policy.historical_cutoff_height;
+    policy_digest_ = policy.policy_digest;
+  }
   reset();
 }
 void audit_clearance_registry::reset()
@@ -158,18 +201,29 @@ bool audit_clearance_registry::validate_batch(const BlockchainDB& db, const audi
           c.snapshot_height < db.height() && c.snapshot_hash == db.get_block_hash_from_height(c.snapshot_height),
           "Certificate belongs to another epoch, network or orphaned snapshot");
       require(seen.insert(certificate_identity(c)).second, "Duplicate certified output");
+      require(c.policy_version == policy_version_ && c.historical_cutoff_height == historical_cutoff_ &&
+          c.policy_digest == policy_digest_, "Certificate historical policy binding mismatch");
       require(verify_audit_clearance(c, authority_), "Invalid developer clearance signature");
       require(db.tx_exists(c.transaction) && db.get_tx_block_height(c.transaction) <= c.snapshot_height,
           "Certificate output is not canonical at its snapshot");
+      require(db.get_tx_block_height(c.transaction) <= historical_cutoff_,
+          "Certificate output is outside the approved historical amnesty cutoff");
       const auto tx = canonical_tx(db, c.transaction);
       require(get_transaction_hash(tx) == c.transaction, "Certificate transaction hash mismatch");
       if (c.stake) {
         require(tx.type == transaction_type::STAKE && tx.source_asset_type == "SAL1" &&
             tx.amount_burnt > 0 && c.output_index == 0, "Invalid stake clearance identity");
+        if (c.decision == 1) {
+          require(!tx.vout.empty(), "Stake clearance has no canonical outputs");
+          for (size_t i = 0; i < tx.vout.size(); ++i)
+            require(intrinsic_output_clearable(tx, i), "Confirmed malformed stake origin cannot be cleared");
+        }
       } else {
         std::string asset;
         require(c.output_index < tx.vout.size() && get_output_asset_type(tx.vout[c.output_index], asset) &&
             is_lineage_audit_asset(asset), "Invalid certified output or asset");
+        if (c.decision == 1)
+          require(intrinsic_output_clearable(tx, c.output_index), "Confirmed malformed output origin cannot be cleared");
         normal_release(tx, c.output_index, db.get_tx_block_height(c.transaction));
       }
       const auto* previous = find(c.transaction, c.output_index, c.stake);

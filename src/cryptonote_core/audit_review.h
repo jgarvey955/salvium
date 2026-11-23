@@ -49,6 +49,7 @@ struct audit_review_item
   std::string package_id, transaction, asset_type;
   uint32_t output_index = 0;
   uint64_t amount = 0;
+  uint64_t canonical_height = UINT64_MAX;
   bool stake = false;
   bool spent = false;
   std::string state = "REVIEW_REQUIRED", recommendation = "DENY", reason;
@@ -61,6 +62,7 @@ struct audit_review_item
     KV_SERIALIZE(output_index)
     KV_SERIALIZE(asset_type)
     KV_SERIALIZE(amount)
+    KV_SERIALIZE_OPT(canonical_height, uint64_t(UINT64_MAX))
     KV_SERIALIZE(stake)
     KV_SERIALIZE(spent)
     KV_SERIALIZE(state)

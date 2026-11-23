@@ -36,6 +36,18 @@
 
 using namespace carrot;
 
+TEST(carrot_core, selfsend_optional_ephemeral_keys_compare_by_value)
+{
+    CarrotPaymentProposalSelfSendV1 a{}, b{};
+    EXPECT_TRUE(a == b);
+    a.enote_ephemeral_pubkey = mx25519_pubkey{};
+    EXPECT_FALSE(a == b);
+    b.enote_ephemeral_pubkey = *a.enote_ephemeral_pubkey;
+    EXPECT_TRUE(a == b);
+    b.enote_ephemeral_pubkey->data[31] = 1;
+    EXPECT_FALSE(a == b);
+}
+
 //---------------------------------------------------------------------------------------------------------------------
 TEST(carrot_core, ECDH_cryptonote_completeness)
 {

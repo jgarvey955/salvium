@@ -93,11 +93,12 @@ public:
   }
   virtual uint64_t add_transaction_data(const crypto::hash& blk_hash, const std::pair<transaction, blobdata_ref>& tx, const crypto::hash& tx_hash, const crypto::hash& tx_prunable_hash, const bool miner_tx) override {
     if (tx.first.type == transaction_type::STAKE || tx.first.type == transaction_type::AUDIT) {
-      yield_tx_info yti;
+      yield_tx_info yti{};
       yti.tx_hash = tx_hash;
       yti.block_height = (uint64_t)this->height();
       yti.locked_coins = tx.first.amount_burnt;
       yti.return_address = tx.first.return_address_list[0];
+      yti.return_pubkey = tx.first.return_pubkey;
       if (tx.first.type == transaction_type::STAKE) {
         yield_txs[yti.block_height].push_back(yti);
       } else if (tx.first.type == transaction_type::AUDIT) {
@@ -134,6 +135,9 @@ public:
  
     ati_container = audit_txs.at(height);
     return 0;
+  }
+  int get_carrot_yield_tx_info(uint64_t, std::vector<yield_tx_info_carrot>& values) const override {
+    values.clear(); return 0;
   }
   virtual crypto::hash get_block_hash_from_height(const uint64_t &height) const override {
     crypto::hash hash = crypto::null_hash;
@@ -321,6 +325,34 @@ TEST(protocol_tx, audit_payouts_return_locked_amount_without_yield)
   ASSERT_EQ(1u, payouts.size());
   EXPECT_EQ(audit_amount, payouts[0].first.locked_coins);
   EXPECT_EQ(audit_amount, payouts[0].second);
+}
+
+TEST(protocol_tx, legacy_stake_maturing_after_carrot_requires_exact_authorized_payout)
+{
+  const std::pair<uint8_t, uint64_t> forks[] = {{1, 1}, {9, STAKE_LOCK_PERIOD - 1}, {10, STAKE_LOCK_PERIOD + 1}};
+  const test_options options{forks, 1000};
+  BlockchainAndPool bap;
+  auto* bc = &bap.blockchain;
+  ASSERT_TRUE(bc->init(new TestDB(), FAKECHAIN, true, &options, 0, nullptr));
+  const auto origin = bc->get_db().height();
+  add_block(bc, std::vector<uint64_t>{}, std::vector<uint64_t>{AMOUNT_BURNT});
+  const auto height = progress_chain(bc, STAKE_LOCK_PERIOD);
+  ASSERT_LT(bc->get_ideal_hard_fork_version(origin), HF_VERSION_CARROT);
+  ASSERT_EQ(HF_VERSION_CARROT, bc->get_ideal_hard_fork_version(height));
+  ASSERT_TRUE(bc->rebuild_ybi_cache());
+  std::vector<std::pair<yield_tx_info, uint64_t>> expected;
+  ASSERT_TRUE(bc->calculate_yield_payouts(origin, expected));
+  ASSERT_EQ(1u, expected.size());
+  block candidate;
+  candidate.protocol_tx.vin.push_back(txin_gen{height});
+  candidate.protocol_tx.vout.push_back({expected.front().second,
+      txout_to_key{expected.front().first.return_address, "SAL", CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW}});
+  ASSERT_TRUE(add_additional_tx_pub_keys_to_extra(candidate.protocol_tx.extra, {expected.front().first.return_pubkey}));
+  ASSERT_TRUE(bc->validate_protocol_transaction(candidate, height, HF_VERSION_CARROT));
+  ++candidate.protocol_tx.vout.front().amount;
+  EXPECT_FALSE(bc->validate_protocol_transaction(candidate, height, HF_VERSION_CARROT));
+  candidate.protocol_tx.vout.front().amount = expected.front().second - 1;
+  EXPECT_FALSE(bc->validate_protocol_transaction(candidate, height, HF_VERSION_CARROT));
 }
  
 TEST(protocol_tx, validate)

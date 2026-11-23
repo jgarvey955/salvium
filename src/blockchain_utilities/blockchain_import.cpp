@@ -264,11 +264,22 @@ int check_flush(cryptonote::core &core, std::vector<block_complete_entry> &block
                 << " step=START status=RUNNING" << std::endl
                 << "AUDIT_BLOCK height=" << audit_height
                 << " step=block_blob_parse_and_prepare status=PASS" << std::endl;
-    // process transactions
-    for(auto& tx_blob: block_entry.txs)
+    // Use the same bounded, parallel verification entry point as block relay.
+    // Check both the aggregate result and every transaction context; an
+    // internal verification failure must not look like an empty success.
+    std::vector<tx_verification_context> contexts;
+    if (!block_entry.txs.empty() &&
+        (!core.handle_incoming_txs(block_entry.txs, contexts, relay_method::block, true) ||
+         contexts.size() != block_entry.txs.size()))
     {
-      tx_verification_context tvc = AUTO_VAL_INIT(tvc);
-      core.handle_incoming_tx(tx_blob, tvc, relay_method::block, true);
+      MERROR("Transaction batch verification failed at height " << audit_height);
+      core.cleanup_handle_incoming_blocks();
+      return 1;
+    }
+    for (size_t index = 0; index < block_entry.txs.size(); ++index)
+    {
+      const auto& tx_blob = block_entry.txs[index];
+      const auto& tvc = contexts[index];
       if(tvc.m_verifivation_failed)
       {
         cryptonote::transaction transaction;

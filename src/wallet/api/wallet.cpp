@@ -46,6 +46,8 @@
 #include <boost/format.hpp>
 #include <cstring>
 #include <sstream>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 #include <unordered_map>
 
 #include <boost/locale.hpp>
@@ -1922,8 +1924,15 @@ PendingTransaction *WalletImpl::createCreateTokenTransaction(const std::string &
       }
     }
     if (metadata.empty()) {
-      std::string json = (boost::format("{\"name\":\"%s\",\"size\":%d,\"hash\":\"%s\",\"url\":\"%s\"}") % name % size % hash % url).str();
-      token_metadata_hex = epee::string_tools::buff_to_hex_nodelimer(json);
+      rapidjson::StringBuffer buffer;
+      rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+      writer.StartObject();
+      writer.Key("name"); writer.String(name.data(), name.size());
+      writer.Key("size"); writer.Uint(size);
+      if (!hash.empty()) { writer.Key("hash"); writer.String(hash.data(), hash.size()); }
+      writer.Key("url"); writer.String(url.data(), url.size());
+      writer.EndObject();
+      token_metadata_hex = epee::string_tools::buff_to_hex_nodelimer(std::string(buffer.GetString(), buffer.GetSize()));
     } else {
       token_metadata_hex = metadata;
     }

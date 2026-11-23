@@ -84,6 +84,14 @@ class LocalChain:
     def __init__(self, binaries, root):
         self.binaries, self.root = binaries, root
         self.processes, self.logs, self.ports = [], [], set()
+        # Isolate test TLS policy as well as daemon/wallet configuration. A
+        # host policy for a different OpenSSL major must not change a fakechain.
+        tls_config = root / "isolated-openssl.cnf"
+        tls_config.write_text("openssl_conf = audit_init\n[audit_init]\n"
+                              "ssl_conf = audit_ssl\n[audit_ssl]\n"
+                              "system_default = audit_tls\n[audit_tls]\n"
+                              "MinProtocol = TLSv1.2\nCipherString = DEFAULT@SECLEVEL=2\n")
+        self.process_environment = dict(os.environ, OPENSSL_CONF=str(tls_config))
 
     def port(self):
         # There is a short bind race; startup failure is fatal, never a fallback
@@ -100,7 +108,8 @@ class LocalChain:
         log = (self.root / f"{name}.log").open("w")
         self.logs.append(log)
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
-                                   stdout=log, stderr=subprocess.STDOUT)
+                                   stdout=log, stderr=subprocess.STDOUT,
+                                   env=self.process_environment)
         self.processes.append(process)
         deadline = time.monotonic() + getattr(self, 'startup_timeout', 120)
         last_error = None

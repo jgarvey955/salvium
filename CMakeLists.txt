@@ -597,7 +597,19 @@ if (APPLE AND NOT IOS)
   endif()
 endif()
 
-find_package(OpenSSL REQUIRED)
+if(STATIC)
+  set(OPENSSL_USE_STATIC_LIBS TRUE)
+  find_package(OpenSSL 4.0.1 EXACT REQUIRED)
+else()
+  find_package(OpenSSL REQUIRED)
+endif()
+if(STATIC)
+  foreach(OPENSSL_ARCHIVE IN ITEMS OPENSSL_SSL_LIBRARY OPENSSL_CRYPTO_LIBRARY)
+    if(NOT "${${OPENSSL_ARCHIVE}}" MATCHES "\\.(a|lib)$" OR "${${OPENSSL_ARCHIVE}}" MATCHES "\\.dll\\.a$")
+      message(FATAL_ERROR "Static builds require OpenSSL 4.0.1 archives; ${OPENSSL_ARCHIVE}=${${OPENSSL_ARCHIVE}}")
+    endif()
+  endforeach()
+endif()
 message(STATUS "Using OpenSSL include dir at ${OPENSSL_INCLUDE_DIR}")
 include_directories(${OPENSSL_INCLUDE_DIR})
 if(NOT IOS)
@@ -863,15 +875,21 @@ else()
 
   # if those don't work for your compiler, single it out where appropriate
   if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT OPENBSD)
-    set(C_SECURITY_FLAGS "${C_SECURITY_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=1")
-    set(CXX_SECURITY_FLAGS "${CXX_SECURITY_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=1")
+    set(C_SECURITY_FLAGS "${C_SECURITY_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2")
+    set(CXX_SECURITY_FLAGS "${CXX_SECURITY_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2")
   endif()
 
   # warnings
   add_c_flag_if_supported(-Wformat C_SECURITY_FLAGS)
   add_cxx_flag_if_supported(-Wformat CXX_SECURITY_FLAGS)
-  add_c_flag_if_supported(-Wformat-security C_SECURITY_FLAGS)
-  add_cxx_flag_if_supported(-Wformat-security CXX_SECURITY_FLAGS)
+  # Individual feature probes omit -Wformat and can incorrectly reject these
+  # dependent options. Both supported compiler families provide them.
+  if(NOT MSVC AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set(C_SECURITY_FLAGS "${C_SECURITY_FLAGS} -Wformat-security -Werror=format-security")
+  endif()
+  if(NOT MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set(CXX_SECURITY_FLAGS "${CXX_SECURITY_FLAGS} -Wformat-security -Werror=format-security")
+  endif()
 
   # -fstack-protector
   if (NOT OPENBSD AND NOT (WIN32 AND (CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION VERSION_LESS 9.1)))

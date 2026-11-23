@@ -1,4 +1,5 @@
 #include "independent_chain_forensics.h"
+#include "historical_audit_records.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -241,7 +242,8 @@ int run_independent_chain_forensics(
     const uint64_t requested_tip_height,
     const network_type nettype,
     const bool verbose,
-    const uint64_t lineage_activation, const uint64_t lineage_duration, const uint64_t start_height)
+    const uint64_t lineage_activation, const uint64_t lineage_duration, const uint64_t start_height,
+    std::ostream* accounting)
 {
   uint64_t tip_height = requested_tip_height;
   if (const char *end = std::getenv("SALVIUM_INDEPENDENT_END_HEIGHT"))
@@ -765,6 +767,21 @@ int run_independent_chain_forensics(
                   << " actual_amount=" << blk.protocol_tx.vout[index].amount
                   << '\n';
       }
+      const auto& obligation = expected_protocol[index];
+      historical_audit::record(accounting, "payout")
+          .field("height", height).field("block_hash", hex(get_block_hash(blk)))
+          .field("transaction", hex(get_transaction_hash(blk.protocol_tx)))
+          .field("output_index", index).field("asset", obligation.source.destination_asset)
+          .field("source_asset", obligation.source.source_asset)
+          .field("source_transaction", hex(obligation.source.source_tx))
+          .field("source_height", obligation.source.source_height)
+          .field("source_type", static_cast<uint64_t>(obligation.source.type))
+          .field("principal_atomic", obligation.source.amount)
+          .field("expected_atomic", obligation.amount)
+          .field("actual_atomic", blk.protocol_tx.vout[index].amount)
+          .field("authorization", authorization_id(obligation.source))
+          .field("verification", expected_matches_actual(obligation, blk.protocol_tx.vout[index], pubkey, reason) &&
+              !paid_authorizations.count(authorization_id(obligation.source)) ? "PASS" : "REVIEW");
       const std::string id =
           authorization_id(expected_protocol[index].source);
       if (!paid_authorizations.insert(id).second)
@@ -911,6 +928,15 @@ int run_independent_chain_forensics(
       affected_hf_min = std::min<uint8_t>(affected_hf_min, blk.major_version);
       affected_hf_max = std::max<uint8_t>(affected_hf_max, blk.major_version);
     }
+    historical_audit::record(accounting, "accounting_block")
+        .field("height", height).field("block_hash", hex(get_block_hash(blk)))
+        .field("hard_fork", static_cast<uint64_t>(blk.major_version))
+        .field("base_reward_atomic", base_reward).field("fees_atomic", block_fees)
+        .field("treasury_mint_atomic", scheduled_treasury_mint)
+        .field("stake_reserve_atomic", expected_stake_reward)
+        .field("stored_generated_atomic", stored_generated)
+        .field("reward_asset", miner_uses_sal1 ? "SAL1" : "SAL")
+        .field("verification", findings == findings_before_block ? "PASS" : "REVIEW");
     ++records;
   }
 

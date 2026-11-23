@@ -1,0 +1,346 @@
+{
+  "archive": {
+    "version": "4.0.1",
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-4.0.1/openssl-4.0.1.tar.gz",
+    "sha256": "2db3f3a0d6ea4b59e1f094ace2c8cd536dffb87cdc39084c5afa1e6f7f37dd09"
+  },
+  "required_options": [
+    "no-quic",
+    "no-afalgeng",
+    "no-comp"
+  ],
+  "fixes": [
+    {
+      "cve": "CVE-2026-54874",
+      "url": "https://github.com/openssl/openssl/commit/cc0c6710917cd5eec001b297355d2ba723505107",
+      "commit": "cc0c6710917cd5eec001b297355d2ba723505107",
+      "patch": "CVE-2026-54874-cc0c6710.patch",
+      "sha256": "4a349561f9344c54e1585cf6aadbc01d13be945803f6412be0995f8c7c13af30",
+      "bytes": 3384,
+      "author_date": "Tue, 23 Jun 2026 11:53:17 +0100",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-14457",
+      "url": "https://github.com/openssl/openssl/commit/dad836b071da6579510c968615848ba03cac593b",
+      "commit": "dad836b071da6579510c968615848ba03cac593b",
+      "patch": "CVE-2026-14457-dad836b0.patch",
+      "sha256": "6b16cc2969940472cab74f45d42ce6654fed256e6ee54e28480d2e00f03b327c",
+      "bytes": 6289,
+      "author_date": "Sat, 27 Jun 2026 01:02:53 +1000",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-54876",
+      "url": "https://github.com/openssl/openssl/commit/d8c51048ac037a21bae0f41cad7a3920dc7f3638",
+      "commit": "d8c51048ac037a21bae0f41cad7a3920dc7f3638",
+      "patch": "CVE-2026-54876-d8c51048.patch",
+      "sha256": "8c13558a601b8d8b753d10f7d3a70e21215088c18d1bc63d55bb1d2c96c86cb1",
+      "bytes": 2336,
+      "author_date": "Mon, 29 Jun 2026 16:00:00 +0900",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-63074",
+      "url": "https://github.com/openssl/openssl/commit/74ae7f6df47a5767c1010b88c47507dfc5b32c46",
+      "commit": "74ae7f6df47a5767c1010b88c47507dfc5b32c46",
+      "patch": "CVE-2026-63074-74ae7f6d.patch",
+      "sha256": "26646e1dd4b6e04c930e531ccc89bb7c4db370cec450b578918de61f057d905a",
+      "bytes": 1883,
+      "author_date": "Tue, 30 Jun 2026 15:09:01 -0400",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-63075",
+      "url": "https://github.com/openssl/openssl/commit/7308946576b12e64b8be53bcf0a120354b2b42bc",
+      "commit": "7308946576b12e64b8be53bcf0a120354b2b42bc",
+      "patch": "CVE-2026-63075-73089465.patch",
+      "sha256": "f86e57d4050b97ff480418a01b2a02189bb655c21ffce8e5e183c121bfa8f50f",
+      "bytes": 7425,
+      "author_date": "Thu, 9 Jul 2026 15:34:30 -0400",
+      "status": "NOT_COMPILED_NO_QUIC"
+    },
+    {
+      "cve": "CVE-2026-63073",
+      "url": "https://github.com/openssl/openssl/commit/7eb2e3ec9d1d4f35c8022fccd4b03398b3f33e21",
+      "commit": "7eb2e3ec9d1d4f35c8022fccd4b03398b3f33e21",
+      "patch": "CVE-2026-63073-7eb2e3ec.patch",
+      "sha256": "6313b9ae4d1278c05576ba6775ac01682ef51651ddea6fd200745a8203111580",
+      "bytes": 1555,
+      "author_date": "Mon, 20 Jul 2026 14:10:47 +0200",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-63076",
+      "url": "https://github.com/openssl/openssl/commit/a17cc8d612ecff6d94a9b7ca8b5283ddf5ff570e",
+      "commit": "a17cc8d612ecff6d94a9b7ca8b5283ddf5ff570e",
+      "patch": "CVE-2026-63076-a17cc8d6.patch",
+      "sha256": "b5922a6a5dc58e1e834ad657bdccae40aad97460451d25001a5138de2eaccb9e",
+      "bytes": 1555,
+      "author_date": "Tue, 21 Jul 2026 11:19:29 +0200",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-63072",
+      "url": "https://github.com/openssl/openssl/commit/9530a5fd1aacaeccdced4478ea2340a480613335",
+      "commit": "9530a5fd1aacaeccdced4478ea2340a480613335",
+      "patch": "CVE-2026-63072-9530a5fd.patch",
+      "sha256": "62ae724d96f67bd7ddd404f4d0a33efe132247ad254f076b3d183d5d5cf0bf23",
+      "bytes": 2988,
+      "author_date": "Thu, 23 Jul 2026 03:04:33 +0200",
+      "status": "BACKPORTED",
+      "adaptation": "Retain 4.0.1 cleanup and allocate max(input length, cipher output length); later upstream cleanup context is absent."
+    },
+    {
+      "cve": "CVE-2026-14456",
+      "url": "https://github.com/openssl/openssl/commit/f2f1465f2d2e5c61dfeac4d20fd093797d821139",
+      "commit": "f2f1465f2d2e5c61dfeac4d20fd093797d821139",
+      "patch": "CVE-2026-14456-f2f1465f.patch",
+      "sha256": "d5f63091b51d91b2b465f5ed24987b48e53311c2816c76795916d23cb4373eda",
+      "bytes": 10509,
+      "author_date": "Thu, 23 Jul 2026 09:38:02 +0200",
+      "status": "NOT_COMPILED_NO_QUIC"
+    },
+    {
+      "cve": "CVE-2026-54873",
+      "url": "https://github.com/openssl/openssl/commit/1f643b8bc735487b500a1f68a7fb3a22d5e38e23",
+      "commit": "1f643b8bc735487b500a1f68a7fb3a22d5e38e23",
+      "patch": "CVE-2026-54873-1f643b8b.patch",
+      "sha256": "0201f0b350ccb30fdcfa12dcd330f0d26c08d6319cf89f10ce2edf69347a4e4b",
+      "bytes": 57326,
+      "author_date": "Mon, 27 Jul 2026 09:54:00 +0200",
+      "status": "NOT_COMPILED_NO_QUIC"
+    },
+    {
+      "cve": "CVE-2026-54872",
+      "url": "https://github.com/openssl/openssl/commit/8166827a78aad164a07aa86dea2b425403ced471",
+      "commit": "8166827a78aad164a07aa86dea2b425403ced471",
+      "patch": "CVE-2026-54872-8166827a.patch",
+      "sha256": "111b25e45cf042e199c6345ffba2321d568beecf79a531aba03bf47d420f0478",
+      "bytes": 5711,
+      "author_date": "Tue, 28 Jul 2026 22:09:29 +0200",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-77696",
+      "url": "https://github.com/openssl/openssl/commit/20b20628d39b2dcc4677194bd68c7c060fa598cb",
+      "commit": "20b20628d39b2dcc4677194bd68c7c060fa598cb",
+      "patch": "CVE-2026-77696-20b20628.patch",
+      "sha256": "43da9f51c018ca34a524b370274fd8174dbd060ce8b663e2411f012338e4b080",
+      "bytes": 6649,
+      "author_date": "Fri, 31 Jul 2026 17:18:41 +0200",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-54875",
+      "url": "https://github.com/openssl/openssl/commit/9794ed473764839275cb701b4850f3c24d929c28",
+      "commit": "9794ed473764839275cb701b4850f3c24d929c28",
+      "patch": "CVE-2026-54875-9794ed47.patch",
+      "sha256": "1045e0d633a58c65c87ce6c6fa514f729e1554c3225c812adee1c1f12c535d7b",
+      "bytes": 12262,
+      "author_date": "Mon, 3 Aug 2026 16:56:53 +0200",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-75803",
+      "url": "https://github.com/openssl/openssl/commit/6c7aa6f8f6449b7fe0137ee8be65fcd239bd7d6a",
+      "commit": "6c7aa6f8f6449b7fe0137ee8be65fcd239bd7d6a",
+      "patch": "CVE-2026-75803-6c7aa6f8.patch",
+      "sha256": "16fdf5ea10546920aa53d7402cd58ceede936058a0474ea73b9857458e120b72",
+      "bytes": 4969,
+      "author_date": "Tue, 4 Aug 2026 07:35:48 -0400",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-18798",
+      "url": "https://github.com/openssl/openssl/commit/a14a1deac403522fbeafabcb198503cf6caa7dc4",
+      "commit": "a14a1deac403522fbeafabcb198503cf6caa7dc4",
+      "patch": "CVE-2026-18798-a14a1dea.patch",
+      "sha256": "219af213bdff619465b9910bbccfee0fcab1eb09c52080a5ff692fb5d5692703",
+      "bytes": 6985,
+      "author_date": "Wed, 5 Aug 2026 00:56:25 +0200",
+      "status": "NOT_COMPILED_NO_QUIC"
+    },
+    {
+      "cve": "CVE-2026-42772",
+      "url": "https://github.com/openssl/openssl/commit/f42ae513bbda513b3c121d54834040ee4a0eae1a",
+      "commit": "f42ae513bbda513b3c121d54834040ee4a0eae1a",
+      "patch": "CVE-2026-42772-f42ae513.patch",
+      "sha256": "e6fc6034e87520ca741b1589b084ebb6bf070360d6e28785add91c791746905e",
+      "bytes": 81975,
+      "author_date": "Mon, 10 Aug 2026 10:49:47 +0200",
+      "status": "NOT_COMPILED_NO_QUIC"
+    },
+    {
+      "cve": "CVE-2026-35191",
+      "url": "https://github.com/openssl/openssl/commit/e44292e58b090014232ef75bd400393851b24d1a",
+      "commit": "e44292e58b090014232ef75bd400393851b24d1a",
+      "patch": "CVE-2026-35191-e44292e5.patch",
+      "sha256": "1fb0bb23219986c9fb334723d0399d4eaa02b14f8ce298fab98201aa37eb992b",
+      "bytes": 2956,
+      "author_date": "Tue, 25 Aug 2026 14:23:50 -0400",
+      "status": "NOT_COMPILED_NO_QUIC"
+    },
+    {
+      "cve": "CVE-2026-75805",
+      "url": "https://github.com/openssl/openssl/commit/7ca0ccb5172a577e9b87267d77bfe21e5481a5e7",
+      "commit": "7ca0ccb5172a577e9b87267d77bfe21e5481a5e7",
+      "patch": "CVE-2026-75805-7ca0ccb5.patch",
+      "sha256": "97dfeb9471fdbcab915907e568ffd2b100c227e670ae99a8c44800e234458d01",
+      "bytes": 1811,
+      "author_date": "Thu, 27 Aug 2026 13:58:20 +0200",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-84783",
+      "url": "https://github.com/openssl/openssl/commit/de97a1a54f43edefd43b5084ecac54ecadb33081",
+      "commit": "de97a1a54f43edefd43b5084ecac54ecadb33081",
+      "patch": "CVE-2026-84783-de97a1a5.patch",
+      "sha256": "c17271e93f2754efdeee35610699ed35187af6c70fc0fb4e2e3bb9a60e74302f",
+      "bytes": 6381,
+      "author_date": "Mon, 31 Aug 2026 09:57:26 -0600",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-35189",
+      "url": "https://github.com/openssl/openssl/commit/2b93c73b2c70ddc4c61c5e4bfaaa6bd71379eb84",
+      "commit": "2b93c73b2c70ddc4c61c5e4bfaaa6bd71379eb84",
+      "patch": "CVE-2026-35189-2b93c73b.patch",
+      "sha256": "62c74ecf474e4c0fd2bce885eee8861753da3d50c3a3580fc1147580364e3bf9",
+      "bytes": 11531,
+      "author_date": "Wed, 2 Sep 2026 18:53:50 +1000",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-84782",
+      "url": "https://github.com/openssl/openssl/commit/d951e02ede8f6a6ff8150546db44b34f0518192c",
+      "commit": "d951e02ede8f6a6ff8150546db44b34f0518192c",
+      "patch": "CVE-2026-84782-d951e02e.patch",
+      "sha256": "4cf93c0cf798b3c6f2899fc8529946c225ab4a0ca44af3743e00e6e8214c701c",
+      "bytes": 19158,
+      "author_date": "Wed, 2 Sep 2026 15:15:41 -0400",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-75804",
+      "url": "https://github.com/openssl/openssl/commit/64d3102fb5b54311e92517f26ba00169d719e74a",
+      "commit": "64d3102fb5b54311e92517f26ba00169d719e74a",
+      "patch": "CVE-2026-75804-64d3102f.patch",
+      "sha256": "19f8f07c9f0bb064155a64e26a4a16a0fedae008b30e699ef65b45288bdd35e6",
+      "bytes": 1368,
+      "author_date": "Thu, 3 Sep 2026 14:22:40 +0200",
+      "status": "NOT_COMPILED_NO_QUIC"
+    },
+    {
+      "cve": "CVE-2026-75806",
+      "url": "https://github.com/openssl/openssl/commit/04728a289a823e68137f88da016cb9ede307217d",
+      "commit": "04728a289a823e68137f88da016cb9ede307217d",
+      "patch": "CVE-2026-75806-04728a28.patch",
+      "sha256": "40c0d6402ecb9d5a5b27d5463d0d7aae5bbf9c65760ed521e374e06cba939d48",
+      "bytes": 10317,
+      "author_date": "Thu, 3 Sep 2026 14:28:23 +0200",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-84784",
+      "url": "https://github.com/openssl/openssl/commit/e9e5155833fa968bee50024bf9ca3a185ab599fe",
+      "commit": "e9e5155833fa968bee50024bf9ca3a185ab599fe",
+      "patch": "CVE-2026-84784-e9e51558.patch",
+      "sha256": "1eff77712eef5d71716c6fae437f52683cd039a9afc53c9bd2d77470e4dcc3eb",
+      "bytes": 4128,
+      "author_date": "Sat, 5 Sep 2026 18:11:05 +0200",
+      "status": "NOT_COMPILED_NO_QUIC"
+    },
+    {
+      "cve": "CVE-2026-72897",
+      "url": "https://github.com/openssl/openssl/commit/e87ed26b298a74d8ba61a53e9c7bcd1acac6b814",
+      "commit": "e87ed26b298a74d8ba61a53e9c7bcd1acac6b814",
+      "patch": "CVE-2026-72897-e87ed26b.patch",
+      "sha256": "82f81725d3c42b27fdd510a91b8e4a87779835225245c4799e8fe02bfb2d52a8",
+      "bytes": 5450,
+      "author_date": "Tue, 8 Sep 2026 13:34:53 +0100",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-95692",
+      "url": "https://github.com/openssl/openssl/commit/510872388f5d145cf870868b3d288a23822cb776",
+      "commit": "510872388f5d145cf870868b3d288a23822cb776",
+      "patch": "CVE-2026-95692-51087238.patch",
+      "sha256": "f6e60d254e9bfbe3b6e599f0eb65bf6639e9dacb48ca77b5a61b116a6f266b42",
+      "bytes": 2845,
+      "author_date": "Wed, 28 Oct 2026 14:04:53 +0400",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-88823",
+      "url": "https://github.com/openssl/openssl/commit/2f5fc833ff9b5bfe00b32f8b5c74f73c5773c682",
+      "commit": "2f5fc833ff9b5bfe00b32f8b5c74f73c5773c682",
+      "patch": "CVE-2026-88823-2f5fc833.patch",
+      "sha256": "6626f2fc1834647586a505583b9dcb42be0d762eaa3f92159219db7947cb16ba",
+      "bytes": 3485,
+      "author_date": "Sat, 31 Oct 2026 19:16:53 +0100",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-107496",
+      "url": "https://github.com/openssl/openssl/commit/a8531368ddb1f86d2a2782a8b693926bb67b59e7",
+      "commit": "a8531368ddb1f86d2a2782a8b693926bb67b59e7",
+      "patch": "CVE-2026-107496-a8531368.patch",
+      "sha256": "50f9dd4cb6e193cc6e3d23179ca3817491873109205516793cb97f8b8aadef20",
+      "bytes": 3405,
+      "author_date": "Wed, 4 Nov 2026 19:36:16 +0100",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-95691",
+      "url": "https://github.com/openssl/openssl/commit/ec9d4de9d03989b29db5a3d7efdb4c285deaf386",
+      "commit": "ec9d4de9d03989b29db5a3d7efdb4c285deaf386",
+      "patch": "CVE-2026-95691-ec9d4de9.patch",
+      "sha256": "8f3ea9e7e6f0387dc0bcf988ae590a9cf103494999258f585c5fe342e91d9d4d",
+      "bytes": 7377,
+      "author_date": "Wed, 4 Nov 2026 23:43:24 +0100",
+      "status": "NOT_COMPILED_NO_QUIC"
+    },
+    {
+      "cve": "CVE-2026-88822",
+      "url": "https://github.com/openssl/openssl/commit/911eee8eb7550b95a206f1ad8cbdb986098982f3",
+      "commit": "911eee8eb7550b95a206f1ad8cbdb986098982f3",
+      "patch": "CVE-2026-88822-911eee8e.patch",
+      "sha256": "379bd978090b771d91f319119e5e40d6656f512b2fd6138fc95b8f5a2558439c",
+      "bytes": 2321,
+      "author_date": "Thu, 5 Nov 2026 15:28:03 -0500",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-35190",
+      "url": "https://github.com/openssl/openssl/commit/9a812981b927c5714b7c2e5d138618105cea2152",
+      "commit": "9a812981b927c5714b7c2e5d138618105cea2152",
+      "patch": "CVE-2026-35190-9a812981.patch",
+      "sha256": "76bd5b0ab459ec9fbfa75138aedb702901c945ca9d23bd9a78cce249fb47db24",
+      "bytes": 4838,
+      "author_date": "Tue, 10 Nov 2026 14:28:58 +0100",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-107493",
+      "url": "https://github.com/openssl/openssl/commit/0486dfadfec558e1808f59d35a8d79e541c4e7d7",
+      "commit": "0486dfadfec558e1808f59d35a8d79e541c4e7d7",
+      "patch": "CVE-2026-107493-0486dfad.patch",
+      "sha256": "8c09ebb2de7d4103d4da0f2cc0c3d2c083b6a35176ecda5c239f71d86a1ad63e",
+      "bytes": 7204,
+      "author_date": "Thu, 12 Nov 2026 01:26:06 +1100",
+      "status": "BACKPORTED"
+    },
+    {
+      "cve": "CVE-2026-124709",
+      "url": "https://github.com/openssl/openssl/commit/22291a6af12f158fbb13bfbd572a33dbdbf290d2",
+      "commit": "22291a6af12f158fbb13bfbd572a33dbdbf290d2",
+      "patch": "CVE-2026-124709-22291a6a.patch",
+      "sha256": "07a06bcf878a72fe4fe510969a9d653041d7b98ccdaf34a9e478cbcf4abacd0e",
+      "bytes": 9562,
+      "author_date": "Fri, 13 Nov 2026 13:15:40 +0200",
+      "status": "NOT_COMPILED_NO_QUIC"
+    }
+  ],
+  "patch_sha256": "9925d981cf271a19026329aca8defd960011369134f8d8c85b73973aa06e3814"
+}

@@ -10,6 +10,7 @@
 #include "rapidjson/document.h"
 #include <iostream>
 #include <stdexcept>
+#include <limits>
 
 namespace {
 uint64_t rpc_candidate_height = 100;
@@ -20,6 +21,8 @@ bool rpc_public_eligible = false;
 std::string rpc_tip_hash;
 size_t rpc_key_image_queries = 0;
 std::string rpc_nettype = "fakechain";
+std::string rpc_supply = "1000000";
+std::vector<cryptonote::COMMAND_RPC_GET_YIELD_INFO::yield_data_t> rpc_yield_data;
 void check(bool condition, const char* message)
 {
   if (!condition) throw std::runtime_error(message);
@@ -49,6 +52,16 @@ public:
       cryptonote::COMMAND_RPC_GET_INFO::response info{};
       info.status = "OK"; info.nettype = rpc_nettype; info.height = rpc_candidate_height;
       result = epee::serialization::store_t_to_json(info);
+    } else if (method == "get_supply_info") {
+      cryptonote::COMMAND_RPC_GET_SUPPLY_INFO::response supply{};
+      supply.status = "OK";
+      supply.supply_tally.emplace_back("SAL1", rpc_supply);
+      result = epee::serialization::store_t_to_json(supply);
+    } else if (method == "get_yield_info") {
+      cryptonote::COMMAND_RPC_GET_YIELD_INFO::response yield{};
+      yield.status = "OK";
+      yield.yield_data = rpc_yield_data;
+      result = epee::serialization::store_t_to_json(yield);
     } else if (method == "get_lineage_audit_status" || method == "get_private_audit_status") {
       cryptonote::COMMAND_RPC_LINEAGE_AUDIT_STATUS::response status{};
       status.status = "OK"; status.activation_height = rpc_activation_height; status.candidate_height = rpc_candidate_height;
@@ -97,6 +110,52 @@ public:
 class wallet_accessor_test
 {
 public:
+  static void yield_summary_checks(tools::wallet2& wallet)
+  {
+    const auto original = wallet.m_transfers;
+    wallet.m_transfers.clear();
+    tools::wallet2::transfer_details stake{};
+    stake.m_tx.type = cryptonote::STAKE;
+    stake.m_tx.amount_burnt = 1000;
+    stake.m_block_height = 100;
+    stake.m_txid = crypto::rand<crypto::hash>();
+    stake.asset_type = "SAL1";
+    wallet.m_transfers.push_back(stake);
+    tools::wallet2::transfer_details payout{};
+    payout.m_tx.type = cryptonote::PROTOCOL;
+    payout.m_td_origin_idx = 0;
+    payout.m_amount = 1010;
+    wallet.m_transfers.push_back(payout);
+    rpc_yield_data = {{100, 0, 0, 1000, 100}, {101, 7, 0, 1000, 100}};
+    uint64_t burnt, supply, locked, accrued, per_stake, size;
+    std::vector<tools::wallet2::yield_payout_t> payouts;
+    const auto read = [&] {
+      return wallet.get_yield_summary_info(burnt, supply, locked, accrued, per_stake, size, payouts);
+    };
+    check(read() && payouts.size() == 1 && std::get<4>(payouts[0]) == 10,
+        "Stake at wallet transfer index zero was omitted");
+    wallet.m_transfers[1].m_td_origin_idx = std::numeric_limits<size_t>::max();
+    rpc_yield_data = {{99, 0, 0, 1000, 100}, {100, 999, 0, 1000, 100},
+        {101, 7, 0, 1000, 100}, {21700, 3, 0, 1000, 100}, {21701, 999, 0, 1000, 100}};
+    check(read() && payouts.size() == 1 && std::get<4>(payouts[0]) == 10,
+        "Yield included the deposit block or blocks after stake maturity");
+    for (const std::string invalid : {"-1", "+1", "1x", "18446744073709551616"}) {
+      rpc_supply = invalid;
+      check(!read() && payouts.empty() && burnt == 0 && supply == 0 && locked == 0 &&
+          accrued == 0 && per_stake == 0 && size == 0,
+          "Invalid daemon supply published partial yield results");
+    }
+    rpc_supply = "1000000";
+    rpc_yield_data = {{100, 0, 0, 1000, 100}, {100, 7, 0, 1000, 100}};
+    check(!read() && payouts.empty(), "Duplicate daemon yield rows were accepted");
+    rpc_yield_data = {{99, 0, 0, 1, 100},
+        {100, std::numeric_limits<uint64_t>::max(), 0, 1, 100}, {101, 1, 0, 1, 100}};
+    check(!read() && accrued == 0 && payouts.empty(), "Daemon yield totals overflowed");
+    rpc_yield_data.clear();
+    check(!read() && payouts.empty(), "Empty daemon yield history was accepted");
+    wallet.m_transfers = original;
+    std::cout << "WALLET_YIELD_PASS: first stake, origin bounds, accrual window, malformed supply and empty history\n";
+  }
   static void inventory(tools::wallet2& wallet)
   {
     wallet.m_subaddress_labels = {{"legacy"}, {"Carrot"}};
@@ -257,9 +316,26 @@ public:
 int main()
 {
   try {
+    // Legacy watch-only accounts must leave key images unknown, including
+    // CARROT-encoded returns sent to their pre-CARROT addresses.
+    carrot::carrot_and_legacy_account watch_account;
+    tools::wallet::enote_view_incoming_scan_info_t scan{};
+    scan.subaddr_index = carrot::subaddress_index_extended{
+        {0, 0}, carrot::AddressDeriveType::PreCarrot, false};
+    check(!tools::wallet::try_derive_enote_key_image(scan, watch_account),
+        "Watch-only legacy scan fabricated a key image");
+    scan.is_carrot = true;
+    scan.is_return = true;
+    check(!tools::wallet::try_derive_enote_key_image(scan, watch_account),
+        "Watch-only legacy return fabricated a key image");
+    scan.subaddr_index->derive_type = carrot::AddressDeriveType::Carrot;
+    watch_account.insert_return_output_info({{scan.return_address, carrot::return_output_info_t{}}});
+    check(!tools::wallet::try_derive_enote_key_image(scan, watch_account),
+        "Unknown return key image was marked known");
     tools::wallet2 wallet(cryptonote::MAINNET, 1, true,
         std::unique_ptr<epee::net_utils::http::http_client_factory>(new audit_status_factory()));
     wallet.set_ring_database("");
+    wallet_accessor_test::yield_summary_checks(wallet);
     wallet.set_lineage_regtest_height(10);
     cryptonote::block genesis;
     const auto& config = cryptonote::get_config(cryptonote::MAINNET);

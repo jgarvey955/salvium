@@ -153,16 +153,19 @@ namespace file_io_utils
                 HANDLE file_handle = CreateFileW(wide_path.c_str(), GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
                 if (file_handle == INVALID_HANDLE_VALUE)
                     return false;
-                DWORD file_size = GetFileSize(file_handle, NULL);
-                if ((file_size == INVALID_FILE_SIZE) || (uint64_t)file_size > (uint64_t)max_size) {
+                LARGE_INTEGER file_size;
+                if (!GetFileSizeEx(file_handle, &file_size) || file_size.QuadPart < 0 ||
+                    static_cast<uint64_t>(file_size.QuadPart) > max_size ||
+                    static_cast<uint64_t>(file_size.QuadPart) > MAXDWORD) {
                     CloseHandle(file_handle);
                     return false;
                 }
-                target_str.resize(file_size);
-                DWORD bytes_read;
-                BOOL result = ReadFile(file_handle, &target_str[0], file_size, &bytes_read, NULL);
+                const DWORD requested = static_cast<DWORD>(file_size.QuadPart);
+                target_str.resize(requested);
+                DWORD bytes_read = 0;
+                BOOL result = requested == 0 || ReadFile(file_handle, &target_str[0], requested, &bytes_read, NULL);
                 CloseHandle(file_handle);
-                if (bytes_read != file_size)
+                if (bytes_read != requested)
                     result = FALSE;
                 return result;
 #else
@@ -205,10 +208,11 @@ namespace file_io_utils
                 LARGE_INTEGER file_size;
                 BOOL result = GetFileSizeEx(file_handle, &file_size);
                 CloseHandle(file_handle);
-                if (result) {
+                if (result && file_size.QuadPart >= 0) {
                     size = file_size.QuadPart;
+                    return true;
                 }
-                return size;
+                return false;
 #else
 		try
 		{

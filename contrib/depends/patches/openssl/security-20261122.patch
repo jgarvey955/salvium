@@ -1,0 +1,2607 @@
+diff --git a/crypto/bio/bss_dgram.c b/crypto/bio/bss_dgram.c
+index 0a1479e..945a88c 100644
+--- a/crypto/bio/bss_dgram.c
++++ b/crypto/bio/bss_dgram.c
+@@ -760,8 +760,8 @@ static long dgram_ctrl(BIO *b, int cmd, long num, void *ptr)
+         BIO_ADDR_make(&data->peer, BIO_ADDR_sockaddr((BIO_ADDR *)ptr));
+         break;
+     case BIO_CTRL_DGRAM_DETECT_PEER_ADDR: {
+-        BIO_ADDR xaddr, *p = &data->peer;
+-        socklen_t xaddr_len = sizeof(xaddr.sa);
++        BIO_ADDR xaddr = { 0 }, *p = &data->peer;
++        socklen_t xaddr_len = sizeof(xaddr);
+ 
+         if (BIO_ADDR_family(p) == AF_UNSPEC) {
+             if (getpeername(b->num, (void *)&xaddr.sa, &xaddr_len) == 0
+diff --git a/crypto/bn/bn_intern.c b/crypto/bn/bn_intern.c
+index f963d42..3e638b9 100644
+--- a/crypto/bn/bn_intern.c
++++ b/crypto/bn/bn_intern.c
+@@ -9,6 +9,7 @@
+ 
+ #include "internal/cryptlib.h"
+ #include "bn_local.h"
++#include "internal/constant_time.h"
+ 
+ /*
+  * Determine the modified width-(w+1) Non-Adjacent Form (wNAF) of 'scalar'.
+@@ -152,6 +153,43 @@ void bn_set_all_zero(BIGNUM *a)
+         a->d[i] = 0;
+ }
+ 
++/*
++ * Zero-extend |a| so that it occupies exactly |words| words, flag it
++ * BN_FLG_FIXED_TOP and leave its numeric value unchanged.
++ *
++ * This is a companion to bn_correct_top(): where the latter minimises the top
++ * of a BIGNUM, this one pins the top to a caller-chosen, value-independent
++ * width.  Constant-time code uses it to make the cost of subsequent word-wise
++ * operations (e.g. BN_uadd()/BN_add()) independent of the magnitude of a
++ * secret value.  |words| must be greater than or equal to the current top.
++ *
++ * The routine is itself constant time with respect to the current a->top: it
++ * always sweeps a fixed |words| iterations and selects value-or-zero per word
++ * with an arithmetic mask, rather than looping over the (possibly secret)
++ * a->top..words range.  Masking the high words with zero also launders any
++ * uninitialised padding, so it is safe for the memory sanitiser.
++ */
++int bn_set_top_fixed(BIGNUM *a, int words)
++{
++    size_t i, n = (size_t)words;
++    BN_ULONG mask;
++
++    if (words < a->top)
++        return 0;
++    if (bn_wexpand(a, words) == NULL) {
++        ERR_raise(ERR_LIB_BN, ERR_R_BN_LIB);
++        return 0;
++    }
++    for (i = 0; i < n; i++) {
++        /* mask = all ones iff i < a->top, else all zeros */
++        mask = value_barrier_bn((BN_ULONG)0 - ((i - a->top) >> (8 * sizeof(i) - 1)));
++        a->d[i] &= mask;
++    }
++    a->top = words;
++    a->flags |= BN_FLG_FIXED_TOP;
++    return 1;
++}
++
+ int bn_copy_words(BN_ULONG *out, const BIGNUM *in, int size)
+ {
+     if (in->top > size)
+diff --git a/crypto/cmp/cmp_client.c b/crypto/cmp/cmp_client.c
+index b89af93..e8be8eb 100644
+--- a/crypto/cmp/cmp_client.c
++++ b/crypto/cmp/cmp_client.c
+@@ -990,16 +990,23 @@ int OSSL_CMP_exec_RR_ses(OSSL_CMP_CTX *ctx)
+             ret = 0;
+             goto err;
+         }
+-        if (X509_NAME_cmp(issuer, OSSL_CRMF_CERTID_get0_issuer(cid)) != 0) {
++        /*
++         * The issuer and serial number are absent if the certificate to be
++         * revoked was given as a PKCS#10 CSR, in which case there is nothing
++         * to check the CertId of the response against.
++         */
++        if (issuer != NULL
++            && X509_NAME_cmp(issuer, OSSL_CRMF_CERTID_get0_issuer(cid)) != 0) {
+ #ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+             ERR_raise(ERR_LIB_CMP, CMP_R_WRONG_CERTID_IN_RP);
+             ret = 0;
+             goto err;
+ #endif
+         }
+-        if (ASN1_INTEGER_cmp(serial,
+-                OSSL_CRMF_CERTID_get0_serialNumber(cid))
+-            != 0) {
++        if (serial != NULL
++            && ASN1_INTEGER_cmp(serial,
++                   OSSL_CRMF_CERTID_get0_serialNumber(cid))
++                != 0) {
+ #ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+             ERR_raise(ERR_LIB_CMP, CMP_R_WRONG_SERIAL_IN_RP);
+             ret = 0;
+diff --git a/crypto/cmp/cmp_protect.c b/crypto/cmp/cmp_protect.c
+index 974cb1d..ba8cc99 100644
+--- a/crypto/cmp/cmp_protect.c
++++ b/crypto/cmp/cmp_protect.c
+@@ -59,7 +59,7 @@ ASN1_BIT_STRING *ossl_cmp_calc_protection(const OSSL_CMP_CTX *ctx,
+             ERR_raise(ERR_LIB_CMP, CMP_R_MISSING_PBM_SECRET);
+             return NULL;
+         }
+-        if (ppval == NULL) {
++        if (pptype != V_ASN1_SEQUENCE || ppval == NULL) {
+             ERR_raise(ERR_LIB_CMP, CMP_R_ERROR_CALCULATING_PROTECTION);
+             return NULL;
+         }
+diff --git a/crypto/cmp/cmp_vfy.c b/crypto/cmp/cmp_vfy.c
+index 514b961..e964ded 100644
+--- a/crypto/cmp/cmp_vfy.c
++++ b/crypto/cmp/cmp_vfy.c
+@@ -755,7 +755,7 @@ int ossl_cmp_msg_check_update(OSSL_CMP_CTX *ctx, const OSSL_CMP_MSG *msg,
+                 "expected sender", expected_sender)) {
+             str = X509_NAME_oneline(actual_sender, NULL, 0);
+             ERR_raise_data(ERR_LIB_CMP, CMP_R_UNEXPECTED_SENDER,
+-                str != NULL ? str : "<unknown>");
++                "%s", str != NULL ? str : "<unknown>");
+             OPENSSL_free(str);
+             return 0;
+         }
+@@ -799,8 +799,13 @@ int ossl_cmp_msg_check_update(OSSL_CMP_CTX *ctx, const OSSL_CMP_MSG *msg,
+     res = 1; /* support more aggressive fuzzing by letting invalid msg pass */
+ #endif
+ 
+-    /* remove extraCerts again if not caching */
+-    if (ctx->noCacheExtraCerts)
++    /*
++     * remove extraCerts again if not caching
++     * or if we failed validation above, lest a remote user
++     * starts sending us lots of certificates in invalid messages
++     * leading to a DOS from unbounded certificate stack growth
++     */
++    if (ctx->noCacheExtraCerts || res != 1)
+         while (num_added-- > 0)
+             X509_free(sk_X509_shift(ctx->untrusted));
+ 
+diff --git a/crypto/cms/cms_kari.c b/crypto/cms/cms_kari.c
+index e6f6e16..8684b92 100644
+--- a/crypto/cms/cms_kari.c
++++ b/crypto/cms/cms_kari.c
+@@ -224,7 +224,8 @@ static int cms_kek_cipher(unsigned char **pout, size_t *poutlen,
+     /* obtain output length of ciphered key */
+     if (!EVP_CipherUpdate(kari->ctx, NULL, &outlen, in, (int)inlen))
+         goto err;
+-    out = OPENSSL_malloc(outlen);
++    /* Allocate for failure paths which may cleanse the full input length. */
++    out = OPENSSL_malloc((size_t)outlen < inlen ? inlen : (size_t)outlen);
+     if (out == NULL)
+         goto err;
+     if (!EVP_CipherUpdate(kari->ctx, out, &outlen, in, (int)inlen))
+diff --git a/crypto/cms/cms_kemri.c b/crypto/cms/cms_kemri.c
+index 1d867c0..5d4c9bc 100644
+--- a/crypto/cms/cms_kemri.c
++++ b/crypto/cms/cms_kemri.c
+@@ -279,7 +279,8 @@ static int cms_kek_cipher(unsigned char **pout, size_t *poutlen,
+     /* obtain output length of ciphered key */
+     if (!EVP_CipherUpdate(kemri->ctx, NULL, &outlen, in, (int)inlen))
+         goto err;
+-    out = OPENSSL_malloc(outlen);
++    /* Allocate for failure paths which may cleanse the full input length. */
++    out = OPENSSL_malloc((size_t)outlen < inlen ? inlen : (size_t)outlen);
+     if (out == NULL)
+         goto err;
+     if (!EVP_CipherUpdate(kemri->ctx, out, &outlen, in, (int)inlen))
+diff --git a/crypto/ec/ec_key.c b/crypto/ec/ec_key.c
+index a2a4a74..2a01f9f 100644
+--- a/crypto/ec/ec_key.c
++++ b/crypto/ec/ec_key.c
+@@ -327,6 +327,11 @@ static int ec_generate_key(EC_KEY *eckey, int pairwise_test)
+             goto err;
+     }
+ 
++    if (BN_cmp(order, BN_value_one()) <= 0) {
++        ERR_raise(ERR_LIB_EC, EC_R_INVALID_GROUP_ORDER);
++        goto err;
++    }
++
+     do
+         if (!BN_priv_rand_range_ex(priv_key, order, 0, ctx))
+             goto err;
+diff --git a/crypto/ec/ec_mult.c b/crypto/ec/ec_mult.c
+index 4b5e08e..d4ee728 100644
+--- a/crypto/ec/ec_mult.c
++++ b/crypto/ec/ec_mult.c
+@@ -213,6 +213,17 @@ int ossl_ec_scalar_mul_ladder(const EC_GROUP *group, EC_POINT *r,
+         goto err;
+     }
+ 
++    /*
++     * Constant-timeness of this copy depends on the caller: BN_copy() moves
++     * scalar->top words unless |scalar| is flagged BN_FLG_CONSTTIME (in which
++     * case scalar->dmax words are moved).  Secret scalars are therefore
++     * expected to arrive either BN_FLG_CONSTTIME or fixed-top, so that their
++     * top is a public, value-independent width and the copy length does not
++     * leak their magnitude.  ECDSA satisfies this via
++     * ossl_bn_priv_rand_range_fixed_top().  The fixed-top pinning below makes
++     * the subsequent arithmetic constant time regardless, but cannot
++     * retroactively fix the copy length here.
++     */
+     if (!BN_copy(k, scalar)) {
+         ERR_raise(ERR_LIB_EC, ERR_R_BN_LIB);
+         goto err;
+@@ -231,10 +242,36 @@ int ossl_ec_scalar_mul_ladder(const EC_GROUP *group, EC_POINT *r,
+         }
+     }
+ 
++    /*
++     * |k| may still carry a top that depends on the value of the secret
++     * scalar: callers pass either a fixed-top BIGNUM (e.g. the ECDSA nonce)
++     * or a minimal-top one (e.g. SM2), and BN_copy() above preserves that
++     * top.  Pin |k| to a fixed number of words (matching the group
++     * cardinality) so that the additions below run in constant time,
++     * independently of the bit length of the scalar.  Otherwise the work
++     * done by BN_add()/BN_uadd() depends on the operand tops and leaks the
++     * magnitude of the secret scalar.
++     */
++    if (!bn_set_top_fixed(k, group_top)) {
++        ERR_raise(ERR_LIB_EC, ERR_R_BN_LIB);
++        goto err;
++    }
++
+     if (!BN_add(lambda, k, cardinality)) {
+         ERR_raise(ERR_LIB_EC, ERR_R_BN_LIB);
+         goto err;
+     }
++    /*
++     * |lambda| = scalar + cardinality may or may not have produced a carry
++     * into an extra word depending on the secret scalar.  Pin its top to one
++     * word above the group top so that the second addition, which consumes
++     * |lambda|, is likewise constant time and so that the BN_is_bit_set()
++     * below always inspects a defined word.
++     */
++    if (!bn_set_top_fixed(lambda, group_top + 1)) {
++        ERR_raise(ERR_LIB_EC, ERR_R_BN_LIB);
++        goto err;
++    }
+     BN_set_flags(lambda, BN_FLG_CONSTTIME);
+     if (!BN_add(k, lambda, cardinality)) {
+         ERR_raise(ERR_LIB_EC, ERR_R_BN_LIB);
+diff --git a/crypto/ec/ecp_sm2p256.c b/crypto/ec/ecp_sm2p256.c
+index 86fe818..517a439 100644
+--- a/crypto/ec/ecp_sm2p256.c
++++ b/crypto/ec/ecp_sm2p256.c
+@@ -171,22 +171,35 @@ static ossl_inline void ecp_sm2p256_mod_inverse(BN_ULONG *out,
+     BN_MOD_INV(out, in, ecp_sm2p256_div_by_2, ecp_sm2p256_sub, def_p);
+ }
+ 
+-/* Point double: R <- P + P */
+-static void ecp_sm2p256_point_double(P256_POINT *R, const P256_POINT *P)
++/*
++ * Constant-time conditional copy: r = mask ? a : r, where mask is either 0 or
++ * all-ones.  Used to select point-addition results without branching.
++ */
++static ossl_inline void ecp_sm2p256_cond_copy(P256_POINT *r,
++    const P256_POINT *a, BN_ULONG mask)
+ {
+     unsigned int i;
++
++    for (i = 0; i < P256_LIMBS; ++i) {
++        r->X[i] = constant_time_select_64(mask, a->X[i], r->X[i]);
++        r->Y[i] = constant_time_select_64(mask, a->Y[i], r->Y[i]);
++        r->Z[i] = constant_time_select_64(mask, a->Z[i], r->Z[i]);
++    }
++}
++
++/*
++ * Point double: R <- P + P
++ *
++ * Branch-free: the doubling formula already produces Z = 0 (the point at
++ * infinity) when the input Z is 0 (R->Z = 2*Y*Z), and the resulting X, Y are
++ * irrelevant for a Z = 0 point, so no is_zeros(P->Z) special case is needed.
++ */
++static void ecp_sm2p256_point_double(P256_POINT *R, const P256_POINT *P)
++{
+     ALIGN32 BN_ULONG tmp0[P256_LIMBS];
+     ALIGN32 BN_ULONG tmp1[P256_LIMBS];
+     ALIGN32 BN_ULONG tmp2[P256_LIMBS];
+ 
+-    /* zero-check P->Z */
+-    if (is_zeros(P->Z)) {
+-        for (i = 0; i < P256_LIMBS; ++i)
+-            R->Z[i] = 0;
+-
+-        return;
+-    }
+-
+     ecp_sm2p256_sqr(tmp0, P->Z);
+     ecp_sm2p256_sub(tmp1, P->X, tmp0);
+     ecp_sm2p256_add(tmp0, P->X, tmp0);
+@@ -208,6 +221,13 @@ static void ecp_sm2p256_point_double(P256_POINT *R, const P256_POINT *P)
+ }
+ 
+ /* Point add affine: R <- P + Q */
++/*
++ * NB: this function is deliberately NOT constant time.  It is used only to
++ * precompute the table of small multiples of the *public* input point (see
++ * ecp_sm2p256_point_P_mul_by_scalar); the secret scalar never flows through
++ * it, so its identity-dependent branches cannot leak it.  Keeping the fast
++ * branchy formula here avoids the constant-time overhead on the table build.
++ */
+ static void ecp_sm2p256_point_add_affine(P256_POINT *R, const P256_POINT *P,
+     const P256_POINT_AFFINE *Q)
+ {
+@@ -274,107 +294,164 @@ static void ecp_sm2p256_point_add_affine(P256_POINT *R, const P256_POINT *P,
+ static void ecp_sm2p256_point_add(P256_POINT *R, const P256_POINT *P,
+     const P256_POINT *Q)
+ {
+-    unsigned int i;
+     ALIGN32 BN_ULONG tmp0[P256_LIMBS] = { 0 };
+     ALIGN32 BN_ULONG tmp1[P256_LIMBS] = { 0 };
+     ALIGN32 BN_ULONG tmp2[P256_LIMBS] = { 0 };
+-
+-    /* zero-check P | Q ->Z */
+-    if (is_zeros(P->Z)) {
+-        for (i = 0; i < P256_LIMBS; ++i) {
+-            R->X[i] = Q->X[i];
+-            R->Y[i] = Q->Y[i];
+-            R->Z[i] = Q->Z[i];
+-        }
+-
+-        return;
+-    } else if (is_zeros(Q->Z)) {
+-        for (i = 0; i < P256_LIMBS; ++i) {
+-            R->X[i] = P->X[i];
+-            R->Y[i] = P->Y[i];
+-            R->Z[i] = P->Z[i];
+-        }
+-
+-        return;
+-    } else if (is_point_equal(P, Q)) {
+-        ecp_sm2p256_point_double(R, Q);
+-
+-        return;
+-    }
+-
++    P256_POINT sum, dbl, res;
++    BN_ULONG p_inf, q_inf, is_dbl;
++
++    p_inf = is_zeros(P->Z);
++    q_inf = is_zeros(Q->Z);
++
++    /*
++     * General P + Q addition into |sum|, valid unless P or Q is infinity or
++     * P == +-Q.  tmp0 = H and tmp1 = R are the coordinate differences: P and Q
++     * are the same point iff both are zero; P == -Q iff only H is zero (the
++     * formula then yields Z = 0, i.e. infinity, on its own).
++     */
+     ecp_sm2p256_sqr(tmp0, P->Z);
+     ecp_sm2p256_mul(tmp1, tmp0, P->Z);
+     ecp_sm2p256_mul(tmp0, tmp0, Q->X);
+     ecp_sm2p256_mul(tmp1, tmp1, Q->Y);
+-    ecp_sm2p256_mul(R->Y, P->Y, Q->Z);
+-    ecp_sm2p256_mul(R->Z, Q->Z, P->Z);
++    ecp_sm2p256_mul(sum.Y, P->Y, Q->Z);
++    ecp_sm2p256_mul(sum.Z, Q->Z, P->Z);
+     ecp_sm2p256_sqr(tmp2, Q->Z);
+-    ecp_sm2p256_mul(R->Y, tmp2, R->Y);
+-    ecp_sm2p256_mul(R->X, tmp2, P->X);
+-    ecp_sm2p256_sub(tmp0, tmp0, R->X);
+-    ecp_sm2p256_mul(R->Z, tmp0, R->Z);
+-    ecp_sm2p256_sub(tmp1, tmp1, R->Y);
++    ecp_sm2p256_mul(sum.Y, tmp2, sum.Y);
++    ecp_sm2p256_mul(sum.X, tmp2, P->X);
++    ecp_sm2p256_sub(tmp0, tmp0, sum.X);
++    ecp_sm2p256_mul(sum.Z, tmp0, sum.Z);
++    ecp_sm2p256_sub(tmp1, tmp1, sum.Y);
++    is_dbl = is_zeros(tmp0) & is_zeros(tmp1);
+     ecp_sm2p256_sqr(tmp2, tmp0);
+     ecp_sm2p256_mul(tmp0, tmp0, tmp2);
+-    ecp_sm2p256_mul(tmp2, tmp2, R->X);
+-    ecp_sm2p256_sqr(R->X, tmp1);
+-    ecp_sm2p256_sub(R->X, R->X, tmp2);
+-    ecp_sm2p256_sub(R->X, R->X, tmp2);
+-    ecp_sm2p256_sub(R->X, R->X, tmp0);
+-    ecp_sm2p256_sub(tmp2, tmp2, R->X);
++    ecp_sm2p256_mul(tmp2, tmp2, sum.X);
++    ecp_sm2p256_sqr(sum.X, tmp1);
++    ecp_sm2p256_sub(sum.X, sum.X, tmp2);
++    ecp_sm2p256_sub(sum.X, sum.X, tmp2);
++    ecp_sm2p256_sub(sum.X, sum.X, tmp0);
++    ecp_sm2p256_sub(tmp2, tmp2, sum.X);
+     ecp_sm2p256_mul(tmp2, tmp1, tmp2);
+-    ecp_sm2p256_mul(tmp0, tmp0, R->Y);
+-    ecp_sm2p256_sub(R->Y, tmp2, tmp0);
++    ecp_sm2p256_mul(tmp0, tmp0, sum.Y);
++    ecp_sm2p256_sub(sum.Y, tmp2, tmp0);
++
++    /* 2*P, for the P == Q case. */
++    ecp_sm2p256_point_double(&dbl, P);
++
++    /*
++     * Select the result without branching, in increasing priority:
++     *   default  -> sum   (distinct points; also P == -Q which gives infinity)
++     *   is_dbl   -> dbl   (P == Q)
++     *   q_inf    -> P     (Q is infinity)
++     *   p_inf    -> Q     (P is infinity; highest priority)
++     * All reads of P and Q happen before R is written, so R may alias P or Q.
++     */
++    memcpy(&res, &sum, sizeof(res));
++    ecp_sm2p256_cond_copy(&res, &dbl, is_dbl);
++    ecp_sm2p256_cond_copy(&res, P, q_inf);
++    ecp_sm2p256_cond_copy(&res, Q, p_inf);
++    memcpy(R, &res, sizeof(res));
+ }
+ 
+ #if !defined(OPENSSL_NO_SM2_PRECOMP)
+ /* Base point mul by scalar: k - scalar, G - base point */
++/*
++ * Constant-time gather of the affine entry |index| from a 256-entry sub-table.
++ * |sub| points to the sub-table for one 8-bit comb window; entry v is stored
++ * as X[P256_LIMBS] followed by Y[P256_LIMBS] at sub + v * (2 * P256_LIMBS).
++ * Entry 0 is not stored, so index 0 yields the all-zero (X, Y) placeholder,
++ * which the caller turns into the point at infinity.
++ */
++static void ecp_sm2p256_select_G(P256_POINT_AFFINE *R, const BN_ULONG *sub,
++    unsigned int index)
++{
++    unsigned int v, j;
++
++    memset(R, 0, sizeof(*R));
++    for (v = 1; v < 256; ++v) {
++        BN_ULONG mask = constant_time_is_zero_64((BN_ULONG)(index ^ v));
++        const BN_ULONG *e = sub + (size_t)v * (2 * P256_LIMBS);
++
++        for (j = 0; j < P256_LIMBS; ++j) {
++            R->X[j] |= constant_time_select_64(mask, e[j], 0);
++            R->Y[j] |= constant_time_select_64(mask, e[P256_LIMBS + j], 0);
++        }
++    }
++}
++
++/*
++ * R = k*G using the precomputed comb.  Constant-time: every 8-bit window is
++ * gathered from its full 256-entry sub-table with a mask and lifted to a
++ * Jacobian point whose Z is 1 for a non-zero window and 0 (infinity) for a
++ * zero window, so the unconditional, branch-free addition contributes nothing
++ * for a zero window and no secret-dependent branch or table index remains.
++ */
+ static void ecp_sm2p256_point_G_mul_by_scalar(P256_POINT *R, const BN_ULONG *k)
+ {
+-    unsigned int i, index, mask = 0xff;
+-    P256_POINT_AFFINE Q;
++    unsigned int i, j, index;
++    P256_POINT_AFFINE Qaff;
++    P256_POINT QJ;
+ 
+     memset(R, 0, sizeof(P256_POINT));
+ 
+-    if (is_zeros(k))
+-        return;
++    for (i = 0; i < 32; ++i) {
++        index = (k[i / 8] >> (8 * (i % 8))) & 0xff;
++        ecp_sm2p256_select_G(&Qaff,
++            ecp_sm2p256_precomputed + (size_t)i * 256 * (2 * P256_LIMBS),
++            index);
+ 
+-    index = k[0] & mask;
+-    if (index) {
+-        index = index * 8;
+-        memcpy(R->X, ecp_sm2p256_precomputed + index, 32);
+-        memcpy(R->Y, ecp_sm2p256_precomputed + index + P256_LIMBS, 32);
+-        R->Z[0] = 1;
++        {
++            /* Z = 1 iff the window is non-zero, else 0 (point at infinity). */
++            BN_ULONG nz = ~constant_time_is_zero_64((BN_ULONG)index);
++
++            for (j = 0; j < P256_LIMBS; ++j) {
++                QJ.X[j] = Qaff.X[j];
++                QJ.Y[j] = Qaff.Y[j];
++                QJ.Z[j] = 0;
++            }
++            QJ.Z[0] = nz & 1;
++        }
++        ecp_sm2p256_point_add(R, R, &QJ);
+     }
++}
++#endif
++
++/*
++ * Constant-time gather of |index| from a 16-entry table of Jacobian points.
++ * Index 0 yields the all-zero point (Z = 0, i.e. the point at infinity).
++ */
++static void ecp_sm2p256_select_P(P256_POINT *R, const P256_POINT tbl[16],
++    unsigned int index)
++{
++    unsigned int i, j;
+ 
+-    for (i = 1; i < 32; ++i) {
+-        index = (k[i / 8] >> (8 * (i % 8))) & mask;
++    memset(R, 0, sizeof(*R));
++    for (i = 1; i < 16; ++i) {
++        BN_ULONG mask = constant_time_is_zero_64((BN_ULONG)(index ^ i));
+ 
+-        if (index) {
+-            index = index + i * 256;
+-            index = index * 8;
+-            memcpy(Q.X, ecp_sm2p256_precomputed + index, 32);
+-            memcpy(Q.Y, ecp_sm2p256_precomputed + index + P256_LIMBS, 32);
+-            ecp_sm2p256_point_add_affine(R, R, &Q);
++        for (j = 0; j < P256_LIMBS; ++j) {
++            R->X[j] |= constant_time_select_64(mask, tbl[i].X[j], 0);
++            R->Y[j] |= constant_time_select_64(mask, tbl[i].Y[j], 0);
++            R->Z[j] |= constant_time_select_64(mask, tbl[i].Z[j], 0);
+         }
+     }
+ }
+-#endif
+ 
+ /*
+  * Affine point mul by scalar: k - scalar, P - affine point
++ *
++ * Constant-time windowed multiplication: every 4-bit window is processed
++ * uniformly with four doublings followed by a masked table gather and an
++ * unconditional, branch-free addition.  There is no init/skip logic and no
++ * secret-dependent table index, so the running time and memory-access pattern
++ * do not depend on the value of the secret scalar.
+  */
+ static void ecp_sm2p256_point_P_mul_by_scalar(P256_POINT *R, const BN_ULONG *k,
+     P256_POINT_AFFINE P)
+ {
+-    int i, init = 0;
++    int i;
+     unsigned int index, mask = 0x0f;
+     ALIGN64 P256_POINT precomputed[16];
+-
+-    memset(R, 0, sizeof(P256_POINT));
+-
+-    if (is_zeros(k))
+-        return;
++    P256_POINT T;
+ 
+     /* The first value of the precomputed table is P. */
+     memcpy(precomputed[1].X, P.X, 32);
+@@ -391,22 +468,18 @@ static void ecp_sm2p256_point_P_mul_by_scalar(P256_POINT *R, const BN_ULONG *k,
+     for (i = 3; i < 16; ++i)
+         ecp_sm2p256_point_add_affine(&precomputed[i], &precomputed[i - 1], &P);
+ 
++    memset(R, 0, sizeof(*R)); /* R = point at infinity */
++
+     for (i = 64 - 1; i >= 0; --i) {
+         index = (k[i / 16] >> (4 * (i % 16))) & mask;
+ 
+-        if (init == 0) {
+-            if (index) {
+-                memcpy(R, &precomputed[index], sizeof(P256_POINT));
+-                init = 1;
+-            }
+-        } else {
+-            ecp_sm2p256_point_double(R, R);
+-            ecp_sm2p256_point_double(R, R);
+-            ecp_sm2p256_point_double(R, R);
+-            ecp_sm2p256_point_double(R, R);
+-            if (index)
+-                ecp_sm2p256_point_add(R, R, &precomputed[index]);
+-        }
++        ecp_sm2p256_point_double(R, R);
++        ecp_sm2p256_point_double(R, R);
++        ecp_sm2p256_point_double(R, R);
++        ecp_sm2p256_point_double(R, R);
++
++        ecp_sm2p256_select_P(&T, precomputed, index);
++        ecp_sm2p256_point_add(R, R, &T);
+     }
+ }
+ 
+diff --git a/crypto/pem/pem_info.c b/crypto/pem/pem_info.c
+index 8f38fe0..6f27d54 100644
+--- a/crypto/pem/pem_info.c
++++ b/crypto/pem/pem_info.c
+@@ -60,7 +60,7 @@ STACK_OF(X509_INFO) *PEM_X509_INFO_read_bio_ex(BIO *bp, STACK_OF(X509_INFO) *sk,
+     unsigned char *data = NULL;
+     const unsigned char *p;
+     long len, error = 0;
+-    int ok = 0;
++    int ok = 0, preserve_cnt = 0;
+     STACK_OF(X509_INFO) *ret = NULL;
+     unsigned int i, raw, ptype;
+     d2i_of_void *d2i = 0;
+@@ -70,8 +70,10 @@ STACK_OF(X509_INFO) *PEM_X509_INFO_read_bio_ex(BIO *bp, STACK_OF(X509_INFO) *sk,
+             ERR_raise(ERR_LIB_PEM, ERR_R_CRYPTO_LIB);
+             goto err;
+         }
+-    } else
++    } else {
+         ret = sk;
++        preserve_cnt = sk_X509_INFO_num(sk);
++    }
+ 
+     if ((xi = X509_INFO_new()) == NULL)
+         goto err;
+@@ -199,10 +201,8 @@ STACK_OF(X509_INFO) *PEM_X509_INFO_read_bio_ex(BIO *bp, STACK_OF(X509_INFO) *sk,
+ err:
+     X509_INFO_free(xi);
+     if (!ok) {
+-        for (i = 0; ((int)i) < sk_X509_INFO_num(ret); i++) {
+-            xi = sk_X509_INFO_value(ret, i);
+-            X509_INFO_free(xi);
+-        }
++        while (sk_X509_INFO_num(ret) > preserve_cnt)
++            X509_INFO_free(sk_X509_INFO_pop(ret));
+         if (ret != sk)
+             sk_X509_INFO_free(ret);
+         ret = NULL;
+diff --git a/crypto/sm2/sm2_sign.c b/crypto/sm2/sm2_sign.c
+index 5e29900..4aa6960 100644
+--- a/crypto/sm2/sm2_sign.c
++++ b/crypto/sm2/sm2_sign.c
+@@ -14,6 +14,7 @@
+ #include "crypto/sm2.h"
+ #include "crypto/sm2err.h"
+ #include "crypto/ec.h" /* ossl_ec_group_do_inverse_ord() */
++#include "crypto/bn.h" /* fixed-top / Montgomery constant-time BN helpers */
+ #include "internal/numbers.h"
+ #include <openssl/err.h>
+ #include <openssl/evp.h>
+@@ -235,17 +236,22 @@ static ECDSA_SIG *sm2_sig_gen(const EC_KEY *key, const BIGNUM *e)
+     EC_POINT *kG = NULL;
+     BN_CTX *ctx = NULL;
+     BIGNUM *k = NULL;
+-    BIGNUM *rk = NULL;
+     BIGNUM *r = NULL;
+     BIGNUM *s = NULL;
+     BIGNUM *x1 = NULL;
+     BIGNUM *tmp = NULL;
++    BN_MONT_CTX *mont = EC_GROUP_get_mont_data(group);
+     OSSL_LIB_CTX *libctx = ossl_ec_key_get_libctx(key);
+ 
+     if (dA == NULL) {
+         ERR_raise(ERR_LIB_SM2, SM2_R_INVALID_PRIVATE_KEY);
+         goto done;
+     }
++
++    if (mont == NULL) {
++        ERR_raise(ERR_LIB_SM2, ERR_R_EC_LIB);
++        goto done;
++    }
+     kG = EC_POINT_new(group);
+     if (kG == NULL) {
+         ERR_raise(ERR_LIB_SM2, ERR_R_EC_LIB);
+@@ -259,7 +265,6 @@ static ECDSA_SIG *sm2_sig_gen(const EC_KEY *key, const BIGNUM *e)
+ 
+     BN_CTX_start(ctx);
+     k = BN_CTX_get(ctx);
+-    rk = BN_CTX_get(ctx);
+     x1 = BN_CTX_get(ctx);
+     tmp = BN_CTX_get(ctx);
+     if (tmp == NULL) {
+@@ -293,6 +298,18 @@ static ECDSA_SIG *sm2_sig_gen(const EC_KEY *key, const BIGNUM *e)
+             ERR_raise(ERR_LIB_SM2, ERR_R_INTERNAL_ERROR);
+             goto done;
+         }
++        /*
++         * Pin the nonce to a fixed, value-independent width and flag it
++         * BN_FLG_CONSTTIME, so its magnitude does not leak through operand
++         * lengths in the scalar copy inside the ladder or in the arithmetic
++         * below.  BN_priv_rand_range_ex() is kept so the nonce value itself
++         * is unchanged; only its representation is pinned.
++         */
++        BN_set_flags(k, BN_FLG_CONSTTIME);
++        if (!bn_set_top_fixed(k, bn_get_top(order))) {
++            ERR_raise(ERR_LIB_SM2, ERR_R_BN_LIB);
++            goto done;
++        }
+ 
+         if (!EC_POINT_mul(group, kG, k, NULL, NULL, ctx)
+             || !EC_POINT_get_affine_coordinates(group, kG, x1, NULL,
+@@ -302,23 +319,49 @@ static ECDSA_SIG *sm2_sig_gen(const EC_KEY *key, const BIGNUM *e)
+             goto done;
+         }
+ 
+-        /* try again if r == 0 or r+k == n */
++        /* try again if r == 0 or r + k == n */
+         if (BN_is_zero(r))
+             continue;
+ 
+-        if (!BN_add(rk, r, k)) {
+-            ERR_raise(ERR_LIB_SM2, ERR_R_INTERNAL_ERROR);
++        /*
++         * Since 0 < r < n and 0 < k < n, r + k == n is the same as
++         * k == n - r.  Both operands of the subtraction are public, so
++         * compute it in the open and then compare against the nonce with a
++         * fixed-width constant-time comparison.  A BN_cmp() on r + k would
++         * branch on whether the sum carried into an extra word, which
++         * depends on the value of k.
++         */
++        if (!BN_sub(tmp, order, r)
++            || !bn_set_top_fixed(tmp, bn_get_top(order))) {
++            ERR_raise(ERR_LIB_SM2, ERR_R_BN_LIB);
+             goto done;
+         }
+ 
+-        if (BN_cmp(rk, order) == 0)
++        if (CRYPTO_memcmp(bn_get_words(k), bn_get_words(tmp),
++                bn_get_top(order) * sizeof(BN_ULONG))
++            == 0)
+             continue;
+ 
++        /*
++         * s = ((1 + dA)^-1 * (k - r * dA)) mod order
++         *
++         * Computed with fixed-top / Montgomery constant-time primitives, so
++         * that the running time does not depend on the secret k or dA (the
++         * generic BN_mod_mul()/BN_sub() used previously reduce via BN_div(),
++         * whose timing is value dependent).  This mirrors the ECDSA path.
++         *
++         * s holds (1 + dA)^-1 throughout; the (k - r * dA) term is built in
++         * tmp.  bn_mul_mont_fixed_top() with one operand in the Montgomery
++         * domain yields the plain product, and the final
++         * BN_mod_mul_montgomery() returns the user-visible, normalised value.
++         */
+         if (!BN_add(s, dA, BN_value_one())
+             || !ossl_ec_group_do_inverse_ord(group, s, s, ctx)
+-            || !BN_mod_mul(tmp, dA, r, order, ctx)
+-            || !BN_sub(tmp, k, tmp)
+-            || !BN_mod_mul(s, s, tmp, order, ctx)) {
++            || !bn_to_mont_fixed_top(tmp, r, mont, ctx)
++            || !bn_mul_mont_fixed_top(tmp, tmp, dA, mont, ctx)
++            || !bn_mod_sub_fixed_top(tmp, k, tmp, order)
++            || !bn_to_mont_fixed_top(tmp, tmp, mont, ctx)
++            || !BN_mod_mul_montgomery(s, tmp, s, mont, ctx)) {
+             ERR_raise(ERR_LIB_SM2, ERR_R_BN_LIB);
+             goto done;
+         }
+diff --git a/crypto/x509/v3_crld.c b/crypto/x509/v3_crld.c
+index 5671543..0a5daae 100644
+--- a/crypto/x509/v3_crld.c
++++ b/crypto/x509/v3_crld.c
+@@ -522,33 +522,43 @@ static int i2r_object(const X509V3_EXT_METHOD *method, void *oid, BIO *bp,
+     return 1;
+ }
+ 
+-/* Append any nameRelativeToCRLIssuer in dpn to iname, set in dpn->dpname */
+-int DIST_POINT_set_dpname(DIST_POINT_NAME *dpn, const X509_NAME *iname)
++/*
++ * Return a new X509_NAME consisting of iname with the nameRelativeToCRLIssuer
++ * fragment of dpn appended, with its DER encoding already cached.
++ * dpn must be a relative name (type 1).  Returns NULL on error.
++ */
++X509_NAME *ossl_dist_point_name_full(const DIST_POINT_NAME *dpn,
++    const X509_NAME *iname)
+ {
+     int i;
+-    STACK_OF(X509_NAME_ENTRY) *frag;
++    STACK_OF(X509_NAME_ENTRY) *frag = dpn->name.relativename;
+     X509_NAME_ENTRY *ne;
++    X509_NAME *dpname = X509_NAME_dup(iname);
+ 
+-    if (dpn == NULL || dpn->type != 1)
+-        return 1;
+-    frag = dpn->name.relativename;
+-    X509_NAME_free(dpn->dpname); /* just in case it was already set */
+-    dpn->dpname = X509_NAME_dup(iname);
+-    if (dpn->dpname == NULL)
+-        return 0;
++    if (dpname == NULL)
++        return NULL;
+     for (i = 0; i < sk_X509_NAME_ENTRY_num(frag); i++) {
+         ne = sk_X509_NAME_ENTRY_value(frag, i);
+-        if (!X509_NAME_add_entry(dpn->dpname, ne, -1, i ? 0 : 1))
++        if (!X509_NAME_add_entry(dpname, ne, -1, i ? 0 : 1))
+             goto err;
+     }
+     /* generate cached encoding of name */
+-    if (i2d_X509_NAME(dpn->dpname, NULL) >= 0)
+-        return 1;
++    if (i2d_X509_NAME(dpname, NULL) >= 0)
++        return dpname;
+ 
+ err:
+-    X509_NAME_free(dpn->dpname);
+-    dpn->dpname = NULL;
+-    return 0;
++    X509_NAME_free(dpname);
++    return NULL;
++}
++
++/* Append any nameRelativeToCRLIssuer in dpn to iname, set in dpn->dpname */
++int DIST_POINT_set_dpname(DIST_POINT_NAME *dpn, const X509_NAME *iname)
++{
++    if (dpn == NULL || dpn->type != 1)
++        return 1;
++    X509_NAME_free(dpn->dpname); /* just in case it was already set */
++    dpn->dpname = ossl_dist_point_name_full(dpn, iname);
++    return dpn->dpname != NULL;
+ }
+ 
+ ASN1_SEQUENCE(OSSL_AA_DIST_POINT) = {
+diff --git a/crypto/x509/v3_purp.c b/crypto/x509/v3_purp.c
+index 7b548e3..582f09f 100644
+--- a/crypto/x509/v3_purp.c
++++ b/crypto/x509/v3_purp.c
+@@ -343,12 +343,19 @@ int X509_supported_extension(const X509_EXTENSION *ex)
+     return 0;
+ }
+ 
+-/* Returns 1 on success, 0 if x is invalid, -1 on (internal) error. */
+-static int setup_dp(const X509 *x, DIST_POINT *dp)
++/*
++ * Returns 1 on success, 0 if x is invalid.
++ *
++ * The full name of a nameRelativeToCRLIssuer distribution point is not
++ * computed here.  Doing so for every parsed certificate cost an
++ * X509_NAME_dup() of the issuer name per relative distribution point,
++ * which a certificate with many such entries could turn into hundreds of
++ * megabytes of heap on a plain TLS handshake, while the result is only
++ * needed when a CRL is actually being matched against the certificate.
++ * That name is now built on demand in the CRL checking code instead.
++ */
++static int setup_dp(DIST_POINT *dp)
+ {
+-    const X509_NAME *iname = NULL;
+-    int i;
+-
+     if (dp->distpoint == NULL && sk_GENERAL_NAME_num(dp->CRLissuer) <= 0) {
+         ERR_raise(ERR_LIB_X509, X509_R_INVALID_DISTPOINT);
+         return 0;
+@@ -362,30 +369,10 @@ static int setup_dp(const X509 *x, DIST_POINT *dp)
+     } else {
+         dp->dp_reasons = CRLDP_ALL_REASONS;
+     }
+-    if (dp->distpoint == NULL || dp->distpoint->type != 1)
+-        return 1;
+-
+-    /* Handle name fragment given by nameRelativeToCRLIssuer */
+-    /*
+-     * Note that the below way of determining iname is not really compliant
+-     * with https://tools.ietf.org/html/rfc5280#section-4.2.1.13
+-     * According to it, sk_GENERAL_NAME_num(dp->CRLissuer) MUST be <= 1
+-     * and any CRLissuer could be of type different to GEN_DIRNAME.
+-     */
+-    for (i = 0; i < sk_GENERAL_NAME_num(dp->CRLissuer); i++) {
+-        GENERAL_NAME *gen = sk_GENERAL_NAME_value(dp->CRLissuer, i);
+-
+-        if (gen->type == GEN_DIRNAME) {
+-            iname = gen->d.directoryName;
+-            break;
+-        }
+-    }
+-    if (iname == NULL)
+-        iname = X509_get_issuer_name(x);
+-    return DIST_POINT_set_dpname(dp->distpoint, iname) ? 1 : -1;
++    return 1;
+ }
+ 
+-/* Return 1 on success, 0 if x is invalid, -1 on (internal) error. */
++/* Return 1 on success, 0 if x is invalid. */
+ static int setup_crldp(const X509 *x, STACK_OF(DIST_POINT) **tmp_crldp)
+ {
+     int i;
+@@ -395,10 +382,8 @@ static int setup_crldp(const X509 *x, STACK_OF(DIST_POINT) **tmp_crldp)
+         return 0;
+ 
+     for (i = 0; i < sk_DIST_POINT_num(*tmp_crldp); i++) {
+-        int res = setup_dp(x, sk_DIST_POINT_value(*tmp_crldp, i));
+-
+-        if (res < 1)
+-            return res;
++        if (!setup_dp(sk_DIST_POINT_value(*tmp_crldp, i)))
++            return 0;
+     }
+     return 1;
+ }
+@@ -456,21 +441,28 @@ int ossl_x509v3_cache_extensions(const X509 *const_x)
+     uint32_t tmp_ex_kusage;
+     uint32_t tmp_ex_xkusage;
+     uint32_t tmp_ex_nscert;
+-    ASN1_OCTET_STRING *tmp_skid;
+-    AUTHORITY_KEYID *tmp_akid;
+-    STACK_OF(GENERAL_NAME) *tmp_altname;
+-    NAME_CONSTRAINTS *tmp_nc;
++    ASN1_OCTET_STRING *tmp_skid = NULL;
++    AUTHORITY_KEYID *tmp_akid = NULL;
++    STACK_OF(GENERAL_NAME) *tmp_altname = NULL;
++    NAME_CONSTRAINTS *tmp_nc = NULL;
+     STACK_OF(DIST_POINT) *tmp_crldp = NULL;
+     X509_SIG_INFO tmp_siginf;
++#ifndef OPENSSL_NO_RFC3779
++    STACK_OF(IPAddressFamily) *tmp_rfc3779_addr = NULL;
++    struct ASIdentifiers_st *tmp_rfc3779_asid = NULL;
++#endif
++    int ret = 0;
+ 
+ #ifdef tsan_ld_acq
+     /* Fast lock-free check, see end of the function for details. */
+-    if (tsan_ld_acq((TSAN_QUALIFIER int *)&const_x->ex_cached))
+-        return (const_x->ex_flags & EXFLAG_INVALID) == 0;
++    if (tsan_ld_acq((TSAN_QUALIFIER int *)&const_x->ex_cached)) {
++        ret = (const_x->ex_flags & EXFLAG_INVALID) == 0;
++        goto done;
++    }
+ #endif
+ 
+     if (!CRYPTO_THREAD_read_lock(const_x->lock))
+-        return 0;
++        goto done;
+     tmp_ex_flags = const_x->ex_flags;
+     tmp_ex_pcpathlen = const_x->ex_pcpathlen;
+     tmp_ex_kusage = const_x->ex_kusage;
+@@ -478,7 +470,8 @@ int ossl_x509v3_cache_extensions(const X509 *const_x)
+ 
+     if ((tmp_ex_flags & EXFLAG_SET) != 0) { /* Cert has already been processed */
+         CRYPTO_THREAD_unlock(const_x->lock);
+-        return (tmp_ex_flags & EXFLAG_INVALID) == 0;
++        ret = (tmp_ex_flags & EXFLAG_INVALID) == 0;
++        goto done;
+     }
+ 
+     ERR_set_mark();
+@@ -649,13 +642,11 @@ int ossl_x509v3_cache_extensions(const X509 *const_x)
+         tmp_ex_flags |= EXFLAG_INVALID;
+ 
+ #ifndef OPENSSL_NO_RFC3779
+-    STACK_OF(IPAddressFamily) *tmp_rfc3779_addr
+-        = X509_get_ext_d2i(const_x, NID_sbgp_ipAddrBlock, &i, NULL);
++    tmp_rfc3779_addr = X509_get_ext_d2i(const_x, NID_sbgp_ipAddrBlock, &i, NULL);
+     if (tmp_rfc3779_addr == NULL && i != -1)
+         tmp_ex_flags |= EXFLAG_INVALID;
+ 
+-    struct ASIdentifiers_st *tmp_rfc3779_asid
+-        = X509_get_ext_d2i(const_x, NID_sbgp_autonomousSysNum, &i, NULL);
++    tmp_rfc3779_asid = X509_get_ext_d2i(const_x, NID_sbgp_autonomousSysNum, &i, NULL);
+     if (tmp_rfc3779_asid == NULL && i != -1)
+         tmp_ex_flags |= EXFLAG_INVALID;
+ #endif
+@@ -686,7 +677,16 @@ int ossl_x509v3_cache_extensions(const X509 *const_x)
+      * do all the updating under a write lock
+      */
+     if (!CRYPTO_THREAD_write_lock(const_x->lock))
+-        return 0;
++        goto done;
++
++    /* See if another thread updated this certificate before we got the write lock. */
++    if ((const_x->ex_flags & EXFLAG_SET) != 0) { /* Cert has already been processed */
++        CRYPTO_THREAD_unlock(const_x->lock);
++        ret = (const_x->ex_flags & EXFLAG_INVALID) == 0;
++        goto done;
++    }
++
++    /* Otherwise, we have the lock, set the cached fields in the cert. */
+     ((X509 *)const_x)->ex_flags = tmp_ex_flags;
+     ((X509 *)const_x)->ex_pathlen = tmp_ex_pathlen;
+     ((X509 *)const_x)->ex_pcpathlen = tmp_ex_pcpathlen;
+@@ -699,19 +699,26 @@ int ossl_x509v3_cache_extensions(const X509 *const_x)
+         ((X509 *)const_x)->ex_nscert = tmp_ex_nscert;
+     ASN1_OCTET_STRING_free(((X509 *)const_x)->skid);
+     ((X509 *)const_x)->skid = tmp_skid;
++    tmp_skid = NULL;
+     AUTHORITY_KEYID_free(((X509 *)const_x)->akid);
+     ((X509 *)const_x)->akid = tmp_akid;
++    tmp_akid = NULL;
+     sk_GENERAL_NAME_pop_free(((X509 *)const_x)->altname, GENERAL_NAME_free);
+     ((X509 *)const_x)->altname = tmp_altname;
++    tmp_altname = NULL;
+     NAME_CONSTRAINTS_free(((X509 *)const_x)->nc);
+     ((X509 *)const_x)->nc = tmp_nc;
++    tmp_nc = NULL;
+     sk_DIST_POINT_pop_free(((X509 *)const_x)->crldp, DIST_POINT_free);
+     ((X509 *)const_x)->crldp = tmp_crldp;
++    tmp_crldp = NULL;
+ #ifndef OPENSSL_NO_RFC3779
+     sk_IPAddressFamily_pop_free(((X509 *)const_x)->rfc3779_addr, IPAddressFamily_free);
+     ((X509 *)const_x)->rfc3779_addr = tmp_rfc3779_addr;
++    tmp_rfc3779_addr = NULL;
+     ASIdentifiers_free(((X509 *)const_x)->rfc3779_asid);
+     ((X509 *)const_x)->rfc3779_asid = tmp_rfc3779_asid;
++    tmp_rfc3779_asid = NULL;
+ #endif
+     ((X509 *)const_x)->siginf = tmp_siginf;
+ 
+@@ -726,9 +733,22 @@ int ossl_x509v3_cache_extensions(const X509 *const_x)
+     CRYPTO_THREAD_unlock(const_x->lock);
+     if (tmp_ex_flags & EXFLAG_INVALID) {
+         ERR_raise(ERR_LIB_X509V3, X509V3_R_INVALID_CERTIFICATE);
+-        return 0;
++        goto done;
+     }
+-    return 1;
++
++    ret = 1;
++
++done:
++    ASN1_OCTET_STRING_free(tmp_skid);
++    AUTHORITY_KEYID_free(tmp_akid);
++    sk_GENERAL_NAME_pop_free(tmp_altname, GENERAL_NAME_free);
++    NAME_CONSTRAINTS_free(tmp_nc);
++    sk_DIST_POINT_pop_free(tmp_crldp, DIST_POINT_free);
++#ifndef OPENSSL_NO_RFC3779
++    sk_IPAddressFamily_pop_free(tmp_rfc3779_addr, IPAddressFamily_free);
++    ASIdentifiers_free(tmp_rfc3779_asid);
++#endif
++    return ret;
+ }
+ 
+ /*-
+diff --git a/crypto/x509/x509_vfy.c b/crypto/x509/x509_vfy.c
+index 117f6f5..3b796df 100644
+--- a/crypto/x509/x509_vfy.c
++++ b/crypto/x509/x509_vfy.c
+@@ -1302,10 +1302,20 @@ static int check_cert_ocsp_resp(X509_STORE_CTX *ctx)
+         return X509_V_ERR_OCSP_NO_RESPONSE;
+ 
+     if ((resp = sk_OCSP_RESPONSE_value(ctx->ocsp_resp, ctx->error_depth)) == NULL
+-        || (bs = OCSP_response_get1_basic(resp)) == NULL
+-        || (num = OCSP_resp_count(bs)) < 1)
++        || (bs = OCSP_response_get1_basic(resp)) == NULL)
+         return X509_V_ERR_OCSP_NO_RESPONSE;
+ 
++    /*
++     * OCSP_response_get1_basic() returns an owning reference, so once bs is
++     * non-NULL it must be released via the end: cleanup label. Route an empty
++     * BasicResponse (no single responses) through end: rather than returning
++     * directly, otherwise bs leaks.
++     */
++    if ((num = OCSP_resp_count(bs)) < 1) {
++        ret = X509_V_ERR_OCSP_NO_RESPONSE;
++        goto end;
++    }
++
+     if (OCSP_response_status(resp) != OCSP_RESPONSE_STATUS_SUCCESSFUL) {
+         OCSP_BASICRESP_free(bs);
+         bs = NULL;
+@@ -1837,16 +1847,59 @@ static int check_crl_chain(X509_STORE_CTX *ctx,
+     return X509_cmp(cert_ta, crl_ta) == 0;
+ }
+ 
++/*
++ * Return the full name of the certificate CRL distribution point dp, whose
++ * distpoint is a nameRelativeToCRLIssuer fragment: the CRL issuer name with
++ * the fragment appended.  The CRL issuer is the directoryName in
++ * dp->CRLissuer if there is one, else the issuer of the certificate.
++ *
++ * The result is a fresh X509_NAME owned by the caller.  It is deliberately
++ * not stored in dp->distpoint->dpname: once its extension cache has been
++ * published a certificate is shared between threads without locking, and
++ * computing the name here rather than when the certificate is parsed keeps
++ * a certificate with many relative distribution points from costing a copy
++ * of the issuer name per entry on every parse.  Returns NULL on error.
++ */
++static X509_NAME *crldp_full_name(const X509 *x, const DIST_POINT *dp)
++{
++    const X509_NAME *iname = NULL;
++    int i;
++
++    /*
++     * Note that the below way of determining iname is not really compliant
++     * with https://tools.ietf.org/html/rfc5280#section-4.2.1.13
++     * According to it, sk_GENERAL_NAME_num(dp->CRLissuer) MUST be <= 1
++     * and any CRLissuer could be of type different to GEN_DIRNAME.
++     */
++    for (i = 0; i < sk_GENERAL_NAME_num(dp->CRLissuer); i++) {
++        GENERAL_NAME *gen = sk_GENERAL_NAME_value(dp->CRLissuer, i);
++
++        if (gen->type == GEN_DIRNAME) {
++            iname = gen->d.directoryName;
++            break;
++        }
++    }
++    if (iname == NULL)
++        iname = X509_get_issuer_name(x);
++    return ossl_dist_point_name_full(dp->distpoint, iname);
++}
++
+ /*-
+  * Check for match between two dist point names: three separate cases.
+  * 1. Both are relative names and compare X509_NAME types.
+  * 2. One full, one relative. Compare X509_NAME to GENERAL_NAMES.
+  * 3. Both are full names and compare two GENERAL_NAMES.
+  * 4. One is NULL: automatic match.
++ *
++ * a is the certificate's distribution point name and b the CRL's issuing
++ * distribution point name.  When a is a relative name, aname is its full
++ * name as built by crldp_full_name(); a->dpname itself is not consulted.
++ * For b the full name is the cached b->dpname set when the CRL was parsed.
+  */
+-static int idp_check_dp(DIST_POINT_NAME *a, DIST_POINT_NAME *b)
++static int idp_check_dp(DIST_POINT_NAME *a, const X509_NAME *aname,
++    DIST_POINT_NAME *b)
+ {
+-    X509_NAME *nm = NULL;
++    const X509_NAME *nm = NULL;
+     GENERAL_NAMES *gens = NULL;
+     GENERAL_NAME *gena, *genb;
+     int i, j;
+@@ -1854,16 +1907,16 @@ static int idp_check_dp(DIST_POINT_NAME *a, DIST_POINT_NAME *b)
+     if (a == NULL || b == NULL)
+         return 1;
+     if (a->type == 1) {
+-        if (a->dpname == NULL)
++        if (aname == NULL)
+             return 0;
+         /* Case 1: two X509_NAME */
+         if (b->type == 1) {
+             if (b->dpname == NULL)
+                 return 0;
+-            return X509_NAME_cmp(a->dpname, b->dpname) == 0;
++            return X509_NAME_cmp(aname, b->dpname) == 0;
+         }
+         /* Case 2: set name and GENERAL_NAMES appropriately */
+-        nm = a->dpname;
++        nm = aname;
+         gens = b->name.fullname;
+     } else if (b->type == 1) {
+         if (b->dpname == NULL)
+@@ -1936,13 +1989,28 @@ static int crl_crldp_check(X509 *x, X509_CRL *crl, int crl_score,
+     *preasons = crl->idp_reasons;
+     for (i = 0; i < sk_DIST_POINT_num(x->crldp); i++) {
+         DIST_POINT *dp = sk_DIST_POINT_value(x->crldp, i);
++        X509_NAME *dpname = NULL;
++        int match;
+ 
+-        if (crldp_check_crlissuer(dp, crl, crl_score)) {
+-            if (crl->idp == NULL
+-                || idp_check_dp(dp->distpoint, crl->idp->distpoint)) {
+-                *preasons &= dp->dp_reasons;
+-                return 1;
+-            }
++        if (!crldp_check_crlissuer(dp, crl, crl_score))
++            continue;
++        if (crl->idp == NULL) {
++            match = 1;
++        } else {
++            /*
++             * A relative distribution point name is only comparable in
++             * full form.  Build it for this one comparison and discard it;
++             * if that fails the entry simply does not match.
++             */
++            if (dp->distpoint != NULL && dp->distpoint->type == 1
++                && (dpname = crldp_full_name(x, dp)) == NULL)
++                continue;
++            match = idp_check_dp(dp->distpoint, dpname, crl->idp->distpoint);
++            X509_NAME_free(dpname);
++        }
++        if (match) {
++            *preasons &= dp->dp_reasons;
++            return 1;
+         }
+     }
+     return (crl->idp == NULL || crl->idp->distpoint == NULL)
+diff --git a/include/crypto/bn.h b/include/crypto/bn.h
+index d2caade..1336cb8 100644
+--- a/include/crypto/bn.h
++++ b/include/crypto/bn.h
+@@ -18,6 +18,7 @@ BIGNUM *bn_wexpand(BIGNUM *a, int words);
+ BIGNUM *bn_expand2(BIGNUM *a, int words);
+ 
+ void bn_correct_top(BIGNUM *a);
++int bn_set_top_fixed(BIGNUM *a, int words);
+ 
+ /*
+  * Determine the modified width-(w+1) Non-Adjacent Form (wNAF) of 'scalar'.
+diff --git a/include/crypto/x509.h b/include/crypto/x509.h
+index 06ec5ec..2bf6178 100644
+--- a/include/crypto/x509.h
++++ b/include/crypto/x509.h
+@@ -14,6 +14,7 @@
+ #include "internal/refcount.h"
+ #include <openssl/asn1.h>
+ #include <openssl/x509.h>
++#include <openssl/x509v3.h>
+ #include <openssl/x509_vfy.h>
+ #include <openssl/conf.h>
+ #include "crypto/types.h"
+@@ -319,6 +320,9 @@ int ossl_x509_print_ex_brief(BIO *bio, const X509 *cert, unsigned long neg_cflag
+ int ossl_x509v3_cache_extensions(const X509 *x);
+ int ossl_x509_init_sig_info(const X509 *x, X509_SIG_INFO *info);
+ 
++X509_NAME *ossl_dist_point_name_full(const struct DIST_POINT_NAME_st *dpn,
++    const X509_NAME *iname);
++
+ int ossl_x509_set0_libctx(X509 *x, OSSL_LIB_CTX *libctx, const char *propq);
+ int ossl_x509_crl_set0_libctx(X509_CRL *x, OSSL_LIB_CTX *libctx,
+     const char *propq);
+diff --git a/providers/implementations/ciphers/cipher_aes_gcm_siv.c b/providers/implementations/ciphers/cipher_aes_gcm_siv.c
+index 1fd97fe..0bbfb19 100644
+--- a/providers/implementations/ciphers/cipher_aes_gcm_siv.c
++++ b/providers/implementations/ciphers/cipher_aes_gcm_siv.c
+@@ -100,6 +100,16 @@ static int ossl_aes_gcm_siv_init(void *vctx, const unsigned char *key, size_t ke
+ 
+     ctx->enc = enc;
+ 
++    /*
++     * Clear AAD when starting a new message or restarting after payload
++     * processing. Preserve pending AAD during parameter adjustments.
++     */
++    if (key != NULL || iv != NULL || ctx->used_enc || ctx->used_dec) {
++        OPENSSL_clear_free(ctx->aad, ctx->aad_len);
++        ctx->aad = NULL;
++        ctx->aad_len = 0;
++    }
++
+     if (key != NULL) {
+         if (keylen != ctx->key_len) {
+             ERR_raise(ERR_LIB_PROV, PROV_R_INVALID_KEY_LENGTH);
+@@ -251,6 +261,20 @@ static int ossl_aes_gcm_siv_set_ctx_params(void *vctx, const OSSL_PARAM params[]
+             return 0;
+         }
+     }
++
++    if (p.ivlen != NULL) {
++        size_t iv_len;
++
++        if (!OSSL_PARAM_get_size_t(p.ivlen, &iv_len)) {
++            ERR_raise(ERR_LIB_PROV, PROV_R_FAILED_TO_GET_PARAMETER);
++            return 0;
++        }
++        /* The nonce length can not be modified */
++        if (iv_len != sizeof(ctx->nonce)) {
++            ERR_raise(ERR_LIB_PROV, PROV_R_INVALID_IV_LENGTH);
++            return 0;
++        }
++    }
+     return 1;
+ }
+ 
+diff --git a/providers/implementations/ciphers/cipher_aes_gcm_siv.inc.in b/providers/implementations/ciphers/cipher_aes_gcm_siv.inc.in
+index 891d3b9..b1edc27 100644
+--- a/providers/implementations/ciphers/cipher_aes_gcm_siv.inc.in
++++ b/providers/implementations/ciphers/cipher_aes_gcm_siv.inc.in
+@@ -21,4 +21,5 @@ use OpenSSL::paramnames qw(produce_param_decoder);
+                          (['OSSL_CIPHER_PARAM_KEYLEN',      'keylen', 'size_t'],
+                           ['OSSL_CIPHER_PARAM_SPEED',       'speed',  'uint'],
+                           ['OSSL_CIPHER_PARAM_AEAD_TAG',    'tag',    'octet_string'],
++                          ['OSSL_CIPHER_PARAM_AEAD_IVLEN',  'ivlen',  'size_t'],
+                          )); -}
+diff --git a/providers/implementations/ciphers/cipher_aes_gcm_siv_hw.c b/providers/implementations/ciphers/cipher_aes_gcm_siv_hw.c
+index 452c9f0..3a93d43 100644
+--- a/providers/implementations/ciphers/cipher_aes_gcm_siv_hw.c
++++ b/providers/implementations/ciphers/cipher_aes_gcm_siv_hw.c
+@@ -114,13 +114,8 @@ static int aes_gcm_siv_aad(PROV_AES_GCM_SIV_CTX *ctx,
+     uint8_t *ptr;
+     uint64_t len64;
+ 
+-    /* length of 0 resets the AAD */
+-    if (len == 0) {
+-        OPENSSL_free(ctx->aad);
+-        ctx->aad = NULL;
+-        ctx->aad_len = 0;
++    if (len == 0)
+         return 1;
+-    }
+     to_alloc = UP16(ctx->aad_len + len);
+     /* need to check the size of the AAD per RFC8452 */
+     len64 = to_alloc;
+@@ -267,11 +262,20 @@ static int aes_gcm_siv_finish(PROV_AES_GCM_SIV_CTX *ctx)
+ {
+     int ret = 0;
+ 
+-    if (ctx->enc)
++    if (ctx->enc) {
++        /*
++         * generate the tag on FINAL so an init/final with no update
++         * (an empty message) still produces it, matching the other AEADs
++         */
++        if (ctx->generated_tag == 0
++            && aes_gcm_siv_encrypt(ctx, NULL, NULL, 0) == 0)
++            return 0;
+         return ctx->generated_tag;
+-    if (!ctx->generated_tag)
+-        aes_gcm_siv_decrypt(ctx, NULL, NULL, 0);
+-    ret = !CRYPTO_memcmp(ctx->tag, ctx->user_tag, sizeof(ctx->tag));
++    }
++    if (ctx->generated_tag == 0
++        && aes_gcm_siv_decrypt(ctx, NULL, NULL, 0) == 0)
++        return 0;
++    ret = CRYPTO_memcmp(ctx->tag, ctx->user_tag, sizeof(ctx->tag)) == 0;
+     ret &= ctx->have_user_tag;
+     return ret;
+ }
+diff --git a/providers/implementations/ciphers/cipher_aes_ocb.c b/providers/implementations/ciphers/cipher_aes_ocb.c
+index 329d4bf..a0e920c 100644
+--- a/providers/implementations/ciphers/cipher_aes_ocb.c
++++ b/providers/implementations/ciphers/cipher_aes_ocb.c
+@@ -493,6 +493,14 @@ static int aes_ocb_cipher(void *vctx, unsigned char *out, size_t *outl,
+     if (!ossl_prov_is_running())
+         return 0;
+ 
++    /*
++     * EVP_Cipher() MUST CHECK THE TAG
++     * in == NULL indicates finalize, so hand it to the finalize path
++     * (which checks the tag on decrypt / produces it on encrypt)
++     */
++    if (in == NULL)
++        return aes_ocb_block_final(vctx, out, outl, outsize);
++
+     if (outsize < inl) {
+         ERR_raise(ERR_LIB_PROV, PROV_R_OUTPUT_BUFFER_TOO_SMALL);
+         return 0;
+diff --git a/providers/implementations/ciphers/cipher_chacha20_poly1305.c b/providers/implementations/ciphers/cipher_chacha20_poly1305.c
+index 5f14d1b..e24a4dc 100644
+--- a/providers/implementations/ciphers/cipher_chacha20_poly1305.c
++++ b/providers/implementations/ciphers/cipher_chacha20_poly1305.c
+@@ -291,11 +291,6 @@ static int chacha20_poly1305_cipher(void *vctx, unsigned char *out,
+     if (!ossl_prov_is_running())
+         return 0;
+ 
+-    if (inl == 0) {
+-        *outl = 0;
+-        return 1;
+-    }
+-
+     if (outsize < inl) {
+         ERR_raise(ERR_LIB_PROV, PROV_R_OUTPUT_BUFFER_TOO_SMALL);
+         return 0;
+@@ -316,6 +311,15 @@ static int chacha20_poly1305_update(void *vctx, unsigned char *out,
+     if (ctx->iv_state == IV_STATE_FINISHED)
+         return 0;
+ 
++    /*
++     * a zero-length update is a nop, ALWAYS SUCCEED via early exit
++     * NB: ONLY EVP_Cipher() / final produce or check the tag
++     */
++    if (inl == 0) {
++        *outl = 0;
++        return 1;
++    }
++
+     return chacha20_poly1305_cipher(vctx, out, outl, outsize, in, inl);
+ }
+ 
+diff --git a/ssl/d1_lib.c b/ssl/d1_lib.c
+index 1f77ede..405720f 100644
+--- a/ssl/d1_lib.c
++++ b/ssl/d1_lib.c
+@@ -395,6 +395,23 @@ int dtls1_handle_timeout(SSL_CONNECTION *s)
+     }
+ 
+     dtls1_start_timer(s);
++
++    /*
++     * If write_state is anything other than WRITE_STATE_TRANSITION, a write
++     * is still parked mid-flight (WANT_WRITE) from a previous call into the
++     * state machine - the current flight hasn't actually finished going out
++     * yet, so there's nothing valid to retransmit. Retransmitting anyway
++     * would reconstruct an already-sent message from the retransmit queue
++     * into s->init_buf/s->init_off/s->init_num/s->d1->w_msg - the same
++     * fields the parked write is still using - corrupting that write's
++     * state out from under it. Leave it alone and let the next
++     * SSL_read()/SSL_write()/SSL_accept()/SSL_connect() call resume the
++     * parked write normally instead.
++     */
++    if (s->statem.state == MSG_FLOW_WRITING
++        && s->statem.write_state != WRITE_STATE_TRANSITION)
++        return 0;
++
+     /* Calls SSLfatal() if required */
+     return dtls1_retransmit_buffered_messages(s);
+ }
+diff --git a/ssl/record/methods/dtls_meth.c b/ssl/record/methods/dtls_meth.c
+index 910f45c..64d80fd 100644
+--- a/ssl/record/methods/dtls_meth.c
++++ b/ssl/record/methods/dtls_meth.c
+@@ -299,29 +299,26 @@ static int dtls_rlayer_buffer_record(OSSL_RECORD_LAYER *rl, struct pqueue_st *qu
+         return -1;
+     }
+ 
+-    rdata->packet = rl->packet;
++    /*
++     * Take a copy of just this record's on-wire bytes (header + ciphertext)
++     * rather than the whole (much larger) read buffer. The live rl->rbuf is
++     * left untouched and continues to be used for subsequent reads.
++     */
+     rdata->packet_length = rl->packet_length;
+-    memcpy(&(rdata->rbuf), &rl->rbuf, sizeof(TLS_BUFFER));
+-    memcpy(&(rdata->rrec), &rl->rrec[0], sizeof(TLS_RL_RECORD));
+-
+-    item->data = rdata;
+-
+-    rl->packet = NULL;
+-    rl->packet_length = 0;
+-    memset(&rl->rbuf, 0, sizeof(TLS_BUFFER));
+-    memset(&rl->rrec[0], 0, sizeof(rl->rrec[0]));
+-
+-    if (!tls_setup_read_buffer(rl)) {
+-        /* RLAYERfatal() already called */
+-        OPENSSL_free(rdata->rbuf.buf);
++    rdata->packet = OPENSSL_memdup(rl->packet, rl->packet_length);
++    if (rdata->packet == NULL) {
+         OPENSSL_free(rdata);
+         pitem_free(item);
++        RLAYERfatal(rl, SSL_AD_INTERNAL_ERROR, ERR_R_CRYPTO_LIB);
+         return -1;
+     }
++    memcpy(&(rdata->rrec), &rl->rrec[0], sizeof(TLS_RL_RECORD));
++
++    item->data = rdata;
+ 
+     if (pqueue_insert(queue, item) == NULL) {
+         /* Must be a duplicate so ignore it */
+-        OPENSSL_free(rdata->rbuf.buf);
++        OPENSSL_free(rdata->packet);
+         OPENSSL_free(rdata);
+         pitem_free(item);
+     }
+@@ -607,7 +604,7 @@ static int dtls_free(OSSL_RECORD_LAYER *rl)
+             /* Push to the next record layer */
+             ret &= BIO_write_ex(rl->next, rdata->packet, rdata->packet_length,
+                 &written);
+-            OPENSSL_free(rdata->rbuf.buf);
++            OPENSSL_free(rdata->packet);
+             OPENSSL_free(item->data);
+             pitem_free(item);
+         }
+diff --git a/ssl/record/methods/tls1_meth.c b/ssl/record/methods/tls1_meth.c
+index e6360d9..03d9692 100644
+--- a/ssl/record/methods/tls1_meth.c
++++ b/ssl/record/methods/tls1_meth.c
+@@ -267,6 +267,14 @@ static int tls1_cipher(OSSL_RECORD_LAYER *rl, TLS_RL_RECORD *recs,
+             != 0) {
+             unsigned char *seq;
+ 
++            /*
++             * Publicly invalid: the record is shorter than the mandatory
++             * AEAD overhead. Leave alert handling to the caller so TLS
++             * reports bad_record_mac and DTLS silently discards the record.
++             */
++            if (!sending && reclen[ctr] < rl->eivlen + rl->taglen)
++                return 0;
++
+             seq = rl->sequence;
+ 
+             if (rl->isdtls) {
+diff --git a/ssl/ssl_lib.c b/ssl/ssl_lib.c
+index 549bd7d..f309e91 100644
+--- a/ssl/ssl_lib.c
++++ b/ssl/ssl_lib.c
+@@ -5683,6 +5683,7 @@ SSL_CTX *SSL_get_SSL_CTX(const SSL *ssl)
+ SSL_CTX *SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx)
+ {
+     CERT *new_cert;
++    uint32_t *new_valid_flags = NULL;
+     SSL_CONNECTION *sc = SSL_CONNECTION_FROM_SSL_ONLY(ssl);
+ 
+     /* TODO(QUIC FUTURE): Add support for QUIC */
+@@ -5707,6 +5708,34 @@ SSL_CTX *SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx)
+      */
+     if (!ossl_assert(sc->sid_ctx_length <= sizeof(sc->sid_ctx)))
+         goto err;
++
++    /*
++     * |valid_flags| is sized from the number of signature algorithm slots of
++     * the SSL_CTX the connection was created from, so it must be resized for
++     * the replacement context.
++     *
++     * The built-in slots are indexed by the fixed SSL_PKEY_* constants and so
++     * mean the same thing in either context. They are preserved because they
++     * may already hold peer signature algorithm state which does not depend
++     * on the SSL_CTX. A provider slot index is instead a position in one
++     * context's provider list, so the same index denotes a different
++     * algorithm here and the old value cannot be carried over. They are reset
++     * rather than recomputed: recomputing them means recomputing the shared
++     * signature algorithms against the replacement context, which would let
++     * its preferences take effect on an established connection.
++     */
++    if (sc->s3.tmp.valid_flags != NULL) {
++        /* Should never happen: ssl_cert_new() enforces this */
++        if (!ossl_assert(new_cert->ssl_pkey_num >= SSL_PKEY_NUM))
++            goto err;
++        new_valid_flags = OPENSSL_calloc(new_cert->ssl_pkey_num,
++            sizeof(*new_valid_flags));
++        if (new_valid_flags == NULL)
++            goto err;
++        memcpy(new_valid_flags, sc->s3.tmp.valid_flags,
++            SSL_PKEY_NUM * sizeof(*new_valid_flags));
++    }
++
+     if (!SSL_CTX_up_ref(ctx))
+         goto err;
+ 
+@@ -5723,12 +5752,18 @@ SSL_CTX *SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx)
+ 
+     ssl_cert_free(sc->cert);
+     sc->cert = new_cert;
++    sc->ssl_pkey_num = new_cert->ssl_pkey_num;
++    if (new_valid_flags != NULL) {
++        OPENSSL_free(sc->s3.tmp.valid_flags);
++        sc->s3.tmp.valid_flags = new_valid_flags;
++    }
+     SSL_CTX_free(ssl->ctx); /* decrement reference count */
+     ssl->ctx = ctx;
+ 
+     return ssl->ctx;
+ 
+ err:
++    OPENSSL_free(new_valid_flags);
+     ssl_cert_free(new_cert);
+     return NULL;
+ }
+diff --git a/ssl/statem/extensions_srvr.c b/ssl/statem/extensions_srvr.c
+index 1ed3388..89e372a 100644
+--- a/ssl/statem/extensions_srvr.c
++++ b/ssl/statem/extensions_srvr.c
+@@ -826,6 +826,7 @@ int tls_parse_ctos_key_share(SSL_CONNECTION *s, PACKET *pkt,
+     const size_t *srvrtuples;
+     uint16_t *first_group_in_tuple;
+     size_t clnt_num_groups, srvr_num_groups, srvr_num_tuples;
++    size_t srvr_groups_remaining;
+     PACKET *encoded_pubkey_arr = NULL;
+     uint16_t *keyshares_arr = NULL;
+     size_t keyshares_cnt = 0;
+@@ -908,10 +909,23 @@ int tls_parse_ctos_key_share(SSL_CONNECTION *s, PACKET *pkt,
+      * Remark: Selection priority different for client- or server-preference
+      */
+     first_group_in_tuple = (uint16_t *)srvrgroups;
++    srvr_groups_remaining = srvr_num_groups;
+     for (current_tuple = 0; current_tuple < srvr_num_tuples; current_tuple++) {
+         size_t number_of_groups_in_tuple = srvrtuples[current_tuple];
+         int prio_group_idx = 0, candidate_group_idx = 0;
+ 
++        /*
++         * The tuple sizes must partition srvrgroups exactly. A tuple larger
++         * than the groups still left means the group and tuple lists have
++         * come from different sources, which is an internal error: stop here
++         * rather than reading past the end of srvrgroups.
++         */
++        if (number_of_groups_in_tuple > srvr_groups_remaining) {
++            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
++            goto err;
++        }
++        srvr_groups_remaining -= number_of_groups_in_tuple;
++
+         /* Server or client preference ? */
+         if (s->options & SSL_OP_SERVER_PREFERENCE) {
+             /* Server preference */
+diff --git a/ssl/statem/statem_dtls.c b/ssl/statem/statem_dtls.c
+index f62b757..96ea03a 100644
+--- a/ssl/statem/statem_dtls.c
++++ b/ssl/statem/statem_dtls.c
+@@ -1218,6 +1218,8 @@ int dtls1_retransmit_message(SSL_CONNECTION *s, unsigned short seq, int *found)
+     memcpy(s->init_buf->data, frag->fragment,
+         frag->msg_header.msg_len + header_length);
+     s->init_num = frag->msg_header.msg_len + header_length;
++    /* Always retransmit from the start, not wherever init_off was left */
++    s->init_off = 0;
+ 
+     dtls1_set_message_header_int(s, frag->msg_header.type,
+         frag->msg_header.msg_len,
+diff --git a/ssl/t1_lib.c b/ssl/t1_lib.c
+index 9dd87dc..84dfd46 100644
+--- a/ssl/t1_lib.c
++++ b/ssl/t1_lib.c
+@@ -219,6 +219,14 @@ static const uint16_t suiteb_curves[] = {
+     OSSL_TLS_GROUP_ID_secp384r1,
+ };
+ 
++/*
++ * Group tuples matching the Suite B group lists returned by
++ * tls1_get_supported_groups(): a single tuple holding both P-256 and P-384,
++ * or a single tuple holding just one of them.
++ */
++static const size_t suiteb_tuples_both[] = { OSSL_NELEM(suiteb_curves) };
++static const size_t suiteb_tuples_one[] = { 1 };
++
+ /* Group list string of the built-in pseudo group DEFAULT_SUITE_B */
+ #define SUITE_B_GROUP_NAME "DEFAULT_SUITE_B"
+ #define SUITE_B_GROUP_LIST "?secp256r1:?secp384r1",
+@@ -857,11 +865,32 @@ void tls1_get_requested_keyshare_groups(SSL_CONNECTION *s, const uint16_t **pgro
+     }
+ }
+ 
++/*
++ * Set *ptuples to the list of group tuple sizes and *ptupleslen to the number
++ * of tuples. The tuples returned here always partition exactly the group list
++ * returned by tls1_get_supported_groups().
++ */
+ void tls1_get_group_tuples(SSL_CONNECTION *s, const size_t **ptuples,
+     size_t *ptupleslen)
+ {
+     SSL_CTX *sctx = SSL_CONNECTION_GET_CTX(s);
+ 
++    if (tls1_suiteb(s)) {
++        const uint16_t *groups;
++        size_t groupslen;
++
++        /*
++         * In Suite B mode the fixed group list forms a single tuple. Derive
++         * its size from the list tls1_get_supported_groups() actually returns
++         * rather than repeating the Suite B profile selection here.
++         */
++        tls1_get_supported_groups(s, &groups, &groupslen);
++        *ptuples = groupslen == OSSL_NELEM(suiteb_curves) ? suiteb_tuples_both
++                                                          : suiteb_tuples_one;
++        *ptupleslen = 1;
++        return;
++    }
++
+     if (s->ext.supportedgroups == NULL) {
+         *ptuples = sctx->ext.tuples;
+         *ptupleslen = sctx->ext.tuples_len;
+@@ -4717,6 +4746,20 @@ static int check_cert_usable(SSL_CONNECTION *s, const SIGALG_LOOKUP *sig,
+     if (supported <= 0)
+         return 0;
+ 
++    /*
++     * When RPK is negotiated there are no certificate signatures to
++     * constrain, and there may not even be a certificate configured.
++     */
++    if (TLSEXT_cert_type_rpk == (s->server ? s->ext.server_cert_type : s->ext.client_cert_type))
++        return 1;
++
++    /*
++     * RPK was enabled, adding candidate private-key-only slots, but was not
++     * negotiated, so the key-only slot is not usable.
++     */
++    if (x == NULL)
++        return 0;
++
+     /*
+      * The TLS 1.3 signature_algorithms_cert extension places restrictions
+      * on the sigalg with which the certificate was signed (by its issuer).
+diff --git a/test/dtlstest.c b/test/dtlstest.c
+index 725d7dc..4e5ea51 100644
+--- a/test/dtlstest.c
++++ b/test/dtlstest.c
+@@ -60,7 +60,6 @@ static int verify_cookie_cb(SSL *ssl, const unsigned char *cookie,
+ static unsigned int timer_cb(SSL *s, unsigned int timer_us)
+ {
+     ++timer_cb_count;
+-
+     if (timer_us == 0)
+         return 50000;
+     else
+@@ -681,6 +680,416 @@ end:
+     return testresult;
+ }
+ 
++/*
++ * frag_bio and the four retransmit tests below need DTLS1.2
++ */
++#ifndef OPENSSL_NO_DTLS1_2
++
++/*
++ * Number of times the retransmit timer is fired while a write is parked, in
++ * each of the four tests below
++ */
++#define NUM_RETRANSMITS 3
++
++typedef struct {
++    BIO *bio;
++    int allowed; /* number of fragment writes to let through before suspending */
++    int write_calls; /* number of times frag_write() has been invoked at all */
++} frag_bio;
++
++/*
++ * Each call to this function corresponds to exactly one DTLS fragment being
++ * handed to the BIO by dtls1_do_write(). Once |allowed| fragments have been
++ * let through, every further write suspends (WANT_WRITE) until the test
++ * bumps |allowed| again.
++ */
++static int frag_write(BIO *bio, const char *buf, size_t len, size_t *written)
++{
++    frag_bio *f = BIO_get_data(bio);
++
++    BIO_clear_retry_flags(bio);
++
++    f->write_calls++;
++
++    if (f->allowed <= 0) {
++        BIO_set_retry_write(bio);
++        *written = 0;
++        return 0;
++    }
++    f->allowed--;
++
++    if (!BIO_write_ex(f->bio, buf, len, written)) {
++        fprintf(stderr, "Failed to send data via BIO_write_ex\n");
++        return 0;
++    }
++
++    return 1;
++}
++
++static int frag_read(BIO *bio, char *buf, size_t buf_len, size_t *readbytes)
++{
++    frag_bio *f = BIO_get_data(bio);
++    return BIO_read_ex(f->bio, buf, buf_len, readbytes);
++}
++
++static long frag_ctrl(BIO *bio, int cmd, long num, void *ptr)
++{
++    frag_bio *f = BIO_get_data(bio);
++    return BIO_ctrl(f->bio, cmd, num, ptr);
++}
++
++static int frag_puts(BIO *bio, const char *str)
++{
++    size_t written;
++    return frag_write(bio, str, strlen(str), &written) ? (int)written : -1;
++}
++
++static int frag_create(BIO *bio)
++{
++    frag_bio *f = OPENSSL_zalloc(sizeof(*f));
++    if (f == NULL)
++        return 0;
++    BIO_set_data(bio, f);
++    BIO_set_init(bio, 1);
++    return 1;
++}
++
++static int frag_destroy(BIO *bio)
++{
++    frag_bio *f = BIO_get_data(bio);
++    if (f == NULL)
++        return 1;
++
++    BIO_free(f->bio);
++    OPENSSL_free(f);
++    BIO_set_data(bio, NULL);
++    BIO_set_init(bio, 0);
++    return 1;
++}
++
++static BIO_METHOD *frag_method(void)
++{
++    static BIO_METHOD *m = NULL;
++    if (m == NULL) {
++        m = BIO_meth_new(BIO_TYPE_SOURCE_SINK | BIO_TYPE_FILTER, "fragment-limited dgram");
++        BIO_meth_set_write_ex(m, frag_write);
++        BIO_meth_set_read_ex(m, frag_read);
++        BIO_meth_set_ctrl(m, frag_ctrl);
++        BIO_meth_set_puts(m, frag_puts);
++        BIO_meth_set_create(m, frag_create);
++        BIO_meth_set_destroy(m, frag_destroy);
++    }
++    return m;
++}
++
++static BIO *frag_new(BIO *bio, int allowed)
++{
++    BIO *b = BIO_new(frag_method());
++    frag_bio *f;
++    if (b == NULL) {
++        BIO_free(bio);
++        return NULL;
++    }
++    f = BIO_get_data(b);
++    f->bio = bio;
++    f->allowed = allowed;
++    return b;
++}
++
++/*
++ * DTLS1.2 only. Exercises dtls1_handle_timeout()'s write_state guard (see
++ * d1_lib.c): while a write is parked mid-flight (WANT_WRITE, suspended here
++ * by a fragment-limiting BIO), a firing retransmit timer must not touch the
++ * retransmit queue at all - dtls1_retransmit_sent_messages() should never be
++ * entered, since retransmitting a message concurrently with the live write
++ * reusing the very same s->init_off/s->init_num/s->d1->w_msg fields would
++ * corrupt whichever write resumes second.
++ *
++ * Without the guard, letting that retransmit run ClientHello to completion
++ * while its own live write is still parked resets s->init_off/s->init_num
++ * to 0/0 out from under that write - so when the app resumes with
++ * SSL_connect(), dtls1_do_write() re-enters believing s->init_off == 0 means
++ * a brand new message is starting, when s->init_num no longer matches
++ * ClientHello's real length the way a fresh message's would - hitting an
++ * internal entry assertion and calling OPENSSL_die()/abort().
++ *
++ * The client never calls SSL_connect() again until the very end, so the
++ * server is never driven far enough to respond - there's nothing to
++ * retransmit ClientHello against except the timer, driven purely by
++ * DTLSv1_get_timeout()/DTLSv1_handle_timeout().
++ */
++static int test_dtls_client_retransmit(void)
++{
++    SSL_CTX *sctx = NULL, *cctx = NULL;
++    SSL *serverssl = NULL, *clientssl = NULL;
++    int testresult = 0;
++    int ret, err, i;
++    struct timeval tv;
++    static unsigned char alpn[750];
++    size_t j, used = 0;
++    BIO *c_to_s_bio = NULL;
++    BIO *frag_wbio;
++    frag_bio *fb;
++    int write_calls_before;
++
++    if (!TEST_true(create_ssl_ctx_pair(NULL, DTLS_server_method(),
++            DTLS_client_method(),
++            DTLS1_2_VERSION, DTLS1_2_VERSION,
++            &sctx, &cctx, cert, privkey)))
++        return 0;
++
++    SSL_CTX_set_verify(cctx, SSL_VERIFY_NONE, NULL);
++
++    /* Pad the ClientHello out via ALPN so it needs multiple fragments. */
++    for (j = 0; j < 3; j++) {
++        char name[250];
++        int n = snprintf(name, sizeof(name),
++            "proto-%04u-%s", (unsigned int)j,
++            "padpadpadpadpadpadpadpadpadpadpadpadpadpadpad"
++            "padpadpadpadpadpadpadpadpadpadpadpadpadpadpad"
++            "padpadpadpadpadpadpadpadpadpadpadpadpadpadpad"
++            "padpadpadpadpadpadpadpadpadpadpadpadpadpadpad"
++            "padpadpadpadpadpadpadpadpadpadpadpadpadpad");
++
++        if (!TEST_int_ge(n, 0) || !TEST_size_t_lt((size_t)n, sizeof(name)))
++            goto end;
++        if (!TEST_size_t_le(used + 1 + (size_t)n, sizeof(alpn)))
++            goto end;
++
++        alpn[used++] = (unsigned char)n;
++        memcpy(alpn + used, name, (size_t)n);
++        used += (size_t)n;
++    }
++    if (!TEST_false(SSL_CTX_set_alpn_protos(cctx, alpn, (unsigned int)used)))
++        goto end;
++
++    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
++            NULL, NULL)))
++        goto end;
++
++    /*
++     * Pin the MTU so fragmentation of the ClientHello (padded out via ALPN
++     * above) is deterministic. SSL_OP_NO_QUERY_MTU stops dtls1_query_mtu()
++     * from overriding this with a value queried from the BIO.
++     */
++    SSL_set_options(clientssl, SSL_OP_NO_QUERY_MTU);
++    if (!TEST_true(SSL_set_mtu(clientssl, 256)))
++        goto end;
++
++    /*
++     * Wrap the client's write BIO in our fragment-limiting filter, initially
++     * allowing only the ClientHello's first fragment through. SSL_get_wbio()
++     * is a borrowed reference, and SSL_set0_wbio() will free whatever the old
++     * wbio pointer was as soon as we install the replacement - so we need our
++     * own ref on the underlying bio before frag_new() stores it internally,
++     * otherwise the wrapper is left holding a dangling pointer.
++     */
++    c_to_s_bio = SSL_get_wbio(clientssl);
++
++    if (!TEST_ptr(c_to_s_bio) || !TEST_true(BIO_up_ref(c_to_s_bio)))
++        goto end;
++
++    frag_wbio = frag_new(c_to_s_bio, 1);
++    if (!TEST_ptr(frag_wbio)) {
++        BIO_free(c_to_s_bio);
++        goto end;
++    }
++    fb = BIO_get_data(frag_wbio);
++
++    SSL_set0_wbio(clientssl, frag_wbio);
++
++    DTLS_set_timer_cb(clientssl, timer_cb);
++
++    /*
++     * Flight 1: frag_wbio's budget of 1 write buys exactly ClientHello's
++     * first fragment - that's all that goes out. The next write (its
++     * second fragment) is what actually suspends, leaving write_state
++     * parked at WRITE_STATE_SEND, waiting to resume ClientHello.
++     */
++    ret = SSL_connect(clientssl);
++    if (!TEST_int_le(ret, 0)
++        || !TEST_int_eq(SSL_get_error(clientssl, ret), SSL_ERROR_WANT_WRITE))
++        goto end;
++
++    /*
++     * Let the retransmit timer fire, NUM_RETRANSMITS times, while the write
++     * above is still parked. fb->allowed = 100 so our custom BIO isn't what
++     * would block a retransmit, if one were sent. frag_write()'s call
++     * counter shouldn't move at all, round after round.
++     */
++    fb->allowed = 100;
++
++    for (i = 0; i < NUM_RETRANSMITS; i++) {
++        write_calls_before = fb->write_calls;
++
++        if (!TEST_int_gt((int)DTLSv1_get_timeout(clientssl, &tv), 0))
++            goto end;
++
++        /* Wait for the retransmit timer to actually expire */
++        OSSL_sleep((uint64_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000) + 10);
++
++        if (!TEST_int_ge((int)DTLSv1_handle_timeout(clientssl), 0))
++            goto end;
++
++        if (!TEST_int_eq(fb->write_calls, write_calls_before))
++            goto end;
++    }
++
++    /*
++     * Resume the original suspended write. This is the call expected to
++     * hit the entry assertion described above if the guard weren't there.
++     */
++    ret = SSL_connect(clientssl);
++    err = SSL_get_error(clientssl, ret);
++
++    /*
++     * If we get here at all (i.e. we didn't just abort()), the resume
++     * should look like an ordinary handshake continuation - WANT_READ or
++     * WANT_WRITE, not an internal failure.
++     */
++    if (!TEST_false(err == SSL_ERROR_SSL || err == SSL_ERROR_SYSCALL))
++        goto end;
++
++    testresult = 1;
++end:
++    SSL_free(serverssl);
++    SSL_free(clientssl);
++    SSL_CTX_free(sctx);
++    SSL_CTX_free(cctx);
++
++    return testresult;
++}
++
++/*
++ * DTLS1.2 only. Server-side counterpart to test_dtls_client_retransmit():
++ * same write_state guard, but Certificate suspends mid-write during the
++ * server's flight instead of ClientHello. The cipher is pinned to a
++ * static-RSA suite so the flight is just ServerHello + Certificate +
++ * ServerHelloDone (no ServerKeyExchange); with a 256 byte MTU, ServerHello
++ * fits in a single fragment but Certificate does not.
++ *
++ * The client never calls SSL_accept() again until the very end, so the
++ * server is driven purely by DTLSv1_get_timeout()/DTLSv1_handle_timeout().
++ */
++static int test_dtls_server_retransmit(void)
++{
++    SSL_CTX *sctx = NULL, *cctx = NULL;
++    SSL *serverssl = NULL, *clientssl = NULL;
++    int testresult = 0;
++    int ret, err, i;
++    struct timeval tv;
++    BIO *s_to_c_bio = NULL;
++    BIO *frag_wbio;
++    frag_bio *fb;
++    int write_calls_before;
++
++    if (!TEST_true(create_ssl_ctx_pair(NULL, DTLS_server_method(),
++            DTLS_client_method(),
++            DTLS1_2_VERSION, DTLS1_2_VERSION,
++            &sctx, &cctx, cert, privkey)))
++        return 0;
++
++    /* Static RSA cipher: no ServerKeyExchange, keeps the flight simple. */
++    if (!TEST_true(SSL_CTX_set_cipher_list(cctx, "AES128-SHA")))
++        goto end;
++
++    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
++            NULL, NULL)))
++        goto end;
++
++    /*
++     * Pin the server's MTU so its flight fragments deterministically. The
++     * client is left alone - its ClientHello is small and unfragmented.
++     */
++    SSL_set_options(serverssl, SSL_OP_NO_QUERY_MTU);
++    if (!TEST_true(SSL_set_mtu(serverssl, 256)))
++        goto end;
++
++    /* Wrap only the server's write BIO in our fragment-limiting filter. */
++    s_to_c_bio = SSL_get_wbio(serverssl);
++
++    if (!TEST_ptr(s_to_c_bio) || !TEST_true(BIO_up_ref(s_to_c_bio)))
++        goto end;
++
++    /* Only let ServerHello and Certificate's first fragment out initially. */
++    frag_wbio = frag_new(s_to_c_bio, 2);
++    if (!TEST_ptr(frag_wbio)) {
++        BIO_free(s_to_c_bio);
++        goto end;
++    }
++    fb = BIO_get_data(frag_wbio);
++
++    SSL_set0_wbio(serverssl, frag_wbio);
++
++    DTLS_set_timer_cb(serverssl, timer_cb);
++
++    /* Flight 1: the client sends its ClientHello without any restriction. */
++    if (!TEST_int_le(SSL_connect(clientssl), 0))
++        goto end;
++
++    /*
++     * Flight 2: frag_wbio's budget of 2 writes buys exactly ServerHello in
++     * full plus the first fragment of Certificate - that's all that goes
++     * out. The next write (Certificate's second fragment) is what actually
++     * suspends, leaving write_state parked at WRITE_STATE_SEND, waiting to
++     * resume Certificate specifically.
++     */
++    ret = SSL_accept(serverssl);
++    if (!TEST_int_le(ret, 0)
++        || !TEST_int_eq(SSL_get_error(serverssl, ret), SSL_ERROR_WANT_WRITE))
++        goto end;
++
++    /*
++     * Let the retransmit timer fire, NUM_RETRANSMITS times, while the write
++     * above is still parked. fb->allowed = 100 so our custom BIO isn't what
++     * would block a retransmit, if one were sent. frag_write()'s call
++     * counter shouldn't move at all, round after round.
++     */
++    fb->allowed = 100;
++
++    for (i = 0; i < NUM_RETRANSMITS; i++) {
++        write_calls_before = fb->write_calls;
++
++        if (!TEST_int_gt((int)DTLSv1_get_timeout(serverssl, &tv), 0))
++            goto end;
++
++        OSSL_sleep((uint64_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000) + 10);
++
++        if (!TEST_int_ge((int)DTLSv1_handle_timeout(serverssl), 0))
++            goto end;
++
++        if (!TEST_int_eq(fb->write_calls, write_calls_before))
++            goto end;
++    }
++
++    /*
++     * Resume the original suspended write. This is the call expected to
++     * hit the entry assertion described in test_dtls_client_retransmit() if
++     * the guard weren't there.
++     */
++    ret = SSL_accept(serverssl);
++    err = SSL_get_error(serverssl, ret);
++
++    /*
++     * If we get here at all (i.e. we didn't just abort()), the resume
++     * should look like an ordinary handshake continuation - WANT_READ or
++     * WANT_WRITE, not an internal failure.
++     */
++    if (!TEST_false(err == SSL_ERROR_SSL || err == SSL_ERROR_SYSCALL))
++        goto end;
++
++    testresult = 1;
++end:
++    SSL_free(serverssl);
++    SSL_free(clientssl);
++    SSL_CTX_free(sctx);
++    SSL_CTX_free(cctx);
++
++    return testresult;
++}
++
++#endif
++
+ /* Confirm that we can create a connections using DTLSv1_listen() */
+ static int test_listen(void)
+ {
+@@ -753,7 +1162,10 @@ int setup_tests(void)
+     ADD_ALL_TESTS(test_swap_records, 4);
+     ADD_TEST(test_listen);
+     ADD_TEST(test_duplicate_app_data);
+-
++#ifndef OPENSSL_NO_DTLS1_2
++    ADD_TEST(test_dtls_client_retransmit);
++    ADD_TEST(test_dtls_server_retransmit);
++#endif
+     return 1;
+ }
+ 
+diff --git a/test/ectest.c b/test/ectest.c
+index 4665882..fd5a950 100644
+--- a/test/ectest.c
++++ b/test/ectest.c
+@@ -2373,6 +2373,38 @@ err:
+     return ret;
+ }
+ 
++static int keygen_invalid_order_test(void)
++{
++    int ret = 0;
++    EC_GROUP *group = NULL;
++    EC_POINT *generator = NULL;
++    EC_KEY *key = NULL;
++    BIGNUM *order = NULL;
++
++    if (!TEST_ptr(group = EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1))
++        || !TEST_ptr(generator = EC_POINT_dup(
++                         EC_GROUP_get0_generator(group), group))
++        || !TEST_ptr(order = BN_new())
++        || !TEST_true(BN_one(order))
++        || !TEST_true(EC_GROUP_set_generator(group, generator, order,
++            BN_value_one()))
++        || !TEST_ptr(key = EC_KEY_new())
++        || !TEST_true(EC_KEY_set_group(key, group))
++        || !TEST_false(EC_KEY_generate_key(key))
++        || !TEST_int_eq(ERR_GET_REASON(ERR_peek_last_error()),
++            EC_R_INVALID_GROUP_ORDER))
++        goto err;
++
++    ret = 1;
++err:
++    ERR_clear_error();
++    BN_free(order);
++    EC_KEY_free(key);
++    EC_POINT_free(generator);
++    EC_GROUP_free(group);
++    return ret;
++}
++
+ /*
+  * Helper for ec_point_hex2point_test
+  *
+@@ -3196,6 +3228,7 @@ int setup_tests(void)
+     ADD_ALL_TESTS(check_named_curve_test, (int)crv_len);
+     ADD_ALL_TESTS(check_named_curve_lookup_test, (int)crv_len);
+     ADD_ALL_TESTS(check_ec_key_field_public_range_test, (int)crv_len);
++    ADD_TEST(keygen_invalid_order_test);
+     ADD_ALL_TESTS(check_named_curve_from_ecparameters, (int)crv_len);
+     ADD_ALL_TESTS(ec_point_hex2point_test, (int)crv_len);
+     ADD_ALL_TESTS(custom_generator_test, (int)crv_len);
+diff --git a/test/recordlentest.c b/test/recordlentest.c
+index c38ca39..01003ff 100644
+--- a/test/recordlentest.c
++++ b/test/recordlentest.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2017-2023 The OpenSSL Project Authors. All Rights Reserved.
++ * Copyright 2017-2026 The OpenSSL Project Authors. All Rights Reserved.
+  *
+  * Licensed under the Apache License 2.0 (the "License").  You may not use
+  * this file except in compliance with the License.  You can obtain a copy
+@@ -9,6 +9,8 @@
+ 
+ #include <string.h>
+ 
++#include <openssl/evp.h>
++
+ #include "helpers/ssltestlib.h"
+ #include "testutil.h"
+ 
+@@ -60,6 +62,31 @@ static int write_record(BIO *b, size_t len, uint8_t rectype, int recversion)
+     return 1;
+ }
+ 
++#if !defined(OPENSSL_NO_DTLS1_2)
++static int write_dtls_record(BIO *b, size_t len, uint8_t rectype,
++    int recversion, uint16_t epoch, uint64_t seq)
++{
++    unsigned char record[DTLS1_RT_HEADER_LENGTH + 256] = { 0 };
++    size_t written, i;
++
++    if (len > sizeof(record) - DTLS1_RT_HEADER_LENGTH)
++        return 0;
++
++    record[0] = rectype;
++    record[1] = (recversion >> 8) & 0xff;
++    record[2] = recversion & 0xff;
++    record[3] = (epoch >> 8) & 0xff;
++    record[4] = epoch & 0xff;
++    for (i = 0; i < 6; i++)
++        record[10 - i] = (seq >> (8 * i)) & 0xff;
++    record[11] = (len >> 8) & 0xff;
++    record[12] = len & 0xff;
++
++    return BIO_write_ex(b, record, DTLS1_RT_HEADER_LENGTH + len, &written)
++        && written == DTLS1_RT_HEADER_LENGTH + len;
++}
++#endif
++
+ static int fail_due_to_record_overflow(int enc)
+ {
+     long err = ERR_peek_error();
+@@ -181,6 +208,188 @@ end:
+     return testresult;
+ }
+ 
++static int write_and_read_app_data(SSL *serverssl, SSL *clientssl)
++{
++    static const unsigned char msg = 0xa5;
++    unsigned char buf = 0;
++    size_t readbytes = 0, written = 0;
++
++    return TEST_true(SSL_write_ex(clientssl, &msg, sizeof(msg), &written))
++        && TEST_size_t_eq(written, sizeof(msg))
++        && TEST_true(SSL_read_ex(serverssl, &buf, sizeof(buf),
++            &readbytes))
++        && TEST_size_t_eq(readbytes, sizeof(msg))
++        && TEST_uchar_eq(buf, msg);
++}
++
++typedef enum {
++    SHORT_AEAD_RECORD_AES,
++    SHORT_AEAD_RECORD_ARIA,
++    SHORT_AEAD_RECORD_CHACHA
++} SHORT_AEAD_RECORD_CIPHER;
++
++typedef struct {
++    const char *cipher;
++    size_t record_len;
++    SHORT_AEAD_RECORD_CIPHER cipher_type;
++} SHORT_AEAD_RECORD_TEST;
++
++#if !defined(OPENSSL_NO_TLS1_2)
++static const SHORT_AEAD_RECORD_TEST short_aead_record_tests[] = {
++    { TLS1_TXT_RSA_WITH_AES_128_CCM, 0, SHORT_AEAD_RECORD_AES },
++    { TLS1_TXT_RSA_WITH_AES_128_CCM,
++        EVP_CCM_TLS_EXPLICIT_IV_LEN + EVP_CCM_TLS_TAG_LEN - 1,
++        SHORT_AEAD_RECORD_AES },
++    { TLS1_TXT_RSA_WITH_AES_128_CCM_8,
++        EVP_CCM_TLS_EXPLICIT_IV_LEN + EVP_CCM8_TLS_TAG_LEN - 1,
++        SHORT_AEAD_RECORD_AES },
++    { TLS1_TXT_RSA_WITH_AES_128_GCM_SHA256,
++        EVP_GCM_TLS_EXPLICIT_IV_LEN + EVP_GCM_TLS_TAG_LEN - 1,
++        SHORT_AEAD_RECORD_AES },
++    { TLS1_TXT_RSA_WITH_ARIA_128_GCM_SHA256,
++        EVP_GCM_TLS_EXPLICIT_IV_LEN + EVP_GCM_TLS_TAG_LEN - 1,
++        SHORT_AEAD_RECORD_ARIA },
++    { TLS1_TXT_ECDHE_RSA_WITH_CHACHA20_POLY1305,
++        EVP_CHACHAPOLY_TLS_TAG_LEN - 1, SHORT_AEAD_RECORD_CHACHA },
++};
++#endif
++
++static void alert_cb(int write_p, int version, int content_type,
++    const void *buf, size_t len, SSL *ssl, void *arg)
++{
++    unsigned char *alert = arg;
++    const unsigned char *alert_data = buf;
++
++    if (write_p && content_type == SSL3_RT_ALERT && len == 2) {
++        alert[0] = alert_data[0];
++        alert[1] = alert_data[1];
++    }
++}
++
++#ifndef OPENSSL_NO_TLS1_2
++static int test_tls12_short_aead_record(int idx)
++{
++    const SHORT_AEAD_RECORD_TEST *test = &short_aead_record_tests[idx];
++    SSL_CTX *cctx = NULL, *sctx = NULL;
++    SSL *clientssl = NULL, *serverssl = NULL;
++    int testresult = 0;
++    size_t readbytes;
++    unsigned char buf, alert[2] = { 0 };
++
++#ifdef OPENSSL_NO_AES
++    if (test->cipher_type == SHORT_AEAD_RECORD_AES)
++        return TEST_skip("AES is disabled");
++#endif
++#ifdef OPENSSL_NO_ARIA
++    if (test->cipher_type == SHORT_AEAD_RECORD_ARIA)
++        return TEST_skip("ARIA is disabled");
++#endif
++#if defined(OPENSSL_NO_CHACHA) || defined(OPENSSL_NO_POLY1305) \
++    || defined(OPENSSL_NO_EC)
++    if (test->cipher_type == SHORT_AEAD_RECORD_CHACHA)
++        return TEST_skip("ChaCha20-Poly1305 or EC is disabled");
++#endif
++
++    if (!TEST_true(create_ssl_ctx_pair(NULL, TLS_server_method(),
++            TLS_client_method(), TLS1_2_VERSION, TLS1_2_VERSION,
++            &sctx, &cctx, cert, privkey)))
++        goto end;
++
++    /* CCM-8 is not available at the default security level. */
++    SSL_CTX_set_security_level(sctx, 0);
++    SSL_CTX_set_security_level(cctx, 0);
++
++    if (!TEST_true(SSL_CTX_set_cipher_list(sctx, test->cipher))
++        || !TEST_true(SSL_CTX_set_cipher_list(cctx, test->cipher))
++        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
++            NULL, NULL)))
++        goto end;
++
++    SSL_set_msg_callback(serverssl, alert_cb);
++    SSL_set_msg_callback_arg(serverssl, &alert);
++
++    if (!TEST_true(create_ssl_connection(serverssl, clientssl,
++            SSL_ERROR_NONE))
++        || !TEST_true(write_and_read_app_data(serverssl, clientssl))
++        || !TEST_true(write_record(SSL_get_rbio(serverssl), test->record_len,
++            SSL3_RT_APPLICATION_DATA, TLS1_2_VERSION))
++        || !TEST_false(SSL_read_ex(serverssl, &buf, sizeof(buf), &readbytes))
++        || !TEST_uchar_eq(alert[0], SSL3_AL_FATAL)
++        || !TEST_uchar_eq(alert[1], SSL_AD_BAD_RECORD_MAC))
++        goto end;
++
++    testresult = 1;
++end:
++    SSL_free(serverssl);
++    SSL_free(clientssl);
++    SSL_CTX_free(sctx);
++    SSL_CTX_free(cctx);
++    return testresult;
++}
++#endif
++
++#ifndef OPENSSL_NO_DTLS1_2
++static int test_dtls12_short_aead_record(void)
++{
++    SSL_CTX *cctx = NULL, *sctx = NULL;
++    SSL *clientssl = NULL, *serverssl = NULL;
++    int testresult = 0, ret;
++    size_t readbytes = 0;
++    unsigned char buf = 0, alert[2] = { 0 };
++
++#ifdef OPENSSL_NO_AES
++    return TEST_skip("AES is disabled");
++#endif
++
++    if (!TEST_true(create_ssl_ctx_pair(NULL, DTLS_server_method(),
++            DTLS_client_method(), DTLS1_2_VERSION, DTLS1_2_VERSION,
++            &sctx, &cctx, cert, privkey)))
++        goto end;
++
++    SSL_CTX_set_security_level(sctx, 0);
++    SSL_CTX_set_security_level(cctx, 0);
++
++    if (!TEST_true(SSL_CTX_set_cipher_list(sctx,
++            TLS1_TXT_RSA_WITH_AES_128_GCM_SHA256))
++        || !TEST_true(SSL_CTX_set_cipher_list(cctx,
++            TLS1_TXT_RSA_WITH_AES_128_GCM_SHA256))
++        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
++            NULL, NULL)))
++        goto end;
++
++    SSL_set_msg_callback(serverssl, alert_cb);
++    SSL_set_msg_callback_arg(serverssl, &alert);
++
++    /*
++     * The forged record uses the first application-data sequence number. A
++     * valid client write after this must still be accepted.
++     */
++    if (!TEST_true(create_ssl_connection(serverssl, clientssl,
++            SSL_ERROR_NONE))
++        || !TEST_true(write_dtls_record(SSL_get_rbio(serverssl),
++            EVP_GCM_TLS_EXPLICIT_IV_LEN + EVP_GCM_TLS_TAG_LEN - 1,
++            SSL3_RT_APPLICATION_DATA, DTLS1_2_VERSION, 1, 1)))
++        goto end;
++
++    ERR_clear_error();
++    ret = SSL_read_ex(serverssl, &buf, sizeof(buf), &readbytes);
++    if (!TEST_false(ret)
++        || !TEST_int_eq(SSL_get_error(serverssl, ret), SSL_ERROR_WANT_READ)
++        || !TEST_uchar_eq(alert[0], 0)
++        || !TEST_uchar_eq(alert[1], 0)
++        || !TEST_true(write_and_read_app_data(serverssl, clientssl)))
++        goto end;
++
++    testresult = 1;
++end:
++    SSL_free(serverssl);
++    SSL_free(clientssl);
++    SSL_CTX_free(sctx);
++    SSL_CTX_free(cctx);
++    return testresult;
++}
++#endif
++
+ OPT_TEST_DECLARE_USAGE("certfile privkeyfile\n")
+ 
+ int setup_tests(void)
+@@ -195,6 +404,13 @@ int setup_tests(void)
+         return 0;
+ 
+     ADD_ALL_TESTS(test_record_overflow, TOTAL_RECORD_OVERFLOW_TESTS);
++#ifndef OPENSSL_NO_TLS1_2
++    ADD_ALL_TESTS(test_tls12_short_aead_record,
++        OSSL_NELEM(short_aead_record_tests));
++#endif
++#ifndef OPENSSL_NO_DTLS1_2
++    ADD_TEST(test_dtls12_short_aead_record);
++#endif
+     return 1;
+ }
+ 
+diff --git a/test/rpktest.c b/test/rpktest.c
+index 338c33f..f3de1a8 100644
+--- a/test/rpktest.c
++++ b/test/rpktest.c
+@@ -38,6 +38,37 @@ static OSSL_PROVIDER *defctxnull = NULL;
+ static const unsigned char cert_type_rpk[] = { TLSEXT_cert_type_rpk, TLSEXT_cert_type_x509 };
+ static const unsigned char SID_CTX[] = { 'r', 'p', 'k' };
+ 
++/*
++ * Wire form of a SignatureSchemeList that lists rsa_pkcs1_sha256
++ * and ed448 -- between them they cover the issuer signature on
++ * every cert this file loads from test/certs
++ * (sha256WithRSAEncryption for the RSA/ECDSA/Ed25519 leaves and
++ * ED448 for the Ed448 leaf), so the extension is harmless when
++ * the handshake is non-RPK and the server's check_cert_usable()
++ * has to walk the list against a real cert.  When RPK is
++ * negotiated check_cert_usable() returns early without inspecting
++ * the list, and when the slot is an RPK-listed key-only slot but
++ * X509 was negotiated check_cert_usable() returns 0 on the x ==
++ * NULL path -- the inevitable outcome, now discovered earlier.
++ *
++ * Payload: length, rsa_pkcs1_sha256, ed448
++ */
++static const unsigned char sigalgs_cert_payload[] = {
++    0x00, 0x04,
++    0x04, 0x01,
++    0x08, 0x08
++};
++
++static int sigalgs_cert_add_cb(SSL *s, unsigned int ext_type,
++    unsigned int context,
++    const unsigned char **out, size_t *outlen,
++    X509 *x, size_t chainidx, int *al, void *add_arg)
++{
++    *out = sigalgs_cert_payload;
++    *outlen = sizeof(sigalgs_cert_payload);
++    return 1;
++}
++
+ static int rpk_verify_client_cb(int ok, X509_STORE_CTX *ctx)
+ {
+     int err = X509_STORE_CTX_get_error(ctx);
+@@ -255,18 +286,43 @@ static int test_rpk(int idx)
+     /* NEW */
+     SSL_CTX_set_verify(cctx, SSL_VERIFY_PEER, rpk_verify_client_cb);
+ 
+-    if (!TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
+-            NULL, NULL)))
++    /*
++     * Send signature_algorithms_cert in every ClientHello, and in
++     * every TLS 1.3 CertificateRequest.  The OpenSSL stack doesn't
++     * construct this extension by default in either direction, so
++     * register a custom add hook on both ends.  This exercises the
++     * three distinct paths through check_cert_usable() on whichever
++     * side receives the extension:
++     *   - RPK was negotiated for this side's cert -- early return 1,
++     *     list contents ignored.
++     *   - RPK was offered but X509 was negotiated and this side's
++     *     slot holds only a private key -- x == NULL, return 0
++     *     (any peer-sent signature_algorithms_cert against a key-only
++     *     slot would otherwise trigger a crash).
++     *   - X509 negotiated with a real cert -- walk the list, find
++     *     a match against the issuer's signature algorithm.
++     * The server's registration only fires on TLS 1.3 connections
++     * where the server requests a client certificate (case 2, 9,
++     * 10 etc.); on TLS 1.2 the sigalgs travel inside the
++     * CertificateRequest body, not as a separate extension.
++     */
++    if (!TEST_true(SSL_CTX_add_custom_ext(cctx,
++            TLSEXT_TYPE_signature_algorithms_cert,
++            SSL_EXT_CLIENT_HELLO,
++            sigalgs_cert_add_cb, NULL, NULL,
++            NULL, NULL))
++        || !TEST_true(SSL_CTX_add_custom_ext(sctx,
++            TLSEXT_TYPE_signature_algorithms_cert,
++            SSL_EXT_TLS1_3_CERTIFICATE_REQUEST,
++            sigalgs_cert_add_cb, NULL, NULL,
++            NULL, NULL))
++        || !TEST_true(create_ssl_objects(sctx, cctx, &serverssl, &clientssl,
++            NULL, NULL))
++        || !TEST_int_gt(SSL_dane_enable(serverssl, NULL), 0)
++        || !TEST_int_gt(SSL_dane_enable(clientssl, "example.com"), 0)
++        || !TEST_int_eq(SSL_use_PrivateKey_file(serverssl, privkey_file, SSL_FILETYPE_PEM), 1))
+         goto end;
+ 
+-    if (!TEST_int_gt(SSL_dane_enable(serverssl, NULL), 0))
+-        goto end;
+-    if (!TEST_int_gt(SSL_dane_enable(clientssl, "example.com"), 0))
+-        goto end;
+-
+-    /* Set private key and certificate */
+-    if (!TEST_int_eq(SSL_use_PrivateKey_file(serverssl, privkey_file, SSL_FILETYPE_PEM), 1))
+-        goto end;
+     /* Only a private key */
+     if (idx == 1) {
+         if (idx_server_server_rpk == 0 || idx_client_server_rpk == 0) {
+diff --git a/test/x509_check_cert_pkey_test.c b/test/x509_check_cert_pkey_test.c
+index 4c6c0c4..a84dbf8 100644
+--- a/test/x509_check_cert_pkey_test.c
++++ b/test/x509_check_cert_pkey_test.c
+@@ -133,6 +133,128 @@ static int test_PEM_X509_INFO_read_bio(void)
+     return TEST_int_eq(count, expected);
+ }
+ 
++/*
++ * Counts the X509 objects that were tagged via X509_set_ex_data() and have
++ * since been freed, i.e. whose last reference was dropped.
++ */
++static int x509_ex_idx = -1;
++static int tagged_freed;
++
++static void tagged_free_cb(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
++    int idx, long argl, void *argp)
++{
++    if (ptr != NULL)
++        (*(int *)argp)++;
++}
++
++/*
++ * Build the PEM input for one append test:
++ *
++ * 0: a single malformed certificate (valid PEM armour, invalid DER)
++ * 1: the contents of |file|, then a malformed certificate
++ * 2: the contents of |file| only
++ */
++static BIO *append_input(int idx)
++{
++    static const char malformed[] = "-----BEGIN CERTIFICATE-----\n"
++                                    "MAA=\n"
++                                    "-----END CERTIFICATE-----\n";
++    BIO *mem = NULL, *in = NULL;
++    char buf[4096];
++    int n;
++
++    if (!TEST_ptr(mem = BIO_new(BIO_s_mem())))
++        return NULL;
++    if (idx != 0) {
++        if (!TEST_ptr(in = BIO_new_file(file, "r")))
++            goto err;
++        while ((n = BIO_read(in, buf, sizeof(buf))) > 0)
++            if (!TEST_int_eq(BIO_write(mem, buf, n), n))
++                goto err;
++        BIO_free(in);
++        in = NULL;
++    }
++    if (idx != 2 && !TEST_int_gt(BIO_puts(mem, malformed), 0))
++        goto err;
++    return mem;
++err:
++    BIO_free(in);
++    BIO_free(mem);
++    return NULL;
++}
++
++/*
++ * Appending to a caller-owned stack must leave the entries that were already
++ * in the stack alone when the append fails, and must roll back any entries
++ * added by the failed call.
++ *
++ * To check that the pre-existing entries are not freed, the test holds an
++ * extra reference on the first certificate in the stack.  After the call the
++ * stack must still own its reference, so dropping ours must not free the
++ * certificate, and freeing the stack afterwards must.
++ */
++static int test_PEM_X509_INFO_read_bio_append(int idx)
++{
++    BIO *in = NULL, *mem = NULL;
++    STACK_OF(X509_INFO) *sk = NULL, *ret;
++    X509 *held = NULL;
++    int i, n0, tagged = 0, ok = 0;
++    int expect_ok = (idx == 2);
++
++    tagged_freed = 0;
++    if (!TEST_ptr(in = BIO_new_file(file, "r"))
++        || !TEST_ptr(sk = PEM_X509_INFO_read_bio(in, NULL, NULL, "")))
++        goto err;
++    n0 = sk_X509_INFO_num(sk);
++
++    /* Hold a tagged reference on the first certificate, if there is one. */
++    for (i = 0; i < n0; i++) {
++        X509_INFO *it = sk_X509_INFO_value(sk, i);
++
++        if (it->x509 != NULL) {
++            held = it->x509;
++            if (!TEST_true(X509_up_ref(held))
++                || !TEST_true(X509_set_ex_data(held, x509_ex_idx, held)))
++                goto err;
++            tagged = 1;
++            break;
++        }
++    }
++
++    if (!TEST_ptr(mem = append_input(idx)))
++        goto err;
++    ret = PEM_X509_INFO_read_bio(mem, sk, NULL, "");
++
++    if (expect_ok) {
++        if (!TEST_ptr_eq(ret, sk)
++            || !TEST_int_eq(sk_X509_INFO_num(sk), 2 * n0))
++            goto err;
++    } else {
++        if (!TEST_ptr_null(ret)
++            || !TEST_int_eq(sk_X509_INFO_num(sk), n0))
++            goto err;
++    }
++
++    if (tagged) {
++        /* Our reference must not have been the stack's last one. */
++        X509_free(held);
++        held = NULL;
++        if (!TEST_int_eq(tagged_freed, 0))
++            goto err;
++    }
++    sk_X509_INFO_pop_free(sk, X509_INFO_free);
++    sk = NULL;
++    if (tagged && !TEST_int_eq(tagged_freed, 1))
++        goto err;
++    ok = 1;
++err:
++    X509_free(held);
++    sk_X509_INFO_pop_free(sk, X509_INFO_free);
++    BIO_free(in);
++    BIO_free(mem);
++    return ok;
++}
++
+ const OPTIONS *test_get_options(void)
+ {
+     enum { OPT_TEST_ENUM };
+@@ -165,7 +287,12 @@ int setup_tests(void)
+             return 0;
+         if (!TEST_int_eq(sscanf(num, "%d", &expected), 1))
+             return 0;
++        x509_ex_idx = X509_get_ex_new_index(0, &tagged_freed, NULL, NULL,
++            tagged_free_cb);
++        if (!TEST_int_ge(x509_ex_idx, 0))
++            return 0;
+         ADD_TEST(test_PEM_X509_INFO_read_bio);
++        ADD_ALL_TESTS(test_PEM_X509_INFO_read_bio_append, 3);
+         return 1;
+     }
+ 

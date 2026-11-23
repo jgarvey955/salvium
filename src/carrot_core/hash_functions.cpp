@@ -37,6 +37,8 @@ extern "C"
 #include "crypto/blake2b.h"
 #include "exceptions.h"
 #include "misc_log_ex.h"
+#include "misc_language.h"
+#include "memwipe.h"
 
 //third party headers
 
@@ -102,6 +104,7 @@ void derive_scalar(const void *data, const std::size_t data_length, const void *
     // H_n(x): Ed25519 group scalar output (32 bytes)
     // note: hash to 64 bytes then mod l
     unsigned char temp[64];
+    const auto wipe_temp = epee::misc_utils::create_scope_leave_handler([&] { memwipe(temp, sizeof temp); });
     hash_base(key, data, data_length, temp, 64);
     sc_reduce(temp);  //mod l
     memcpy(hash_out, temp, 32);

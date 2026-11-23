@@ -90,6 +90,7 @@ struct unittest_transaction_preproposal
             for (const per_payment_proposal &ppp : pa.second)
             {
                 normal_payment_proposals_out.push_back(ppp.first);
+                normal_payment_proposals_out.back().asset_type = "SAL1";
                 if (ppp.second)
                     subtractable_normal_payment_proposals.insert(norm_idx);
 
@@ -101,6 +102,7 @@ struct unittest_transaction_preproposal
         {
             const per_ss_payment_proposal &pspp = explicit_selfsend_proposals.at(ss_idx);
             selfsend_payment_proposals_out.push_back(pspp.first);
+            selfsend_payment_proposals_out.back().proposal.asset_type = "SAL1";
             if (pspp.second)
                 subtractable_selfsend_payment_proposals.insert(ss_idx);
         }
@@ -218,26 +220,28 @@ static void subtest_multi_account_transfer_over_transaction(const unittest_trans
         parsed_encrypted_payment_id));
     ASSERT_EQ(parsed_enotes.size(), tx.return_address_list.size());
     for (size_t i = 0; i < parsed_enotes.size(); ++i)
-    {
-        // The transaction parser intentionally loads the receiver-scannable
-        // fields only. Internal sender scanning receives K_return from the
-        // transaction's parallel return-address vector.
-        EXPECT_EQ(parsed_enotes[i].return_enc, encrypted_return_pubkey_t{});
-        memcpy(parsed_enotes[i].return_enc.bytes,
-            tx.return_address_list[i].data,
-            sizeof(parsed_enotes[i].return_enc));
-    }
+        EXPECT_EQ(parsed_enotes[i].return_enc, built_enotes[i].return_enc);
     ASSERT_TRUE(parsed_encrypted_payment_id);
+    ASSERT_EQ(built_output_proposals.size(), parsed_enotes.size());
+    for (size_t index = 0; index < parsed_enotes.size(); ++index)
+        EXPECT_EQ(built_output_proposals[index].enote, parsed_enotes[index]);
+    std::vector<mx25519_pubkey> fixture_ephemeral_keys;
+    for (const auto& enote : parsed_enotes) fixture_ephemeral_keys.push_back(enote.enote_ephemeral_pubkey);
+    CarrotEnoteV1 reused;
+    for (unsigned repetition = 0; repetition < 2; ++repetition) {
+        ASSERT_TRUE(try_load_carrot_enote_from_transaction_v1(tx, epee::to_span(fixture_ephemeral_keys), 0, reused));
+        EXPECT_EQ(tx.vout.size(), reused.tx_output_keys.size());
+        EXPECT_EQ(parsed_enotes.front(), reused);
+    }
 
     // collect modified selfsend payment proposal cores
     std::vector<CarrotPaymentProposalSelfSendV1> modified_selfsend_payment_proposals;
     for (const auto &p : tx_proposal.selfsend_payment_proposals)
         modified_selfsend_payment_proposals.push_back(p.proposal);
 
-    // sanity check that the enotes and pid_enc loaded from the transaction are equal to the enotes
-    // and pic_enc returned from get_output_enote_proposals() when called with the modified payment
-    // proposals. we do this so that the modified payment proposals from make_unsigned_transaction()
-    // can be passed to a hardware device for deterministic verification of the signable tx hash
+    // Check rederivation of deterministic enote fields. Randomized return-key
+    // padding is validated by the exact serialized roundtrip above; a fresh
+    // proposal derivation deliberately generates new padding.
     std::vector<RCTOutputEnoteProposal> rederived_output_enote_proposals;
     encrypted_payment_id_t rederived_encrypted_payment_id;
     size_t change_index;

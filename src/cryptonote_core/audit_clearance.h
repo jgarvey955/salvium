@@ -23,6 +23,9 @@ struct audit_clearance_certificate
   uint64_t activation_height = 0;
   uint64_t snapshot_height = 0;
   crypto::hash snapshot_hash = crypto::null_hash;
+  uint32_t policy_version = 0;
+  uint64_t historical_cutoff_height = 0;
+  crypto::hash policy_digest = crypto::null_hash;
   crypto::hash transaction = crypto::null_hash;
   uint32_t output_index = 0;
   bool stake = false;
@@ -39,6 +42,9 @@ struct audit_clearance_certificate
     VARINT_FIELD(activation_height)
     VARINT_FIELD(snapshot_height)
     FIELD(snapshot_hash)
+    VARINT_FIELD(policy_version)
+    VARINT_FIELD(historical_cutoff_height)
+    FIELD(policy_digest)
     FIELD(transaction)
     VARINT_FIELD(output_index)
     FIELD(stake)
@@ -61,6 +67,9 @@ struct audit_clearance_batch
 };
 
 crypto::hash audit_clearance_message(const audit_clearance_certificate& certificate);
+// Only compiled, developer-approved policies are signable on real networks.
+// FAKECHAIN derives an isolated fixture binding from its activation height.
+void bind_audit_clearance_policy(audit_clearance_certificate& certificate);
 void sign_audit_clearance(audit_clearance_certificate& certificate, const crypto::secret_key& secret);
 bool verify_audit_clearance(const audit_clearance_certificate& certificate, const crypto::public_key& authority);
 
@@ -100,6 +109,9 @@ private:
   network_type network_ = UNDEFINED;
   uint64_t activation_ = 0, next_height_ = 0;
   crypto::public_key authority_ = crypto::null_pkey;
+  uint32_t policy_version_ = 0;
+  uint64_t historical_cutoff_ = 0;
+  crypto::hash policy_digest_ = crypto::null_hash;
   crypto::hash tip_ = crypto::null_hash;
   std::map<identity, entry> entries_;
   std::set<identity> finalized_;

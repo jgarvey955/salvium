@@ -99,6 +99,7 @@ using namespace epee;
 #include "common/notify.h"
 #include "common/perf_timer.h"
 #include "ringct/rctSigs.h"
+#include "ringct/proof_validation.h"
 #include "ringdb.h"
 #include "device/device_cold.hpp"
 #include "device_trezor/device_trezor.hpp"
@@ -12277,7 +12278,9 @@ std::vector<wallet2::pending_tx> wallet2::create_token(const std::string& token_
 {
   // Make asset_type uppercase version of the token symbol
   std::string asset_type = token_ticker;
-  std::transform(asset_type.begin(), asset_type.end(), asset_type.begin(), ::toupper);
+  std::transform(asset_type.begin(), asset_type.end(), asset_type.begin(), [](unsigned char c) {
+    return static_cast<char>(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+  });
   THROW_WALLET_EXCEPTION_IF(asset_type.length() != 4, error::wallet_internal_error, tr("Invalid ticker: Must be exactly 4 characters."));
 
   // Validate characters
@@ -12316,16 +12319,18 @@ std::vector<wallet2::pending_tx> wallet2::create_token(const std::string& token_
 
     // Parse as JSON
     rapidjson::Document json;
-    THROW_WALLET_EXCEPTION_IF(json.Parse(metadata_blob.c_str()).HasParseError(), error::wallet_internal_error, tr("Metadata is not valid JSON"));
+    THROW_WALLET_EXCEPTION_IF(json.Parse<rapidjson::kParseValidateEncodingFlag>(metadata_blob.data(), metadata_blob.size()).HasParseError() ||
+        !json.IsObject() || metadata_blob.find('\0') != std::string::npos,
+        error::wallet_internal_error, tr("Metadata must be a valid JSON object"));
     if (json.HasMember("size") && json["size"].IsUint64())
       size = json["size"].GetUint64();
     if (json.HasMember("name") && json["name"].IsString())
-      name = json["name"].GetString();
+      name.assign(json["name"].GetString(), json["name"].GetStringLength());
     if (json.HasMember("url") && json["url"].IsString())
-      url = json["url"].GetString();
+      url.assign(json["url"].GetString(), json["url"].GetStringLength());
     if (json.HasMember("hash") && json["hash"].IsString()) {
-      hash = json["hash"].GetString();
-      epee::string_tools::hex_to_pod(hash, signature);
+      hash.assign(json["hash"].GetString(), json["hash"].GetStringLength());
+      THROW_WALLET_EXCEPTION_IF(!hash.empty() && !epee::string_tools::hex_to_pod(hash, signature), error::wallet_internal_error, tr("Invalid metadata hash"));
     }
   }
   
@@ -15697,6 +15702,8 @@ bool wallet2::check_reserve_proof(const cryptonote::account_public_address &addr
   {
     THROW_WALLET_EXCEPTION_IF(!seen_key_images.insert(proof.key_image).second, error::wallet_internal_error, "Duplicate key image in reserve proof");
     THROW_WALLET_EXCEPTION_IF(!seen_outputs.emplace(epee::string_tools::pod_to_hex(proof.txid), proof.index_in_tx).second, error::wallet_internal_error, "Duplicate output in reserve proof");
+    THROW_WALLET_EXCEPTION_IF(!rct::canonical_spend_point(rct::ki2rct(proof.key_image)),
+      error::wallet_internal_error, "Invalid key image in reserve proof");
   }
 
   THROW_WALLET_EXCEPTION_IF(subaddr_spendkeys.count(address.m_spend_public_key) == 0, error::wallet_internal_error,

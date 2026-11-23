@@ -61,6 +61,17 @@ namespace cryptonote::txrules
                                            const validation_env& env,
                                            std::string* why)
   {
+    // Canonical names prevent alternate spellings sharing an on-chain asset ID.
+    // Existing blocks retain their original rules; tightened encoding policy is
+    // immediate for new mempool admissions and versioned for future consensus.
+    if ((env.mode == validation_mode::mempool || env.hf >= 14) &&
+        (!cryptonote::is_valid_custom_asset_type("sal" + tx.token_metadata.asset_type) ||
+         tx.token_metadata.version != 1 || tx.protocol_tx_data.version != 1))
+    {
+      if (why) *why = "CREATE_TOKEN requires canonical asset and metadata versions";
+      return false;
+    }
+
     // Reserved prefix: SAL* is not allowed for user-created tokens
     if (tx.token_metadata.asset_type.size() >= 3 &&
         tx.token_metadata.asset_type.substr(0, 3) == "SAL")
@@ -78,6 +89,12 @@ namespace cryptonote::txrules
 
     const cryptonote::sal_token_t token =
       boost::get<cryptonote::sal_token_t>(tx.token_metadata.token);
+
+    if ((env.mode == validation_mode::mempool || env.hf >= 14) && token.version != 1)
+    {
+      if (why) *why = "CREATE_TOKEN token version must be 1";
+      return false;
+    }
 
     // Supply bounds
     if (token.supply == 0 || token.supply > (MONEY_SUPPLY / COIN))

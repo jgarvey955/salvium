@@ -232,7 +232,9 @@ bool operator==(const CarrotPaymentProposalSelfSendV1 &a, const CarrotPaymentPro
            a.enote_type                       == b.enote_type &&
            a.internal_message                 == b.internal_message &&
            a.asset_type                       == b.asset_type &&
-           0 == memcmp(&a.enote_ephemeral_pubkey, &b.enote_ephemeral_pubkey, sizeof(mx25519_pubkey));
+           a.enote_ephemeral_pubkey.has_value() == b.enote_ephemeral_pubkey.has_value() &&
+           (!a.enote_ephemeral_pubkey || 0 == memcmp(a.enote_ephemeral_pubkey->data,
+               b.enote_ephemeral_pubkey->data, sizeof(mx25519_pubkey)));
 }
 //-------------------------------------------------------------------------------------------------------------------
 crypto::secret_key get_enote_ephemeral_privkey(const CarrotPaymentProposalV1 &proposal,

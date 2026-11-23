@@ -3,7 +3,7 @@ $(package)_version=4.0.1
 $(package)_download_path=https://www.openssl.org/source
 $(package)_file_name=$(package)-$($(package)_version).tar.gz
 $(package)_sha256_hash=2db3f3a0d6ea4b59e1f094ace2c8cd536dffb87cdc39084c5afa1e6f7f37dd09
-$(package)_patches=installvars-no-debug-output.patch
+$(package)_patches=installvars-no-debug-output.patch security-20261122.patch
 
 # The bundled ranlib in Android NDK 18b inserts timestamps by default.
 # To prevent reproducibility issues, we must enable [D]eterministic mode.
@@ -14,6 +14,9 @@ $(package)_config_env_android=ANDROID_NDK_ROOT="$(host_prefix)/native" PATH="$(h
 $(package)_build_env_android=ANDROID_NDK_ROOT="$(host_prefix)/native"
 $(package)_config_opts=--prefix=$(host_prefix) --openssldir=$(host_prefix)/etc/openssl --libdir=$(host_prefix)/lib
 $(package)_config_opts+=no-dso
+$(package)_config_opts+=no-afalgeng
+$(package)_config_opts+=no-comp
+$(package)_config_opts+=no-quic
 $(package)_config_opts+=no-dtls1
 $(package)_config_opts+=no-ec_nistp_64_gcc_128
 $(package)_config_opts+=no-gost
@@ -50,6 +53,7 @@ $(package)_config_opts_x86_64_freebsd=BSD-x86_64
 endef
 
 define $(package)_preprocess_cmds
+  patch -p1 < $($(package)_patch_dir)/security-20261122.patch &&\
   patch -p1 < $($(package)_patch_dir)/installvars-no-debug-output.patch &&\
   sed -i.old 's|crypto ssl apps util fuzz providers doc|crypto ssl util providers|' build.info
 endef

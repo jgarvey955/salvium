@@ -82,12 +82,21 @@ int main() {
     audit_clearance_certificate c;
     c.network = FAKECHAIN; c.genesis = db.get_block_hash_from_height(0);
     c.activation_height = 100; c.snapshot_height = 100; c.snapshot_hash = db.get_block_hash_from_height(100);
-    c.transaction = good; c.decision = 1; sign_audit_clearance(c, secret);
+    c.transaction = good; c.decision = 1; bind_audit_clearance_policy(c); sign_audit_clearance(c, secret);
     check(verify_audit_clearance(c, authority) && !verify_audit_clearance(c, other), "Authority binding failed");
     audit_clearance_batch batch; batch.certificates.push_back(c); std::string reason;
     check(registry.validate_batch(db, batch, 101, reason), "Valid certificate rejected");
     auto forged = batch; forged.certificates[0].decision = 2;
     check(!registry.validate_batch(db, forged, 101, reason), "Altered decision accepted");
+    for (unsigned field = 0; field < 3; ++field) {
+      auto wrong_policy = batch;
+      auto& cert = wrong_policy.certificates.front();
+      if (field == 0) ++cert.policy_version;
+      else if (field == 1) --cert.historical_cutoff_height;
+      else cert.policy_digest = crypto::cn_fast_hash("other policy", 12);
+      crypto::generate_signature(audit_clearance_message(cert), authority, secret, cert.signature);
+      check(!registry.validate_batch(db, wrong_policy, 101, reason), "Different signed historical policy accepted");
+    }
     auto noncanonical = batch;
     reinterpret_cast<unsigned char*>(&noncanonical.certificates[0].signature)[sizeof(crypto::signature) - 1] = 1;
     check(!verify_audit_clearance(noncanonical.certificates[0], authority) &&
@@ -96,7 +105,8 @@ int main() {
     check(!registry.validate_batch(db, duplicate, 101, reason), "Duplicate certificate accepted");
     auto excessive = batch; excessive.certificates.resize(lineage_limits::max_outputs + 1, c);
     check(!registry.validate_batch(db, excessive, 101, reason), "Certificate work limit bypassed");
-    auto wrong = batch; --wrong.certificates[0].activation_height; sign_audit_clearance(wrong.certificates[0], secret);
+    auto wrong = batch; --wrong.certificates[0].activation_height;
+    bind_audit_clearance_policy(wrong.certificates[0]); sign_audit_clearance(wrong.certificates[0], secret);
     check(!registry.validate_batch(db, wrong, 101, reason), "Wrong epoch accepted");
     transaction spend; spend.type = transaction_type::TRANSFER; spend.source_asset_type = "SAL1";
     txin_to_key input; input.asset_type = "SAL1"; input.key_offsets = {0}; spend.vin.push_back(input);
@@ -152,6 +162,7 @@ int main() {
     const auto payout_id = stakes.add_transaction(payout, payout_height);
     c.transaction = principal_id; c.stake = true; c.revision = 1; c.decision = 1;
     c.activation_height = 90; c.snapshot_height = payout_height;
+    bind_audit_clearance_policy(c);
     c.genesis = stakes.get_block_hash_from_height(0); c.snapshot_hash = stakes.get_block_hash_from_height(payout_height);
     sign_audit_clearance(c, secret); batch.certificates = {c};
     stakes.carrier(payout_height + 1, batch); stakes.candidate = payout_height + 2;
@@ -164,7 +175,31 @@ int main() {
     check(!stake_registry.validate_batch(stakes, batch, stakes.candidate, reason), "Inherited final payout could be denied while maturing");
     stakes.candidate = payout_height + 60; stake_registry.sync(stakes);
     check(stake_registry.output_spendable(stakes, 1, stakes.candidate), "Payout required a second audit after normal maturity");
-    std::cout << "AUDIT_CLEARANCE_PASS authority, tamper, epoch, duplicates, activation, H+1, mixed rings, inheritance, immutable clearance, denial resolution, replay, reorg\n";
+    clearance_db malformed_db;
+    const transaction template_tx = malformed_db.get_tx(malformed_db.add(10));
+    audit_clearance_registry malformed_registry;
+    malformed_registry.configure(FAKECHAIN, 100, authority);
+    for (unsigned variant = 0; variant < 3; ++variant) {
+      auto tx = template_tx;
+      tx.extra = {static_cast<uint8_t>(variant + 1)};
+      if (variant == 0) tx.source_asset_type = "salOTHER";
+      else tx.version = 2; // A confidential transaction retaining a public amount.
+      if (variant == 2) { tx.type = transaction_type::STAKE; tx.amount_burnt = 12; }
+      tx.invalidate_hashes();
+      audit_clearance_certificate cert;
+      cert.network = FAKECHAIN; cert.activation_height = 100;
+      cert.snapshot_height = 100; cert.snapshot_hash = malformed_db.get_block_hash_from_height(100);
+      cert.genesis = malformed_db.get_block_hash_from_height(0);
+      cert.transaction = malformed_db.add_transaction(tx, 10); cert.stake = variant == 2;
+      cert.decision = 1; bind_audit_clearance_policy(cert); sign_audit_clearance(cert, secret);
+      audit_clearance_batch malformed_batch; malformed_batch.certificates = {cert};
+      check(!malformed_registry.validate_batch(malformed_db, malformed_batch, 101, reason) &&
+          reason.find("malformed") != std::string::npos, "Signed clearance accepted an intrinsically malformed origin");
+      cert.decision = 2; sign_audit_clearance(cert, secret); malformed_batch.certificates = {cert};
+      check(malformed_registry.validate_batch(malformed_db, malformed_batch, 101, reason),
+          "Malformed origin could not receive an explicit denial");
+    }
+    std::cout << "AUDIT_CLEARANCE_PASS authority, tamper, epoch, duplicates, activation, H+1, mixed rings, inheritance, immutable clearance, denial resolution, replay, reorg, malformed-origin denial\n";
     return 0;
   } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }
