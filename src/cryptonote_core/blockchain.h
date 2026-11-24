@@ -660,6 +660,7 @@ namespace cryptonote
     void configure_private_audit(network_type net, uint64_t activation, const crypto::public_key& authority)
     { m_private_audit.configure(net, activation, authority); }
     uint64_t private_audit_activation() const { return m_private_audit.activation(); }
+    uint64_t private_audit_closing_height() const { return m_private_audit.closing_height(); }
     bool queue_audit_clearance(const std::string& data, crypto::hash& id, std::string& reason, bool& added);
     std::vector<std::string> pending_audit_clearances();
     const crypto::public_key& private_audit_authority() const { return m_private_audit.authority(); }

@@ -4177,7 +4177,7 @@ void Blockchain::load_clearance_queue()
 std::vector<std::string> Blockchain::pending_audit_clearances()
 {
   CRITICAL_REGION_LOCAL(m_blockchain_lock);
-  if (!m_private_audit.active(m_db->height())) return {};
+  if (!m_private_audit.enrollment_open(m_db->height())) return {};
   load_clearance_queue();
   std::vector<std::string> result;
   std::map<audit_clearance_registry::identity, uint64_t> highest;
@@ -4518,6 +4518,10 @@ bool Blockchain::check_tx_outputs(const transaction& tx, tx_verification_context
 {
   LOG_PRINT_L3("Blockchain::" << __func__);
   CRITICAL_REGION_LOCAL(m_blockchain_lock);
+  if (tx.type == transaction_type::STAKE && m_private_audit.enrollment_open(m_db->height())) {
+    tvc.m_invalid_output = true;
+    return false;
+  }
 
   const uint8_t hf_version = m_hardfork->get_current_version();
   if (m_private_audit.active(m_db->height())) {

@@ -2053,6 +2053,7 @@ namespace cryptonote
     CRITICAL_REGION_LOCAL(chain);
     res.activation_height = chain.private_audit_activation();
     res.opening_height = chain.lineage_audit_opening_height();
+    res.closing_height = chain.private_audit_closing_height();
     res.candidate_height = chain.get_current_blockchain_height();
     res.authority = string_tools::pod_to_hex(chain.private_audit_authority());
     res.max_output_proofs_per_block = lineage_limits::max_outputs;
@@ -2067,6 +2068,7 @@ namespace cryptonote
       auto& chain = m_core.get_blockchain_storage();
       CRITICAL_REGION_LOCAL(chain);
       res.activation_height = chain.private_audit_activation();
+      res.closing_height = chain.private_audit_closing_height();
       res.candidate_height = chain.get_current_blockchain_height();
       res.tip_hash = string_tools::pod_to_hex(chain.get_tail_id()); res.asset_type = req.asset_type;
       for (const auto& output : chain.private_audit_outputs(req.asset_type, req.from_index, req.limit, res.more))

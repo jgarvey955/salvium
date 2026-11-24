@@ -490,6 +490,9 @@ def generate(evidence, policy_path, outdir, source_commit=None):
         completion=complete, stake_principal_classifications=stake_counts,
         hard_fork_boundaries=hard_forks, stored_supply_observations=stored_supply, status="INCOMPLETE_RELEASE_VALIDATION_AND_SUPPLY_RECONCILIATION",
         classifications_status="PROPOSED_POLICY_ELIGIBILITY_ONLY", issued_clearance_certificates=0,
+        active_audit_assets=[a for a in assets if a != "SAL"],
+        legacy_conversion_context_assets=[a for a in assets if a == "SAL"],
+        audit_scope="SAL1 and supported tokens; retired SAL is accepted historical conversion context only",
         confirmed_incidents=incidents, assets=summary_assets,
         coverage=dict(canonical_public_inventory="COMPLETE", historical_rule_checks="RAN_PER_TRANSACTION",
             ring_range_balance_verification="RAN_PER_ORDINARY_TRANSACTION; SEE_FAILURE_COUNTS",
@@ -504,8 +507,8 @@ def generate(evidence, policy_path, outdir, source_commit=None):
             "Ring membership is not a proven spend; no descendant or human identity is inferred from decoys.",
             "Missing ancestry and missing exchange records do not disqualify otherwise valid historical outputs.",
             "No authenticated purchase exceptions were applied because no private exchange evidence was provided.",
-            "The native v4 draft authenticates the policy digest, version and cutoff; legacy SAL clearance remains unsupported. This unsigned plan cannot authorize mainnet.",
-            "No main-developer-approved amnesty snapshot, production activation or signing authority was supplied."])
+            "The native v4 draft authenticates the policy digest, version and cutoff. Retired SAL is accepted conversion context, excluded from new enrollment. This unsigned plan cannot authorize mainnet.",
+            "No main-developer-approved amnesty snapshot or production signing authority was supplied; activation configuration requires separate release qualification."])
     write_json(out / "audit_supply_report.json", report)
     write_json(out / "audit_illicit_registry.json", dict(context=context, findings=incidents, policy_sha256=policy_digest))
     with (out / "audit_supply_reconciliation.csv").open("w", newline="") as f:
@@ -555,12 +558,13 @@ def write_markdown(out, report):
                ("Unresolved monetary discrepancy", "unresolved_monetary_discrepancy_atomic")]
     lines = ["# Salvium historical financial and forensic report", "",
         "**Status: complete public inventory; supply reconciliation and release validation remain incomplete.**", "",
+        "Active audit scope is SAL1 and supported tokens. Any SAL figures are accepted historical conversion context; SAL has no new wallet audit or enrollment.", "",
         f"Source commit: `{report['source_commit']}`. Network `{c['network']}`; genesis `{c['genesis']}`.",
         f"Accepted opening: {c['opening_height']} (`{c['opening_block_hash']}`). "
         f"Forensic audit period: {c['scan_start_height']}–{c['scan_end_height']}; ending block `{c['ending_block_hash']}`.",
         f"Inventory includes genesis–{c['scan_end_height']} as opening context. Policy `{report['policy']['policy_version']}`; "
         f"cutoff {report['policy']['historical_cutoff_height']}; digest `{report['policy_sha256']}`.",
-        "Production activation remains disabled. Every clearance below is proposed eligibility; **zero certificates issued**.", "",
+        "This report neither activates the production audit nor issues certificates. Every clearance below is proposed eligibility; **zero certificates issued**.", "",
         "| Asset | " + " | ".join(title for title, _ in metrics) + " |", "|---|" + "---|" * len(metrics)]
     for asset, values in assets.items():
         lines.append("| " + asset + " | " + " | ".join(str(values[key]) for _, key in metrics) + " |")

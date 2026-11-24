@@ -70,6 +70,15 @@ public:
 }
 int main() {
   try {
+    using namespace private_audit_policy;
+    static_assert(mainnet_height == 630000 && closing_height(mainnet_height) == 660000,
+        "Reviewed mainnet audit schedule changed");
+    check(!enrollment_open(630000, 629999) && enrollment_open(630000, 630000) &&
+        enrollment_open(630000, 659999) && !enrollment_open(630000, 660000),
+        "Audit window boundaries are inconsistent");
+    check(closing_height(0) == 0 && !enrollment_open(0, 0) &&
+        !enrollment_open(0, UINT64_MAX) && closing_height(UINT64_MAX - duration_blocks) == UINT64_MAX &&
+        closing_height(UINT64_MAX - duration_blocks + 1) == 0, "Audit closing height overflow");
     clearance_db db;
     const auto good = db.add(10), uncleared = db.add(11);
     crypto::public_key authority, other; crypto::secret_key secret, other_secret;
@@ -86,6 +95,67 @@ int main() {
     check(verify_audit_clearance(c, authority) && !verify_audit_clearance(c, other), "Authority binding failed");
     audit_clearance_batch batch; batch.certificates.push_back(c); std::string reason;
     check(registry.validate_batch(db, batch, 101, reason), "Valid certificate rejected");
+    // Exercise the complete 30000-block window using a separate canonical
+    // registry so the existing reorg and stake fixtures remain independent.
+    {
+      clearance_db window;
+      const auto approved = window.add(10), waiting = window.add(11);
+      audit_clearance_registry gate; gate.configure(FAKECHAIN, 100, authority);
+      check(gate.closing_height() == 30100 && !gate.enrollment_open(99) &&
+          gate.enrollment_open(100) && gate.enrollment_open(30099) &&
+          !gate.enrollment_open(30100) && gate.active(30100), "Registry window mismatch");
+      bool overflow_rejected = false;
+      try { audit_clearance_registry invalid; invalid.configure(FAKECHAIN, UINT64_MAX, authority); }
+      catch (const std::exception&) { overflow_rejected = true; }
+      check(overflow_rejected, "Overflowing audit epoch accepted");
+      auto cert = c; cert.transaction = approved; sign_audit_clearance(cert, secret);
+      audit_clearance_batch certified; certified.certificates = {cert};
+      window.carrier(101, certified);
+      window.candidate = 102; gate.sync(window);
+      transaction candidate; candidate.type = transaction_type::STAKE; candidate.source_asset_type = "SAL1";
+      txin_to_key source; source.asset_type = "SAL1"; source.key_offsets = {0}; candidate.vin.push_back(source);
+      window.candidate = 99;
+      check(gate.check_spend(window, candidate, reason), "Pre-launch stake was disabled");
+      window.candidate = 100;
+      check(!gate.check_spend(window, candidate, reason) && reason.find("stakes") != std::string::npos,
+          "Prebuilt stake accepted at launch");
+      window.candidate = 30099; gate.sync(window);
+      check(!gate.check_spend(window, candidate, reason) && reason.find("stakes") != std::string::npos,
+          "Stake accepted in final audit block");
+      cert.transaction = waiting; cert.snapshot_height = 30098;
+      cert.snapshot_hash = window.get_block_hash_from_height(30098);
+      sign_audit_clearance(cert, secret);
+      audit_clearance_batch pending; pending.certificates = {cert};
+      check(gate.validate_batch(window, pending, 30099, reason), "Final-block clearance rejected");
+      window.candidate = 30100; gate.sync(window);
+      check(gate.check_spend(window, candidate, reason), "Stake remained disabled after close");
+      check(!gate.validate_batch(window, pending, 30100, reason) &&
+          reason.find("closed") != std::string::npos, "Late certificate accepted");
+      window.carrier(30100, pending);
+      check(!gate.validate_block(window, window.blocks[30100], reason), "Late block carrier accepted");
+      window.blocks.erase(30100);
+      check(gate.validate_batch(window, certified, 30100, reason, true), "Confirmed retry rejected after close");
+      candidate.type = transaction_type::TRANSFER;
+      check(gate.check_spend(window, candidate, reason), "Confirmed clearance expired at close");
+      boost::get<txin_to_key>(candidate.vin[0]).key_offsets = {1};
+      check(!gate.check_spend(window, candidate, reason), "Closing the audit unlocked an uncleared output");
+      cert.transaction = approved; cert.revision = 2; cert.decision = 2;
+      sign_audit_clearance(cert, secret); pending.certificates = {cert};
+      check(!gate.validate_batch(window, pending, 30100, reason), "Closing changed final clearance");
+    }
+    {
+      clearance_db claimed_db;
+      const auto original = claimed_db.add(10);
+      auto unauthorized = claimed_db.get_tx(original);
+      unauthorized.type = transaction_type::MINER;
+      unauthorized.invalidate_hashes();
+      const auto id = claimed_db.add_transaction(unauthorized, 20);
+      auto certificate = c; certificate.transaction = id;
+      sign_audit_clearance(certificate, secret);
+      audit_clearance_batch claimed; claimed.certificates = {certificate};
+      check(!registry.validate_batch(claimed_db, claimed, 101, reason),
+          "A MINER label without independently verified canonical issuance was cleared");
+    }
     auto forged = batch; forged.certificates[0].decision = 2;
     check(!registry.validate_batch(db, forged, 101, reason), "Altered decision accepted");
     for (unsigned field = 0; field < 3; ++field) {

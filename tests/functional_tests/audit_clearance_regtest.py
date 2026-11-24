@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,10 +42,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binaries", type=Path, default=Path("build/audit/release/bin"))
     parser.add_argument("--full-stake", action="store_true", help="Mine and spend the complete 21600-block cleared stake payout")
+    parser.add_argument("--full-window", action="store_true",
+                        help="Verify the full 30000-block window, stake payout and closing boundary")
     args = parser.parse_args()
     root = Path(tempfile.mkdtemp(prefix="salvium-private-clearance-"))
     print(root, flush=True)
-    bins = args.binaries.resolve()
+    bins = root / "bin"
+    bins.mkdir()
+    # Keep a long-running window fixture independent of concurrent rebuilds.
+    for name in ("salviumd", "salvium-wallet-rpc", "salvium-audit-review"):
+        shutil.copy2(args.binaries.resolve() / name, bins / name)
     tool = bins / "salvium-audit-review"
 
     def command(*args):
@@ -67,9 +74,23 @@ def main():
         stake = chain.transfer(1, 1, 12 * COIN, tx_type=6, relay=False)
         chain.submit(stake, True); chain.mine(11)
         prebuilt = chain.transfer(1, 2, 3 * COIN, relay=False)
+        prebuilt_stake = chain.transfer(1, 1, COIN, tx_type=6, relay=False)
+        # Candidate H-1 still uses the old rules. Candidate H starts the freeze.
+        chain.mine(chain.activation - 2 - chain.tip())
+        assert chain.daemon.call("get_private_audit_status")["candidate_height"] == chain.activation - 1
+        chain.submit(prebuilt_stake, True)
+        chain.daemon.call("flush_txpool", {"txids": [prebuilt_stake["tx_hash"]]})
+        chain.mine(1)
+        assert chain.daemon.call("get_private_audit_status")["candidate_height"] == chain.activation
+        chain.submit(prebuilt_stake, False)
+        rejected(lambda: chain.transfer(1, 1, COIN, tx_type=6, relay=False))
         chain.mine(chain.activation - chain.tip())
+        status = chain.daemon.call("get_private_audit_status")
+        assert status["activation_height"] == chain.activation
+        assert status["closing_height"] == chain.activation + 30000
         assert chain.balance(1)["unlocked_balance"] == 0
         chain.submit(prebuilt, False)
+        chain.submit(prebuilt_stake, False)
         checks.append("wallet and daemon lock at activation")
         snapshot = chain.tip()
         evidence = []
@@ -153,6 +174,9 @@ def main():
         checks.append("automatic main processing publishes public clearance without owner import")
         confirmed = chain.mine(1)["height"]
         assert chain.balance(1)["unlocked_balance"] > 0
+        rejected(lambda: chain.transfer(1, 1, COIN, tx_type=6, relay=False))
+        chain.submit(prebuilt_stake, False)
+        checks.append("new stakes are rejected by wallet and raw transaction validation after clearance")
         spent = chain.transfer(1, 2, 2 * COIN, relay=False)
         chain.submit(spent, True)
         next_block = chain.mine(1)
@@ -185,7 +209,7 @@ def main():
             chain.refresh_wallet(wallet)
         assert chain.balance(1)["unlocked_balance"] == 0
         checks.append("reorg removes orphaned clearance")
-        if args.full_stake:
+        if args.full_stake or args.full_window:
             print(publish(complete), flush=True)
             chain.mine(1)
             _, inclusion = chain.transaction(stake["tx_hash"])
@@ -220,7 +244,37 @@ def main():
             transaction, _ = chain.transaction(payout_spend["tx_hash"])
             assert [i["key"]["k_image"] for i in transaction["vin"]] == [image]
             checks.append("cleared pre-activation stake principal pays exact yield, matures and payout itself spends without another audit")
-        result = {"passed": True, "checks": checks, "fixture": str(root)}
+            for row in rows:
+                if chain.wallets[1].call("frozen", {"key_image": row["key_image"]})["frozen"]:
+                    chain.wallets[1].call("thaw", {"key_image": row["key_image"]})
+        if args.full_window:
+            closing = chain.activation + 30000
+            while chain.tip() < closing - 2:
+                chain.mine(min(500, closing - 2 - chain.tip()), refresh=False)
+                print("AUDIT_WINDOW_WAIT", chain.tip(), closing, flush=True)
+            for wallet in chain.wallets:
+                chain.refresh_wallet(wallet)
+            assert chain.daemon.call("get_private_audit_status")["candidate_height"] == closing - 1
+            rejected(lambda: chain.transfer(1, 1, COIN, tx_type=6, relay=False))
+            chain.submit(prebuilt_stake, False)
+            chain.mine(1)
+            assert chain.daemon.call("get_private_audit_status")["candidate_height"] == closing
+            inventory = chain.wallets[1].call("audit", {"status_only": True})
+            assert inventory["closing_height"] == closing
+            assert chain.wallets[1].call("audit", {"export_evidence": True})["private_evidence"]
+            # An already confirmed result stays final and can be retried after
+            # closing, while consensus rejects new late identities (native test).
+            print(publish(complete), flush=True)
+            resumed = chain.transfer(1, 1, COIN, tx_type=6, relay=False)
+            chain.submit(resumed, True); chain.mine(1)
+            assert resumed["tx_hash"] in chain.block(closing)["tx_hashes"]
+            checks.append("stakes resume exactly at H+30000; full-wallet status and prior clearance survive closing")
+            checks.append("read-only private evidence remains available for final supply reporting after close")
+        hashes = {name: hashlib.sha256((bins / name).read_bytes()).hexdigest()
+                  for name in ("salviumd", "salvium-wallet-rpc", "salvium-audit-review")}
+        result = {"passed": True, "checks": checks, "fixture": str(root),
+                  "activation": chain.activation, "closing": chain.activation + 30000,
+                  "full_window": args.full_window, "binary_sha256": hashes}
         (root / "result.json").write_text(json.dumps(result, indent=2))
         print("AUDIT_CLEARANCE_REGTEST_PASS", json.dumps(result), flush=True)
     finally:

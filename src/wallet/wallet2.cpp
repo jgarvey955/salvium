@@ -8370,7 +8370,8 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
   audit_result result;
   result.activation_height = private_review ? m_lineage_activation_height : scheduled;
   result.opening_height = opening_height;
-  result.closing_height = status.closing_height;
+  result.closing_height = private_review ?
+      cryptonote::private_audit_policy::closing_height(result.activation_height) : status.closing_height;
   result.candidate_height = status.candidate_height;
   cryptonote::lineage_enrollment batch;
   batch.genesis = m_blockchain.genesis();
@@ -8501,7 +8502,7 @@ wallet2::audit_result wallet2::audit(bool submit, bool all_accounts, uint32_t ac
         age = std::max(age, unlock);
     }
     row.immature = age > result.candidate_height || td.m_block_height > result.candidate_height - age;
-    if (result.closing_height && td.m_block_height >= scheduled) {
+    if (!private_review && result.closing_height && td.m_block_height >= scheduled) {
       row.state = row.immature ? "MATURING" : "AUDIT_PASSED";
       row.release_height = td.m_block_height + age;
     }
@@ -8722,6 +8723,8 @@ std::string wallet2::export_audit_review(uint64_t snapshot_height)
 {
   CHECK_AND_ASSERT_THROW_MES(get_blockchain_current_height() > 1, "Synchronize wallet before exporting audit evidence");
   update_lineage_audit_status();
+  // Export is private, read-only evidence for the closing supply report.
+  // Consensus enforces the certificate deadline independently.
   CHECK_AND_ASSERT_THROW_MES(m_lineage_regtest_height || (m_lineage_activation_height &&
       get_blockchain_current_height() > m_lineage_activation_height), "Wallet audit requests open at the configured activation block");
   cryptonote::audit_review_package context;
@@ -8861,7 +8864,8 @@ void wallet2::import_audit_review(const std::string& text, const std::string& tr
 
 void wallet2::update_lineage_audit_status()
 {
-  const uint64_t scheduled = m_nettype == cryptonote::MAINNET ? cryptonote::private_audit_policy::mainnet_height :
+  const uint64_t scheduled = m_lineage_regtest_height ? 0 :
+      m_nettype == cryptonote::MAINNET ? cryptonote::private_audit_policy::mainnet_height :
       m_nettype == cryptonote::TESTNET ? cryptonote::private_audit_policy::testnet_height :
       cryptonote::private_audit_policy::stagenet_height;
   m_lineage_activation_height = m_lineage_regtest_height ? 1 : scheduled;
@@ -8880,6 +8884,7 @@ void wallet2::update_lineage_audit_status()
       (scheduled && res.activation_height != scheduled) || res.candidate_height != get_blockchain_current_height()) return;
   // A report-only fakechain has no spend gate, retained for private proof tests.
   m_lineage_activation_height = res.activation_height;
+  m_lineage_closing_height = cryptonote::private_audit_policy::closing_height(res.activation_height);
   if (!res.activation_height || get_blockchain_current_height() < res.activation_height) return;
   const uint64_t height = get_blockchain_current_height();
   const auto tip = epee::string_tools::pod_to_hex(m_blockchain[height - 1]);
@@ -8912,7 +8917,8 @@ void wallet2::update_lineage_audit_status()
 }
 bool wallet2::is_transfer_unlocked(const transfer_details& td)
 {
-  const uint64_t scheduled = m_nettype == cryptonote::MAINNET ? cryptonote::private_audit_policy::mainnet_height :
+  const uint64_t scheduled = m_lineage_regtest_height ? 0 :
+      m_nettype == cryptonote::MAINNET ? cryptonote::private_audit_policy::mainnet_height :
       m_nettype == cryptonote::TESTNET ? cryptonote::private_audit_policy::testnet_height :
       cryptonote::private_audit_policy::stagenet_height;
   const uint64_t activation = m_lineage_activation_height ? m_lineage_activation_height : scheduled;
@@ -12400,6 +12406,12 @@ std::vector<wallet2::pending_tx> wallet2::create_token(const cryptonote::token_m
 // usable balance.
 std::vector<wallet2::pending_tx> wallet2::create_transactions_2(std::vector<cryptonote::tx_destination_entry> dsts, const std::string& source_asset, const std::string& dest_asset, const cryptonote::transaction_type tx_type, const size_t fake_outs_count, const uint64_t unlock_time, uint32_t priority, const std::vector<uint8_t>& extra, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices, const unique_index_container& subtract_fee_from_outputs)
 {
+  if (tx_type == cryptonote::transaction_type::STAKE) {
+    update_lineage_audit_status();
+    THROW_WALLET_EXCEPTION_IF(cryptonote::private_audit_policy::enrollment_open(
+        m_lineage_activation_height, get_blockchain_current_height()), error::wallet_internal_error,
+        "New stakes are disabled during the private audit window");
+  }
   //ensure device is let in NONE mode in any case
   hw::device &hwdev = m_account.get_device();
   boost::unique_lock<hw::device> hwdev_lock (hwdev);

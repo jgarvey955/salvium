@@ -1628,7 +1628,12 @@ uint64_t BlockchainLMDB::add_transaction_data(const crypto::hash& blk_hash, cons
     for (const auto &rollup_tx: tx.layer2_rollup_data.txs) {
       MDB_val_set(rtx_key, tx.rollup_binding_tag);
       MDB_val_set(rtx_val, rollup_tx);
-      result = mdb_cursor_put(m_cur_rollup_tx_info, &rtx_key, &rtx_val, MDB_APPENDDUP);
+      // Authorization hashes are not ordered in transaction proposal order.
+      // Let LMDB insert each duplicate in its proper position; APPENDDUP can
+      // otherwise omit valid authorizations from a multi-transfer batch.
+      result = mdb_cursor_put(m_cur_rollup_tx_info, &rtx_key, &rtx_val, 0);
+      if (result)
+        throw0(DB_ERROR(lmdb_error("Failed to add rollup transaction authorization: ", result).c_str()));
     }
   }
   

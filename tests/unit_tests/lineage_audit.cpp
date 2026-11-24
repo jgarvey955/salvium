@@ -644,6 +644,24 @@ public:
     check(optimistic_blocks < lineage_policy::duration_blocks, "Even optimistic packing cannot fit the audit window");
     db.close();
   }
+  static void pruned_miner_history(const char* path) {
+    class pruned_db : public BlockchainLMDB {
+    public:
+      transaction get_tx(const crypto::hash&) const override {
+        throw DB_ERROR("Full transaction unavailable in pruned mining regression");
+      }
+      bool get_tx(const crypto::hash&, transaction&) const override {
+        throw DB_ERROR("Full transaction unavailable in pruned mining regression");
+      }
+    } db;
+    db.open(path, DBF_RDONLY);
+    lineage_audit state;
+    state.configure(db.height(), 0);
+    check(state.valid_miner_origin(db, FAKECHAIN, db.height() - 1),
+        "Canonical mining history required discarded private transaction proofs");
+    std::cout << "PRUNED_MINER_HISTORY_PASS blocks=" << db.height() << " full_transaction_reads=0\n";
+    db.close();
+  }
   static void actual_database(const char* path) {
     BlockchainLMDB db;
     db.open(path, DBF_RDONLY);
@@ -732,7 +750,10 @@ public:
     check(epee::string_tools::pod_to_hex(get_transaction_hash(tx)) ==
         "9353dd3288e20618596085228ea6faf5bf2a9d01cd98c36ea5ceeef2c2d4eb1e", "Wrong historical fixture");
     check(tx.vout.size() == 2 && lineage_audit::has_bad_asset_origin(tx), "Actual salYAHU issuance escaped BAD classification");
-    std::cout << "{\"status\":\"ACTUAL_465074_NATIVE_BAD_PASS\",\"bad_origin_outputs\":2,\"bad_origin_atomic\":4000000000000000}\n";
+    // This fixture establishes the canonical identity and malformed asset
+    // origin. Recovering an exact value requires independently verified
+    // funding records; do not present a hard-coded amount as a test result.
+    std::cout << "{\"status\":\"ACTUAL_465074_NATIVE_BAD_PASS\",\"bad_origin_outputs\":2,\"bad_origin_atomic\":\"NOT_VERIFIABLE_FROM_THIS_FIXTURE\"}\n";
     // The historical public keys cannot be signed without their owner. Re-key
     // this exact transaction shape for controlled, authentic ownership proofs.
     // Its original transaction signature is deliberately not an acceptance
@@ -1115,6 +1136,9 @@ public:
 }
 int main(int argc, char** argv) {
   try {
+    if (argc == 3 && std::string(argv[1]) == "--pruned-mining-snapshot") {
+      cryptonote::lineage_audit_test::pruned_miner_history(argv[2]); return 0;
+    }
     if (argc == 3 && std::string(argv[1]) == "--capacity-load") {
       cryptonote::lineage_audit_test::capacity_load(std::stoull(argv[2])); return 0;
     }

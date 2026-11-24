@@ -136,7 +136,14 @@ bool lineage_audit::valid_miner_origin(const BlockchainDB& db, network_type net,
     valid &= generation && generation->height == height;
     uint128_t fees = 0;
     for (const auto& id : b.tx_hashes) {
-      const auto tx = db.get_tx(id);
+      auto tx = db.get_pruned_tx(id);
+      // Legacy v1 signatures are unprunable and part of its transaction hash.
+      if (tx.version == 1) tx = db.get_tx(id);
+      crypto::hash prunable = crypto::null_hash;
+      const bool hash_available = tx.version == 1 || tx.rct_signatures.type == rct::RCTTypeNull ||
+          db.get_prunable_tx_hash(id, prunable);
+      valid &= hash_available && (tx.version == 1 ? get_transaction_hash(tx) :
+          get_pruned_transaction_hash(tx, prunable)) == id;
       if (tx.version > 1) fees += tx.rct_signatures.txnFee;
       else {
         uint128_t inputs = 0, outputs = 0;
