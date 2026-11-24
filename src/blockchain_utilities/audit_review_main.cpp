@@ -13,6 +13,7 @@
 #include <boost/program_options.hpp>
 #include <algorithm>
 #include <iostream>
+#include <map>
 #include <set>
 
 namespace po = boost::program_options;
@@ -49,6 +50,23 @@ struct public_clearances {
     KV_SERIALIZE(batches)
   END_KV_SERIALIZE_MAP()
 };
+struct private_ownership_index_item {
+  std::string transaction, image;
+  uint32_t output_index = 0;
+  BEGIN_KV_SERIALIZE_MAP()
+    KV_SERIALIZE(transaction)
+    KV_SERIALIZE(output_index)
+    KV_SERIALIZE(image)
+  END_KV_SERIALIZE_MAP()
+};
+struct private_ownership_index {
+  std::string report_hash;
+  std::vector<private_ownership_index_item> outputs;
+  BEGIN_KV_SERIALIZE_MAP()
+    KV_SERIALIZE(report_hash)
+    KV_SERIALIZE(outputs)
+  END_KV_SERIALIZE_MAP()
+};
 template<class T> T load(const std::string& path) {
   T value;
   if (!load_audit_json(value, read_audit_file(path)))
@@ -77,6 +95,7 @@ int main(int argc, char** argv)
       ("activation-height", po::value<uint64_t>(), "Issue public clearance certificates for this configured audit epoch")
       ("clearance-authority", po::value<std::string>(), "Fakechain certificate replay authority (production authority is compiled in)")
       ("verify-key", po::value<std::string>(), "Verify report against this independent public key")
+      ("ownership-index", po::value<std::string>(), "Write PRIVATE spend witnesses bound to an authenticated report and its exact --input files")
       ("outdir", po::value<std::string>(), "New private case directory with recipient-specific results");
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, options), vm); po::notify(vm);
@@ -100,7 +119,59 @@ int main(int argc, char** argv)
       require(epee::string_tools::hex_to_pod(vm["verify-key"].as<std::string>(), key) &&
           verify_audit_review_report(report, key), "Invalid developer signature");
       std::cout << "VERIFIED " << epee::string_tools::pod_to_hex(audit_review_report_hash(report)) << '\n';
-      if (!vm.count("outdir")) return 0;
+      if (!vm.count("outdir") && !vm.count("ownership-index")) return 0;
+    }
+    if (vm.count("ownership-index")) {
+      require(vm.count("report") && vm.count("verify-key") && vm.count("input") &&
+          !vm.count("outdir") && !vm.count("sign-key") && !vm.count("decisions"),
+          "Private ownership index requires an authenticated report and exact private input files");
+      std::set<std::string> ids;
+      std::set<std::string> wanted;
+      std::map<std::tuple<std::string, std::string, uint32_t, bool>, const audit_review_item*> expected;
+      for (const auto& item : report.outputs) {
+        wanted.insert(item.package_id);
+        expected.emplace(std::make_tuple(item.package_id, item.transaction, item.output_index, item.stake), &item);
+      }
+      private_ownership_index index;
+      index.report_hash = epee::string_tools::pod_to_hex(audit_review_report_hash(report));
+      size_t package_count = 0, proof_count = 0;
+      for (const auto& path : vm["input"].as<std::vector<std::string>>()) {
+        const auto request = load<audit_review_request>(path);
+        require(request.version == 3 && request.packages.size() <= 4096, "Invalid private package count");
+        for (const auto& package : request.packages) {
+          require(package.network == report.network && package.genesis == report.genesis &&
+              package.snapshot_height == report.snapshot_height && package.snapshot_hash == report.snapshot_hash &&
+              package.version == 3 && !package.proofs.empty() && package.proofs.size() <= 512,
+              "Private ownership index context mismatch");
+          const auto id = audit_review_package_id(package);
+          if (!wanted.count(id)) continue;
+          if (!ids.insert(id).second) continue;
+          require(++package_count <= 4096, "Private ownership case exceeds package limit");
+          require(package.proofs.size() <= 250000 - proof_count, "Private ownership index exceeds proof limit");
+          proof_count += package.proofs.size();
+          for (const auto& raw : package.proofs) {
+            std::string binary; lineage_output_proof proof;
+            require(raw.size() < 4096 && epee::string_tools::parse_hexstr_to_binbuff(raw, binary) &&
+                serialization::parse_binary(binary, proof) && t_serializable_object_to_blob(proof) == binary,
+                "Invalid private ownership index proof");
+            const auto tx = epee::string_tools::pod_to_hex(proof.transaction);
+            const auto found = expected.find(std::make_tuple(id, tx, proof.output_index, proof.stake_return));
+            require(found != expected.end() && found->second->amount == proof.amount,
+                "Ownership witness is not covered by the authenticated native report");
+            if (!proof.stake_return)
+              index.outputs.push_back({tx, epee::string_tools::pod_to_hex(proof.image), proof.output_index});
+            expected.erase(found);
+          }
+        }
+      }
+      std::string evidence = "Salvium private audit case v3";
+      for (const auto& id : ids) evidence += std::to_string(id.size()) + ":" + id;
+      require(expected.empty() && report.evidence_hash ==
+          epee::string_tools::pod_to_hex(crypto::cn_fast_hash(evidence.data(), evidence.size())),
+          "Private ownership input digest does not match the authenticated report");
+      write_private_audit_file(vm["ownership-index"].as<std::string>(), epee::serialization::store_t_to_json(index));
+      std::cout << "PRIVATE_OWNERSHIP_INDEX_WRITTEN\n";
+      return 0;
     }
     require(vm.count("outdir"), "Specify --outdir");
     if (!vm.count("report")) {

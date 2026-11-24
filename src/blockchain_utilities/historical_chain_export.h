@@ -187,10 +187,14 @@ void export_historical_chain(BlockchainLMDB& db, uint64_t audit_start, uint64_t 
           std::all_of(tx.vout.begin(), tx.vout.end(), [&](const tx_out& out) {
             std::string a; return get_output_asset_type(out, a) && invalid_assets.count(a);
           }) && input_total >= deductions;
+      std::string key_images;
+      for (const auto& in : tx.vin) if (const auto* key = boost::get<txin_to_key>(&in))
+        key_images += pod_to_hex_string(key->k_image);
       record(&stream, "transaction").field("height", height).field("block_hash", block_hash)
           .field("transaction", id).field("version", uint64_t(tx.version))
           .field("hard_fork", uint64_t(block.major_version)).field("category", category)
           .field("inputs", uint64_t(tx.vin.size())).field("outputs", uint64_t(tx.vout.size()))
+          .field("key_images", key_images)
           .field("source_asset", tx.source_asset_type).field("destination_asset", tx.destination_asset_type)
           .field("amount_burnt_atomic", tx.amount_burnt).field("fee_atomic", tx.rct_signatures.txnFee)
           .field("rules_status", rules_ok ? "PASS" : "REVIEW").field("rules_reason", rule_reason)

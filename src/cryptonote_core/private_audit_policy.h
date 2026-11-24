@@ -5,7 +5,7 @@
 
 // The main developer selects the activation heights during release review.
 // These are consensus settings, never wallet options or production RPC input.
-#define SALVIUM_PRIVATE_AUDIT_MAINNET_HEIGHT 0
+#define SALVIUM_PRIVATE_AUDIT_MAINNET_HEIGHT 630000
 #define SALVIUM_PRIVATE_AUDIT_TESTNET_HEIGHT 0
 #define SALVIUM_PRIVATE_AUDIT_STAGENET_HEIGHT 0
 
@@ -14,6 +14,13 @@ constexpr uint8_t fork_version = 14;
 constexpr uint64_t mainnet_height = SALVIUM_PRIVATE_AUDIT_MAINNET_HEIGHT;
 constexpr uint64_t testnet_height = SALVIUM_PRIVATE_AUDIT_TESTNET_HEIGHT;
 constexpr uint64_t stagenet_height = SALVIUM_PRIVATE_AUDIT_STAGENET_HEIGHT;
+// The launch block is included; the closing block is excluded.
+constexpr uint64_t duration_blocks = 30000;
+constexpr uint64_t closing_height(uint64_t activation)
+{ return activation && activation <= UINT64_MAX - duration_blocks ? activation + duration_blocks : 0; }
+constexpr bool enrollment_open(uint64_t activation, uint64_t height)
+{ return activation && height >= activation && height - activation < duration_blocks; }
+static_assert(duration_blocks > 0, "Private audit duration must be nonzero");
 // Pin the SHA256 of the exact approved policy document and its cutoff during
 // release review. Empty bindings disable certificate activation on real nets.
 constexpr uint32_t policy_version = 1;
@@ -29,6 +36,9 @@ static_assert(!(mainnet_height && lineage_policy::mainnet_height) &&
     !(stagenet_height && lineage_policy::stagenet_height), "Do not activate the withdrawn v2 audit alongside v4");
 static_assert(mainnet_height < UINT64_MAX - 21661 && testnet_height < UINT64_MAX - 21661 &&
     stagenet_height < UINT64_MAX - 21661, "Private audit activation overflow");
+static_assert(mainnet_height <= UINT64_MAX - duration_blocks &&
+    testnet_height <= UINT64_MAX - duration_blocks && stagenet_height <= UINT64_MAX - duration_blocks,
+    "Private audit closing height overflow");
 static_assert(!mainnet_height || mainnet_height > 521425, "Private audit must follow mainnet HF13");
 static_assert(!testnet_height || testnet_height > 1400, "Private audit must follow testnet HF13");
 } }

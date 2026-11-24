@@ -129,6 +129,7 @@ public:
 
 private:
   friend class audit_review_verifier;
+  friend class audit_clearance_registry;
   friend class lineage_audit_test;
   struct ring_member
   {

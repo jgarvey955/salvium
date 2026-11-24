@@ -93,6 +93,8 @@ public:
   void configure(network_type network, uint64_t activation, const crypto::public_key& authority);
   uint64_t activation() const { return activation_; }
   bool active(uint64_t height) const { return activation_ && height >= activation_; }
+  uint64_t closing_height() const { return private_audit_policy::closing_height(activation_); }
+  bool enrollment_open(uint64_t height) const { return private_audit_policy::enrollment_open(activation_, height); }
   const crypto::public_key& authority() const { return authority_; }
   void sync(const BlockchainDB& db);
   bool validate_batch(const BlockchainDB& db, const audit_clearance_batch& batch,
@@ -108,6 +110,7 @@ public:
 private:
   network_type network_ = UNDEFINED;
   uint64_t activation_ = 0, next_height_ = 0;
+  bool historical_miners_loaded_ = false;
   crypto::public_key authority_ = crypto::null_pkey;
   uint32_t policy_version_ = 0;
   uint64_t historical_cutoff_ = 0;

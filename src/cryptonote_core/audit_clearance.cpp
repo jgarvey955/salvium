@@ -1,5 +1,6 @@
 #include "audit_clearance.h"
 #include "audit_review.h"
+#include "lineage_audit.h"
 #include "blockchain_db/blockchain_db.h"
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "cryptonote_basic/tx_extra.h"
@@ -83,6 +84,8 @@ uint64_t normal_release(const transaction& tx, uint32_t index, uint64_t height)
 void validate_spend_at(const audit_clearance_registry& registry, const BlockchainDB& db,
     const transaction& tx, uint64_t height)
 {
+  require(tx.type != transaction_type::STAKE || !registry.enrollment_open(height),
+      "New stakes are disabled during the private audit window");
   require(!tx.vin.empty(), "Private audit requires spending inputs");
   for (const auto& output : tx.vout) {
     std::string asset;
@@ -162,6 +165,8 @@ bool verify_audit_clearance(const audit_clearance_certificate& c, const crypto::
 
 void audit_clearance_registry::configure(network_type net, uint64_t activation, const crypto::public_key& key)
 {
+  require(!activation || private_audit_policy::closing_height(activation),
+      "Private audit closing height overflow");
   require(net <= FAKECHAIN && (!activation || (crypto::check_key(key) &&
       rct::canonical_spend_point(rct::pk2rct(key)) &&
       authorized_audit_review_signer(net, key))), "Activation requires the designated audit authority");
@@ -179,7 +184,7 @@ void audit_clearance_registry::configure(network_type net, uint64_t activation, 
 void audit_clearance_registry::reset()
 {
   entries_.clear(); finalized_.clear(); eligible_.clear(); due_.clear(); automatic_due_.clear();
-  next_height_ = activation_; tip_ = crypto::null_hash;
+  next_height_ = activation_; tip_ = crypto::null_hash; historical_miners_loaded_ = false;
 }
 const audit_clearance_registry::entry* audit_clearance_registry::find(
     const crypto::hash& transaction, uint32_t index, bool stake) const
@@ -223,10 +228,20 @@ bool audit_clearance_registry::validate_batch(const BlockchainDB& db, const audi
         require(c.output_index < tx.vout.size() && get_output_asset_type(tx.vout[c.output_index], asset) &&
             is_lineage_audit_asset(asset), "Invalid certified output or asset");
         if (c.decision == 1)
-          require(intrinsic_output_clearable(tx, c.output_index), "Confirmed malformed output origin cannot be cleared");
+          require(intrinsic_output_clearable(tx, c.output_index) &&
+              (tx.type != transaction_type::MINER || finalized_.count(certificate_identity(c))),
+              "Confirmed malformed or unauthorized output origin cannot be cleared");
         normal_release(tx, c.output_index, db.get_tx_block_height(c.transaction));
       }
       const auto* previous = find(c.transaction, c.output_index, c.stake);
+      require(enrollment_open(height) || (allow_confirmed &&
+          ((finalized_.count(certificate_identity(c)) && c.decision == 1) ||
+           (previous && t_serializable_object_to_blob(previous->certificate) == t_serializable_object_to_blob(c)))),
+          "Private audit enrollment has closed");
+      // Verified miner issuance needs no certificate. Harmless historical
+      // CLEAR carriers remain replayable, without imposing their delay.
+      if (!c.stake && tx.type == transaction_type::MINER && c.decision == 1 &&
+          finalized_.count(certificate_identity(c))) continue;
       if (allow_confirmed && finalized_.count(certificate_identity(c)) && c.decision == 1) continue;
       if (allow_confirmed && previous && t_serializable_object_to_blob(previous->certificate) == t_serializable_object_to_blob(c)) continue;
       require(!finalized_.count(certificate_identity(c)), "Confirmed clearance is final and cannot be altered");
@@ -262,6 +277,8 @@ void audit_clearance_registry::apply(const BlockchainDB& db, const audit_clearan
 {
   for (const auto& c : batch.certificates) {
     const auto id = certificate_identity(c);
+    if (!c.stake && finalized_.count(id) &&
+        canonical_tx(db, c.transaction).type == transaction_type::MINER) continue;
     entries_[id] = {c, height};
     if (c.decision == 1) finalized_.insert(id);
     const auto tx = canonical_tx(db, c.transaction);
@@ -425,6 +442,31 @@ void audit_clearance_registry::sync(const BlockchainDB& db)
       db.get_block_hash_from_height(next_height_ - 1) != tip_)) reset();
   if (db.height() < activation_) return;
   try {
+    if (!historical_miners_loaded_) {
+      // Mature canonical SAL1 mining rewards retain their ordinary eligibility
+      // across launch. Verify issuance independently; never trust an output's
+      // MINER label or an owner's claim of its amount.
+      lineage_audit mining;
+      const uint64_t opening = network_ == MAINNET ? lineage_policy::mainnet_opening_height :
+          network_ == TESTNET ? lineage_policy::testnet_opening_height :
+          network_ == STAGENET ? lineage_policy::stagenet_opening_height : 0;
+      mining.configure(activation_, opening);
+      for (uint64_t height = 0; height < activation_; ++height) {
+        const auto b = db.get_block_from_height(height);
+        if (b.miner_tx.vout.empty() || !std::all_of(b.miner_tx.vout.begin(), b.miner_tx.vout.end(),
+            [](const tx_out& output) {
+              std::string asset;
+              return get_output_asset_type(output, asset) && asset == "SAL1";
+            }) || !mining.valid_miner_origin(db, network_, height)) continue;
+        const auto hash = get_transaction_hash(b.miner_tx);
+        for (uint32_t index = 0; index < b.miner_tx.vout.size(); ++index) {
+          finalized_.insert({epee::string_tools::pod_to_hex(hash), index, false});
+          automatic_due_[normal_release(b.miner_tx, index, height)].push_back({hash, index});
+        }
+      }
+      historical_miners_loaded_ = true;
+      tip_ = db.get_block_hash_from_height(activation_ - 1);
+    }
     for (; next_height_ < db.height(); ++next_height_) {
       const auto b = db.get_block_from_height(next_height_);
       advance(db, next_height_);
